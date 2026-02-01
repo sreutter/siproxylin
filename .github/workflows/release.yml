@@ -77,15 +77,17 @@ jobs:
       run: |
         pip install --break-system-packages appimage-builder
 
+    - name: Get version from tag
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
     - name: Build AppImage
+      env:
+        SIPROXYLIN_VERSION: ${{ steps.get_version.outputs.VERSION }}
       run: |
         export PATH=/usr/local/go-tools/bin:/usr/local/go/bin:$PATH
         chmod +x build-appimage.sh
         ./build-appimage.sh
-
-    - name: Get version from tag
-      id: get_version
-      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
     - name: Install GitHub CLI
       run: |
