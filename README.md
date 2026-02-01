@@ -119,9 +119,8 @@ For production, two command-line parameters are available:
 1. `--xdg` - Respects `~/.config` and `~/.local` paths
 2. `--dot-data-dir` - Uses old-fashioned `~/.siproxylin` with everything inside
 
-**AppImage default: `--dot-data-dir`**
+**AppImage default: `--dot-data-dir`** because of three reasons:
 
-Three reasons:
 1. Easy to navigate (convenience)
 2. Easy to delete (security)
 3. Easy to mount as gocryptfs or equivalent (privacy)
@@ -134,8 +133,8 @@ Siproxylin supports **proxies per account**. Even the **registration wizard** as
 
 ### Use Cases
 
-1. **Private Wireguard VPN server** - XMPP server behind Wireguard? Use **wireproxy** and point Siproxylin to the SOCKS5 socket.
-2. **Sensitive group chats** - Joining a group about something private? Install Tor and use its SOCKS5 socket.
+1. **Don't want to expose your private XMPP server?** Add Wireguard directly on your server and use **wireproxy** with the SOCKS5 socket.
+2. **Sensitive group chats** - Joining a group about stuff like flat earth, alcoholism or BDSM for beginers? Install Tor and point Siproxylin to its SOCKS5 socket.
 3. **Corporate network** - Only way out is via Squid proxy? Route your account through the HTTP proxy and enjoy texts and calls.
 
 **Leak testing:** I tested with tcpdump and found **zero IP leaks** — it seems to be solid.
@@ -144,11 +143,11 @@ Siproxylin supports **proxies per account**. Even the **registration wizard** as
 
 ## Calls
 
-Siproxylin supports **audio calls** with most XMPP clients. Works perfectly with Dino in both directions. **Outgoing calls to Conversations.im work fine**, but incoming calls from Conversations won't connect due to an ICE nomination issue in their WebRTC stack (we investigated down to packet-level sniffing — nothing helped). Conversations won't nominate a successful ICE pair even with their own TURN server advertised on both ends.
+Siproxylin supports **audio calls** with most XMPP clients. Works perfectly with Dino in both directions. **Outgoing calls to Conversations.im work fine**, but incoming calls from Conversations won't connect due to an ICE nomination issue in their WebRTC stack (still investigating). Conversations won't nominate a successful ICE pair even with their own TURN server is advertised on both ends of the call.
 
 ### Call Privacy
 
-Siproxylin **forces calls to be relayed** to avoid IP leaks. The call window shows technical details: advertised IP addresses of both ends and the connection choice. Siproxylin requests TURN details from your XMPP server (XEP-0215), and if not received, falls back to public Jami TURN servers.
+Siproxylin **forces calls to be relayed** to avoid IP leaks. The call window shows technical details: advertised IP addresses of both ends and the connection choice. Siproxylin requests TURN details from your XMPP server (XEP-0215), and if not received, should fall back to the public Jami TURN servers.
 
 ---
 
@@ -201,7 +200,13 @@ Found a bug? Have a feature request? [Open an issue](https://github.com/youruser
 
 ## Documentation
 
-... Coming soon ...
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
+
+[docs/ROADMAP-PUBLIC.md](docs/ROADMAP-PUBLIC.md)
+
+[docs/BUILD.md](docs/BUILD.md)
 
 ---
 
