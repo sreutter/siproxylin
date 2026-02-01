@@ -263,7 +263,8 @@ package_appimage() {
     log_info "Running appimagetool..."
     # NOTE: --no-appstream disables .zsync file generation (for delta updates)
     # Remove this flag when going live for public distribution
-    ARCH=x86_64 ./appimagetool-x86_64.AppImage --no-appstream "$appdir" "$output"
+    # APPIMAGE_EXTRACT_AND_RUN=1 enables running in containers without FUSE
+    ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool-x86_64.AppImage --no-appstream "$appdir" "$output"
 
     if [ -f "$output" ]; then
         log_success "AppImage created: $output"
