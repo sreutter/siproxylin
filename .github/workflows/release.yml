@@ -23,10 +23,8 @@ jobs:
       with:
         path: |
           .package-builder-apt
-          AppDir
           appimagetool-x86_64.AppImage
-          appimage-build
-        key: appimage-build-${{ hashFiles('requirements.txt', 'appimage.yml') }}
+        key: appimage-build-${{ hashFiles('appimage.yml') }}
         restore-keys: |
           appimage-build-
 
@@ -96,6 +94,7 @@ jobs:
 
     - name: Load version from version.sh
       id: get_version
+      shell: bash
       run: |
         if [ ! -f version.sh ]; then
           echo "ERROR: version.sh not found"
