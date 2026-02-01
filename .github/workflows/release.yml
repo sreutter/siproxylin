@@ -119,6 +119,7 @@ jobs:
 
         # Create release with gh CLI
         gh release create "v${VERSION}" \
+          --repo ${{ github.repository }} \
           --title "Siproxylin ${VERSION}" \
           --notes-file release_notes.md \
           Siproxylin-${VERSION}-x86_64.AppImage
