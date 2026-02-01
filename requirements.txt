@@ -1,0 +1,44 @@
+# Siproxylin Requirements
+
+# GUI Framework
+PySide6>=6.6.0
+qasync  # Asyncio integration with Qt event loop
+
+# XMPP client library
+slixmpp>=1.8.0
+aiodns>=3.0.0  # DNS SRV lookups for slixmpp
+
+# HTTP client for file uploads (required by slixmpp xep_0363)
+aiohttp>=3.8.0
+
+# OMEMO encryption support
+slixmpp-omemo>=0.9.0
+omemo
+
+# Spell checking (optional feature)
+pyenchant>=3.2.0
+
+# Proxy support (optional feature - HTTP CONNECT and SOCKS5)
+python-socks[asyncio]>=2.4.0
+
+# Audio/Video Calls - Go Service + gRPC
+grpcio>=1.68.0
+grpcio-tools>=1.68.0  # For protobuf code generation
+
+# Audio/Video Calls - GStreamer (Legacy - Phase 1 archive)
+# NOTE: GStreamer + PyGObject are SYSTEM dependencies (cannot install via pip)
+# System packages required:
+#   sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-{base,good,bad} \
+#                    gstreamer1.0-nice python3-gi
+#
+# To use system python3-gi in venv, create venv with --system-site-packages:
+#   python3 -m venv --system-site-packages venv
+#
+# (No pip packages needed - using system GStreamer + python3-gi)
+
+# OLD - Being replaced by GStreamer (keep for now during migration)
+# aiortc>=1.6.0      # Pure-Python WebRTC implementation (DEPRECATED)
+# av>=10.0.0         # Audio/video processing (DEPRECATED)
+# pyee>=11.0.0       # Event emitter (DEPRECATED)
+# sounddevice>=0.5.0 # Cross-platform audio I/O (DEPRECATED)
+# numpy>=2.0.0       # Required by sounddevice (DEPRECATED)

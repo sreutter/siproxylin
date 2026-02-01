@@ -1,0 +1,482 @@
+/*
+ * DRUNK-XMPP-GUI - Gruvbox Theme
+ *
+ * Warm retro groove color scheme - cozy and reader friendly
+ * Based on morhetz/gruvbox color palette
+ * Font scaling: All font sizes are relative to {{BASE_FONT_SIZE}}pt
+ */
+
+/* =============================================================================
+ * GLOBAL DEFAULTS
+ * ============================================================================= */
+
+QWidget {
+    background-color: #3c3836;
+    color: #ebdbb2;
+    font-family: "Segoe UI", "DejaVu Sans", sans-serif;
+    font-size: {{BASE_FONT_SIZE}}pt;
+}
+
+QMainWindow {
+    background-color: #282828;
+}
+
+/* Tooltips - consistent small font for all tooltips */
+QToolTip {
+    background-color: #3c3836;
+    color: #ebdbb2;
+    border: 1px solid #504945;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 10pt;
+}
+
+/* =============================================================================
+ * CONTACT LIST / ROSTER
+ * ============================================================================= */
+
+ContactListWidget {
+    background-color: #32302f;
+    border-right: 1px solid #504945;
+}
+
+/* Search box in contact list */
+ContactListWidget QLineEdit {
+    background-color: #282828;
+    border: 1px solid #504945;
+    border-radius: 4px;
+    padding: 6px;
+    color: #ebdbb2;
+    font-size: {{BASE_FONT_SIZE}}pt;
+}
+
+ContactListWidget QLineEdit:focus {
+    border: 1px solid #fe8019;
+}
+
+/* Contact tree */
+ContactListWidget QTreeWidget {
+    background-color: #32302f;
+    border: none;
+    outline: none;
+    color: #ebdbb2;
+    font-size: {{BASE_FONT_SIZE}}pt;
+}
+
+ContactListWidget QTreeWidget::item {
+    padding: 6px;
+    border: none;
+}
+
+ContactListWidget QTreeWidget::item:hover {
+    background-color: #3c3836;
+}
+
+ContactListWidget QTreeWidget::item:selected {
+    background-color: #504945;
+    color: #fabd2f;
+}
+
+/* Bottom navigation bar buttons */
+ContactListWidget QToolButton#callLogButton,
+ContactListWidget QToolButton#contactsButton,
+ContactListWidget QToolButton#homeButton,
+ContactListWidget QToolButton#settingsButton {
+    background-color: #3c3836;
+    border: 1px solid #504945;
+    border-radius: 4px;
+    font-size: 18pt;
+    padding: 0px;
+}
+
+ContactListWidget QToolButton#callLogButton:hover,
+ContactListWidget QToolButton#contactsButton:hover,
+ContactListWidget QToolButton#homeButton:hover,
+ContactListWidget QToolButton#settingsButton:hover {
+    background-color: #504945;
+    border-color: #665c54;
+}
+
+/* =============================================================================
+ * CHAT VIEW - MESSAGE AREA
+ * ============================================================================= */
+
+ChatViewWidget {
+    background-color: #282828;
+}
+
+/* Chat header */
+ChatViewWidget QFrame#chatHeader {
+    background-color: transparent;
+    border: none;
+    border-bottom: 1px solid #504945;
+}
+
+ChatViewWidget QLabel#contactLabel {
+    color: #fabd2f;
+    font-weight: normal;
+    font-size: 12pt;
+    background-color: transparent;
+}
+
+ChatViewWidget QLabel#accountLabel {
+    color: #a89984;
+    font-size: 9pt;
+    background-color: transparent;
+}
+
+/* Spell check button - larger font for flag emoji */
+ChatViewWidget QToolButton#spellCheckButton {
+    background-color: #3c3836;
+    border: 1px solid #504945;
+    border-radius: 4px;
+    font-size: 18pt;
+    padding: 0px;
+}
+
+ChatViewWidget QToolButton#spellCheckButton:hover {
+    background-color: #504945;
+    border-color: #665c54;
+}
+
+/* Header separator (vertical line) */
+ChatViewWidget QFrame#headerSeparator {
+    color: #504945;
+    margin: 4px 8px;
+}
+
+ChatViewWidget QToolButton#headerEncryptionButton {
+    background-color: #3c3836;
+    border: 1px solid #504945;
+    border-radius: 4px;
+    font-size: 18pt;
+    padding: 0px;
+}
+
+ChatViewWidget QToolButton#headerEncryptionButton:hover {
+    background-color: #504945;
+    border-color: #665c54;
+}
+
+ChatViewWidget QToolButton#headerEncryptionButton:checked {
+    background-color: #79740e;
+    border-color: #98971a;
+}
+
+ChatViewWidget QToolButton#headerEncryptionButton:!checked {
+    background-color: #9d0006;
+    border-color: #cc241d;
+}
+
+ChatViewWidget QToolButton#infoButton {
+    background-color: #3c3836;
+    border: 1px solid #504945;
+    border-radius: 4px;
+    color: #fabd2f;
+    font-size: 14pt;
+    padding: 4px;
+}
+
+ChatViewWidget QToolButton#infoButton:hover {
+    background-color: #504945;
+    border-color: #665c54;
+}
+
+/* Message display area */
+ChatViewWidget QTextEdit#messageArea {
+    background-color: #282828;
+    border: none;
+    color: #ebdbb2;
+    font-size: {{BASE_FONT_SIZE}}pt;
+    padding: 10px;
+}
+
+ChatViewWidget QTextEdit#messageArea {
+    selection-background-color: #504945;
+    selection-color: #fabd2f;
+}
+
+/* =============================================================================
+ * CHAT VIEW - INPUT AREA
+ * ============================================================================= */
+
+/* Input frame container */
+ChatViewWidget QFrame#inputFrame {
+    background-color: #32302f;
+    border-top: 1px solid #504945;
+}
+
+/* Message input field */
+ChatViewWidget QTextEdit#inputField {
+    background-color: #282828;
+    border: 1px solid #504945;
+    border-radius: 4px;
+    padding: 8px;
+    color: #ebdbb2;
+    font-size: {{BASE_FONT_SIZE}}pt;
+}
+
+ChatViewWidget QTextEdit#inputField:focus {
+    border: 1px solid #fe8019;
+}
+
+/* OMEMO encryption toggle button */
+ChatViewWidget QToolButton#encryptionButton {
+    background-color: transparent;
+    border: 2px solid #b8bb26;
+    border-radius: 3px;
+    padding: 0px;
+    font-size: 16pt;
+    min-width: 28px;
+    min-height: 28px;
+    max-width: 28px;
+    max-height: 28px;
+}
+
+ChatViewWidget QToolButton#encryptionButton:checked {
+    border-color: #b8bb26;
+    background-color: rgba(184, 187, 38, 0.1);
+}
+
+ChatViewWidget QToolButton#encryptionButton:!checked {
+    border-color: #fb4934;
+    background-color: rgba(251, 73, 52, 0.1);
+}
+
+ChatViewWidget QToolButton#encryptionButton:hover {
+    background-color: rgba(251, 128, 25, 0.05);
+}
+
+/* Send button */
+ChatViewWidget QToolButton#attachButton {
+    background-color: #fe8019;
+    border: none;
+    border-radius: 4px;
+    color: #282828;
+    font-size: 16pt;
+    padding: 8px 4px;
+    min-width: 40px;
+}
+
+ChatViewWidget QToolButton#attachButton:hover {
+    background-color: #fabd2f;
+}
+
+ChatViewWidget QToolButton#attachButton:pressed {
+    background-color: #d65d0e;
+}
+
+ChatViewWidget QToolButton#attachButton:disabled {
+    background-color: #504945;
+    color: #7c6f64;
+}
+
+ChatViewWidget QToolButton#emojiButton {
+    background-color: #fe8019;
+    border: none;
+    border-radius: 4px;
+    font-size: 18pt;
+    padding: 0px;
+    min-width: 40px;
+}
+
+ChatViewWidget QToolButton#emojiButton:hover {
+    background-color: #fabd2f;
+}
+
+ChatViewWidget QToolButton#emojiButton:pressed {
+    background-color: #d65d0e;
+}
+
+ChatViewWidget QToolButton#emojiButton:disabled {
+    background-color: #504945;
+    color: #7c6f64;
+}
+
+ChatViewWidget QPushButton#sendButton {
+    background-color: #fe8019;
+    border: none;
+    border-radius: 4px;
+    color: #282828;
+    font-weight: bold;
+    font-size: {{BASE_FONT_SIZE}}pt;
+    padding: 8px 16px;
+    min-width: 80px;
+}
+
+ChatViewWidget QPushButton#sendButton:hover {
+    background-color: #fabd2f;
+}
+
+ChatViewWidget QPushButton#sendButton:pressed {
+    background-color: #d65d0e;
+}
+
+ChatViewWidget QPushButton#sendButton:disabled {
+    background-color: #504945;
+    color: #7c6f64;
+}
+
+/* =============================================================================
+ * STATUS BAR
+ * ============================================================================= */
+
+QStatusBar {
+    background-color: #32302f;
+    border-top: 1px solid #504945;
+    color: #a89984;
+    font-size: 8pt !important;
+}
+
+QStatusBar QLabel {
+    background-color: transparent;
+    color: #a89984;
+    padding: 2px 10px;
+    font-size: 8pt !important;
+}
+
+/* Account status labels with connection indicator */
+QStatusBar QLabel[connectedStatus="true"] {
+    color: #b8bb26;
+}
+
+QStatusBar QLabel[connectedStatus="false"] {
+    color: #7c6f64;
+}
+
+/* =============================================================================
+ * COMMON WIDGETS (Menu, Dialogs, etc.)
+ * ============================================================================= */
+
+/* Menu bar */
+QMenuBar {
+    background-color: #32302f;
+    color: #ebdbb2;
+    border-bottom: 1px solid #504945;
+}
+
+QMenuBar::item {
+    background-color: transparent;
+    padding: 6px 12px;
+}
+
+QMenuBar::item:selected {
+    background-color: #3c3836;
+}
+
+QMenuBar::item:pressed {
+    background-color: #504945;
+    color: #fabd2f;
+}
+
+/* Menu dropdown */
+QMenu {
+    background-color: #32302f;
+    border: 1px solid #504945;
+    color: #ebdbb2;
+}
+
+QMenu::item {
+    padding: 6px 30px 6px 20px;
+}
+
+QMenu::item:selected {
+    background-color: #504945;
+    color: #fabd2f;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: #504945;
+    margin: 4px 0;
+}
+
+/* Buttons (generic) */
+QPushButton {
+    background-color: #504945;
+    border: none;
+    border-radius: 4px;
+    color: #ebdbb2;
+    padding: 6px 16px;
+    font-size: {{BASE_FONT_SIZE}}pt;
+}
+
+QPushButton:hover {
+    background-color: #665c54;
+}
+
+QPushButton:pressed {
+    background-color: #3c3836;
+}
+
+QPushButton:disabled {
+    background-color: #3c3836;
+    color: #7c6f64;
+}
+
+/* Line edits (generic) */
+QLineEdit {
+    background-color: #282828;
+    border: 1px solid #504945;
+    border-radius: 4px;
+    padding: 6px;
+    color: #ebdbb2;
+    selection-background-color: #504945;
+}
+
+QLineEdit:focus {
+    border: 1px solid #fe8019;
+}
+
+/* Splitter handle */
+QSplitter::handle {
+    background-color: #504945;
+    width: 2px;
+}
+
+QSplitter::handle:hover {
+    background-color: #fe8019;
+}
+
+/* Scrollbars */
+QScrollBar:vertical {
+    background-color: #282828;
+    width: 12px;
+    border: none;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #504945;
+    border-radius: 6px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #665c54;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    background-color: #282828;
+    height: 12px;
+    border: none;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #504945;
+    border-radius: 6px;
+    min-width: 20px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #665c54;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0px;
+}

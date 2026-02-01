@@ -1,0 +1,92 @@
+name: Build and Release AppImage
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v0.0.3
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-22.04  # GitHub Actions only supports Ubuntu runners, not Debian
+    container:
+      image: debian:bookworm  # Run inside Debian container
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gstreamer1.0-plugins-base \
+          gstreamer1.0-plugins-good \
+          gstreamer1.0-plugins-bad \
+          gstreamer1.0-tools \
+          libgstreamer1.0-dev \
+          libgstreamer-plugins-base1.0-dev \
+          qt6-base-dev \
+          libpulse-dev \
+          imagemagick \
+          wget \
+          file \
+          desktop-file-utils
+
+    - name: Install appimage-builder
+      run: |
+        sudo apt-get install -y python3-pip
+        pip install appimage-builder
+
+    - name: Build AppImage
+      run: |
+        chmod +x build-appimage.sh
+        ./build-appimage.sh
+
+    - name: Get version from tag
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Siproxylin ${{ steps.get_version.outputs.VERSION }}
+        draft: false
+        prerelease: false
+        body: |
+          # Siproxylin ${{ steps.get_version.outputs.VERSION }}
+
+          ## Download
+
+          Download the AppImage below and make it executable:
+          ```bash
+          chmod +x Siproxylin-${{ steps.get_version.outputs.VERSION }}-x86_64.AppImage
+          ./Siproxylin-${{ steps.get_version.outputs.VERSION }}-x86_64.AppImage
+          ```
+
+          ## What's New
+
+          See the [changelog](https://github.com/${{ github.repository }}/releases) for details.
+
+    - name: Upload AppImage to Release
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./Siproxylin-${{ steps.get_version.outputs.VERSION }}-x86_64.AppImage
+        asset_name: Siproxylin-${{ steps.get_version.outputs.VERSION }}-x86_64.AppImage
+        asset_content_type: application/octet-stream

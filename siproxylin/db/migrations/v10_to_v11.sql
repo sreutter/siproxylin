@@ -1,0 +1,19 @@
+-- Migration v10 to v11: Align call state values with Dino compatibility
+--
+-- Background: Implementing Phase 4 (Call Log & Chat UX) - aligning with Dino's call state model
+--
+-- State value changes (Dino-compatible):
+-- - 0 = RINGING (call proposal sent/received)
+-- - 1 = ESTABLISHING (ICE/DTLS negotiation)
+-- - 2 = IN_PROGRESS (call connected)
+-- - 3 = OTHER_DEVICE (handled on another device)
+-- - 4 = ENDED (call ended normally)
+-- - 5 = DECLINED (call declined/rejected)
+-- - 6 = MISSED (call missed/not answered)
+-- - 7 = FAILED (technical error)
+--
+-- Note: No data migration needed - call table not yet populated (Phase 1-3 did not log calls)
+-- This migration updates documentation only to prepare for Phase 4 implementation.
+
+-- No actual schema changes - state values documented in comments only
+-- Call logging implementation will use the new state values from constants.CallState

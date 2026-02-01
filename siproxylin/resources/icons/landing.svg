@@ -1,0 +1,189 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500">
+
+  <!-- Background -->
+  <rect width="500" height="500" fill="#F5F5F0"/>
+
+  <!-- Define heart-shaped clipping path -->
+  <defs>
+    <clipPath id="heartClip">
+      <!-- Heart shape centered, moved 15% to the right -->
+      <path d="M 250,180
+               C 250,160 230,140 210,140
+               C 180,140 165,160 165,185
+               C 165,200 170,210 180,220
+               L 250,290
+               L 320,220
+               C 330,210 335,200 335,185
+               C 335,160 320,140 290,140
+               C 270,140 250,160 250,180 Z"
+            transform="scale(1.8) translate(-110, -60)"/>
+    </clipPath>
+  </defs>
+
+  <!-- Brick wall with heart clip -->
+  <g clip-path="url(#heartClip)">
+
+    <!-- Row 1 (bottom) -->
+    <rect x="0" y="440" width="90" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.5 45 457.5)"/>
+    <text x="45" y="462" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.5 45 462)">XEP-0030</text>
+
+    <rect x="95" y="442" width="88" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.8 139 459.5)"/>
+    <text x="139" y="464" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(1.8 139 464)">XEP-0092</text>
+
+    <rect x="188" y="440" width="86" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-2 231 457.5)"/>
+    <text x="231" y="462" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-2 231 462)">XEP-0115</text>
+
+    <rect x="279" y="442" width="90" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.2 324 459.5)"/>
+    <text x="324" y="464" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(2.2 324 464)">XEP-0363</text>
+
+    <rect x="374" y="440" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.2 418 457.5)"/>
+    <text x="418" y="462" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.2 418 462)">XEP-0384</text>
+
+    <rect x="467" y="442" width="45" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.5 489.5 459.5)"/>
+
+    <!-- Row 2 -->
+    <rect x="-45" y="398" width="90" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2 0 415.5)"/>
+
+    <rect x="50" y="396" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.8 94 413.5)"/>
+    <text x="94" y="418" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.8 94 418)">XEP-0085</text>
+
+    <rect x="143" y="398" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.3 186 415.5)"/>
+    <text x="186" y="420" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(2.3 186 420)">XEP-0163</text>
+
+    <rect x="234" y="396" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.5 278 413.5)"/>
+    <text x="278" y="418" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.5 278 418)">XEP-0184</text>
+
+    <rect x="327" y="398" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.9 370 415.5)"/>
+    <text x="370" y="420" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(1.9 370 420)">XEP-0198</text>
+
+    <rect x="418" y="396" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-2.1 462 413.5)"/>
+    <text x="462" y="418" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-2.1 462 418)">XEP-0280</text>
+
+    <rect x="511" y="398" width="45" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.7 533.5 415.5)"/>
+
+    <!-- Row 3 -->
+    <rect x="5" y="354" width="90" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-2.2 50 371.5)"/>
+    <text x="50" y="376" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-2.2 50 376)">XEP-0313</text>
+
+    <rect x="100" y="352" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.6 143 369.5)"/>
+    <text x="143" y="374" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(1.6 143 374)">XEP-0333</text>
+
+    <rect x="191" y="354" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.9 235 371.5)"/>
+    <text x="235" y="376" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.9 235 376)">XEP-0402</text>
+
+    <rect x="284" y="352" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.4 327 369.5)"/>
+    <text x="327" y="374" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(2.4 327 374)">XEP-0308</text>
+
+    <rect x="375" y="354" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.4 419 371.5)"/>
+    <text x="419" y="376" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.4 419 376)">XEP-0444</text>
+
+    <rect x="468" y="352" width="45" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.8 490.5 369.5)"/>
+
+    <!-- Row 4 -->
+    <rect x="-40" y="310" width="85" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.1 2.5 327.5)"/>
+
+    <rect x="50" y="308" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-2.3 94 325.5)"/>
+    <text x="94" y="330" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-2.3 94 330)">XEP-0461</text>
+
+    <rect x="143" y="310" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.7 186 327.5)"/>
+    <text x="186" y="332" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(1.7 186 332)">XEP-0045</text>
+
+    <rect x="234" y="308" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.6 278 325.5)"/>
+    <text x="278" y="330" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.6 278 330)">XEP-0199</text>
+
+    <rect x="327" y="310" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.2 370 327.5)"/>
+    <text x="370" y="332" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(2.2 370 332)">XEP-0191</text>
+
+    <rect x="418" y="308" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.8 462 325.5)"/>
+    <text x="462" y="330" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.8 462 330)">XEP-0107</text>
+
+    <rect x="511" y="310" width="45" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.5 533.5 327.5)"/>
+
+    <!-- Row 5 -->
+    <rect x="8" y="266" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-2 52 283.5)"/>
+    <text x="52" y="288" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-2 52 288)">XEP-0172</text>
+
+    <rect x="101" y="264" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.9 144 281.5)"/>
+    <text x="144" y="286" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(1.9 144 286)">XEP-0054</text>
+
+    <rect x="192" y="266" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.7 236 283.5)"/>
+    <text x="236" y="288" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.7 236 288)">XEP-0084</text>
+
+    <rect x="285" y="264" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.3 328 281.5)"/>
+    <text x="328" y="286" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(2.3 328 286)">XEP-0153</text>
+
+    <rect x="376" y="266" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.5 420 283.5)"/>
+    <text x="420" y="288" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.5 420 288)">XEP-0368</text>
+
+    <rect x="469" y="264" width="45" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.8 491.5 281.5)"/>
+
+    <!-- Row 6 -->
+    <rect x="-38" y="222" width="83" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2 3.5 239.5)"/>
+
+    <rect x="50" y="220" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-2.1 94 237.5)"/>
+    <text x="94" y="242" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-2.1 94 242)">XEP-0352</text>
+
+    <rect x="143" y="222" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.6 186 239.5)"/>
+    <text x="186" y="244" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(1.6 186 244)">XEP-0280</text>
+
+    <rect x="234" y="220" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.9 278 237.5)"/>
+    <text x="278" y="242" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.9 278 242)">XEP-0191</text>
+
+    <rect x="327" y="222" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.4 370 239.5)"/>
+    <text x="370" y="244" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(2.4 370 244)">XEP-0107</text>
+
+    <rect x="418" y="220" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.4 462 237.5)"/>
+    <text x="462" y="242" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.4 462 242)">XEP-0172</text>
+
+    <rect x="511" y="222" width="45" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.7 533.5 239.5)"/>
+
+    <!-- Row 7 -->
+    <rect x="10" y="178" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-2.2 54 195.5)"/>
+    <text x="54" y="200" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-2.2 54 200)">XEP-0054</text>
+
+    <rect x="103" y="176" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.8 146 193.5)"/>
+    <text x="146" y="198" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(1.8 146 198)">XEP-0084</text>
+
+    <rect x="194" y="178" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.6 238 195.5)"/>
+    <text x="238" y="200" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.6 238 200)">XEP-0153</text>
+
+    <rect x="287" y="176" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.1 330 193.5)"/>
+    <text x="330" y="198" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(2.1 330 198)">XEP-0368</text>
+
+    <rect x="378" y="178" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.9 422 195.5)"/>
+    <text x="422" y="200" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.9 422 200)">XEP-0352</text>
+
+    <rect x="471" y="176" width="45" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.5 493.5 193.5)"/>
+
+    <!-- Row 8 -->
+    <rect x="-35" y="134" width="80" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.3 5 151.5)"/>
+
+    <rect x="50" y="132" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-2 94 149.5)"/>
+    <text x="94" y="154" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-2 94 154)">XEP-0092</text>
+
+    <rect x="143" y="134" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.7 186 151.5)"/>
+    <text x="186" y="156" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(1.7 186 156)">XEP-0030</text>
+
+    <rect x="234" y="132" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.8 278 149.5)"/>
+    <text x="278" y="154" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.8 278 154)">XEP-0115</text>
+
+    <rect x="327" y="134" width="86" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(2.2 370 151.5)"/>
+    <text x="370" y="156" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(2.2 370 156)">XEP-0363</text>
+
+    <rect x="418" y="132" width="88" height="35" rx="2" fill="#B85C50" stroke="#8B4544" stroke-width="2" transform="rotate(-1.5 462 149.5)"/>
+    <text x="462" y="154" font-family="monospace" font-size="13" font-weight="bold" fill="#F4E4D7" text-anchor="middle" transform="rotate(-1.5 462 154)">XEP-0384</text>
+
+    <rect x="511" y="134" width="45" height="35" rx="2" fill="#A85548" stroke="#8B4544" stroke-width="2" transform="rotate(1.9 533.5 151.5)"/>
+
+  </g>
+
+  <!-- Welcome text at top -->
+  <text x="250" y="50" font-family="'Segoe UI', Arial, sans-serif" font-size="36" font-weight="300" fill="#2C3E50" text-anchor="middle" opacity="0.85">
+    Welcome to Siproxylin
+  </text>
+
+  <text x="250" y="80" font-family="'Segoe UI', Arial, sans-serif" font-size="16" font-weight="300" fill="#5D4E37" text-anchor="middle" opacity="0.7">
+    Built with ❤️ and XMPP standards
+  </text>
+
+</svg>

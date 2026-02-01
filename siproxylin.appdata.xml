@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.siproxylin</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Siproxylin</name>
+  <summary>Privacy-focused XMPP client with per-account proxy support</summary>
+
+  <description>
+    <p>
+      Siproxylin is a modern, privacy-focused XMPP (Jabber) desktop client for Linux.
+      Built with privacy in mind, it supports per-account HTTP/SOCKS5 proxies and
+      enforced call relaying to protect your identity.
+    </p>
+    <p>Key Features:</p>
+    <ul>
+      <li>Per-account HTTP/SOCKS5 proxy support (Tor, VPN, custom proxies)</li>
+      <li>Enforced call relaying for IP address protection</li>
+      <li>OMEMO encryption (XEP-0384) for end-to-end security</li>
+      <li>Audio calls via Jingle (XEP-0166/0167)</li>
+      <li>Multi-user chat (MUC) support</li>
+      <li>File transfers with HTTP Upload</li>
+      <li>Message editing, reactions, and replies</li>
+      <li>Message Archive Management (MAM)</li>
+      <li>Multi-language spell checking (en, de, ru, lt, es, ro, ar)</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">siproxylin.desktop</launchable>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main chat window with OMEMO encryption</caption>
+    </screenshot>
+  </screenshots>
+
+  <url type="homepage">https://github.com/yourusername/siproxylin</url>
+  <url type="bugtracker">https://github.com/yourusername/siproxylin/issues</url>
+
+  <provides>
+    <binary>siproxylin</binary>
+  </provides>
+
+  <releases>
+    <release version="dev" date="2026-01-03">
+      <description>
+        <p>Development build with AppImage packaging and multi-language support</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+  </content_rating>
+</component>
