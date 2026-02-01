@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'  # Trigger on version tags like v0.0.3
 
+permissions:
+  contents: write
+
 jobs:
   build-appimage:
     runs-on: ubuntu-22.04  # GitHub Actions only supports Ubuntu runners, not Debian
@@ -14,6 +17,18 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Cache AppImage build artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          .package-builder-apt
+          AppDir
+          appimagetool-x86_64.AppImage
+          appimage-build
+        key: appimage-build-${{ hashFiles('requirements.txt', 'appimage.yml') }}
+        restore-keys: |
+          appimage-build-
 
     - name: Install system dependencies
       run: |
