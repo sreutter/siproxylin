@@ -134,6 +134,7 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         VERSION="${{ steps.get_version.outputs.VERSION }}"
+        TAG="${{ github.ref_name }}"
 
         # Create release notes
         cat > release_notes.md << 'EOF'
@@ -152,8 +153,8 @@ jobs:
         See the [changelog](https://github.com/${{ github.repository }}/releases) for details.
         EOF
 
-        # Create release with gh CLI
-        gh release create "v${VERSION}" \
+        # Create release for the existing tag (pushed by user)
+        gh release create "${TAG}" \
           --repo ${{ github.repository }} \
           --title "Siproxylin ${VERSION}" \
           --notes-file release_notes.md \
