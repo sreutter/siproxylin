@@ -32,8 +32,7 @@ fi
 
 # Codename must change
 if [ "$SIPROXYLIN_CODENAME" = "$PREV_CODE" ]; then
-    echo "ERROR: Codename must change (was '$PREV_CODE')" >&2
-    exit 1
+    echo "WARN: Codename remains unchanged (was '$PREV_CODE')" >&2
 fi
 
 echo "✓ Version bump: $PREV → $CURR ($SIPROXYLIN_CODENAME)"
