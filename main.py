@@ -6,21 +6,12 @@ Main entry point for the application.
 """
 
 import sys
+import os
 import argparse
 from pathlib import Path
 
 # Add project root to path for drunk-xmpp.py import
 sys.path.insert(0, str(Path(__file__).parent))
-
-from PySide6.QtWidgets import QApplication, QToolTip
-from PySide6.QtCore import Qt
-import qasync
-import asyncio
-
-from siproxylin.utils import setup_main_logger, get_paths
-from siproxylin.db.database import get_db
-from siproxylin.gui.main_window import MainWindow
-from siproxylin.core import get_account_manager
 
 
 def parse_args():
@@ -56,14 +47,24 @@ def main():
     """Main application entry point."""
     args = parse_args()
 
-    # Set path mode based on arguments
+    # Set path mode based on arguments BEFORE importing siproxylin modules
+    # (paths.py reads PATH_MODE at import time, so this must happen first)
     if args.dot_data_dir:
-        import os
         os.environ['SIPROXYLIN_PATH_MODE'] = 'dot'
     elif args.xdg:
-        import os
         os.environ['SIPROXYLIN_PATH_MODE'] = 'xdg'
     # else: defaults to 'dev' mode
+
+    # NOW import siproxylin modules (after PATH_MODE is set)
+    from PySide6.QtWidgets import QApplication, QToolTip
+    from PySide6.QtCore import Qt
+    import qasync
+    import asyncio
+
+    from siproxylin.utils import setup_main_logger, get_paths
+    from siproxylin.db.database import get_db
+    from siproxylin.gui.main_window import MainWindow
+    from siproxylin.core import get_account_manager
 
     # Get paths first (needed for config loading)
     paths = get_paths(args.profile)
