@@ -5,7 +5,6 @@ Shows room information, participants, and settings with a tabbed interface.
 """
 
 import asyncio
-import base64
 import logging
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -16,7 +15,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 
-from ..db.database import get_db
 from ..core import get_account_manager
 from ..utils.avatar import get_avatar_pixmap
 
@@ -34,7 +32,6 @@ class MUCDetailsDialog(QDialog):
         super().__init__(parent)
         self.account_id = account_id
         self.room_jid = room_jid
-        self.db = get_db()
         self.account_manager = get_account_manager()
 
         # Auto-refresh timer for participant list
@@ -43,14 +40,13 @@ class MUCDetailsDialog(QDialog):
         self.refresh_attempts = 0
         self.max_refresh_attempts = 15  # Stop after 30 seconds (15 * 2s)
 
-        # Get room name from bookmarks
-        room_info = self.db.fetchone("""
-            SELECT b.name FROM bookmark b
-            JOIN jid j ON b.jid_id = j.id
-            WHERE b.account_id = ? AND j.bare_jid = ?
-        """, (account_id, room_jid))
-
-        room_name = room_info['name'] if (room_info and room_info['name']) else room_jid
+        # Get room name using barrel API
+        account = self.account_manager.get_account(account_id)
+        room_name = room_jid
+        if account:
+            room_info = account.muc.get_room_info(room_jid)
+            if room_info and room_info.name:
+                room_name = room_info.name
 
         self.setWindowTitle(f"Room Details - {room_name}")
         self.setMinimumSize(700, 550)
@@ -285,22 +281,66 @@ class MUCDetailsDialog(QDialog):
         return tab
 
     def _load_room_info(self):
-        """Load and display room information from database."""
-        # Get room info from bookmarks
-        room_data = self.db.fetchone("""
-            SELECT b.name, j.bare_jid
-            FROM bookmark b
-            JOIN jid j ON b.jid_id = j.id
-            WHERE b.account_id = ? AND j.bare_jid = ?
-        """, (self.account_id, self.room_jid))
+        """Load and display room information using barrel API."""
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            logger.warning(f"Account {self.account_id} not found")
+            return
 
-        if room_data:
-            room_name = room_data['name'] or room_data['bare_jid']
-            self.room_name_label.setText(room_name)
-            self.room_jid_label.setText(room_data['bare_jid'])
+        # Use barrel API to get room info
+        room_info = account.muc.get_room_info(self.room_jid)
+
+        if room_info:
+            # Display room name and JID
+            self.room_name_label.setText(room_info.name or self.room_jid)
+            self.room_jid_label.setText(room_info.jid)
+
+            # Display features
+            self.nonanonymous_label.setText("✅ Yes" if room_info.nonanonymous else "❌ No")
+            self.members_only_label.setText("✅ Yes" if room_info.membersonly else "❌ No")
+            self.persistent_label.setText("✅ Yes" if room_info.persistent else "❌ No" if room_info.config_fetched else "❓ Unknown")
+            self.password_protected_label.setText("✅ Yes" if room_info.password_protected else "❌ No" if room_info.config_fetched else "❓ Unknown")
+            self.public_label.setText("✅ Yes" if room_info.public else "❌ No" if room_info.config_fetched else "❓ Unknown")
+            self.moderated_label.setText("✅ Yes" if room_info.moderated else "❌ No" if room_info.config_fetched else "❓ Unknown")
+
+            # OMEMO compatibility
+            if room_info.omemo_compatible:
+                self.omemo_compatible_label.setText("✅ This room supports OMEMO encryption")
+                self.omemo_compatible_label.setStyleSheet("color: green;")
+            else:
+                self.omemo_compatible_label.setText("⚠️ This room does NOT support OMEMO encryption")
+                self.omemo_compatible_label.setStyleSheet("color: orange;")
+
+                # Explain why
+                if not room_info.nonanonymous:
+                    reason = QLabel("Reason: Room is anonymous (must be non-anonymous for OMEMO)")
+                    reason.setStyleSheet("color: gray; font-size: 9pt;")
+                    self.omemo_compatible_label.parent().layout().addWidget(reason)
+                elif not room_info.membersonly:
+                    reason = QLabel("Reason: Room is open (should be members-only for OMEMO)")
+                    reason.setStyleSheet("color: gray; font-size: 9pt;")
+                    self.omemo_compatible_label.parent().layout().addWidget(reason)
+
+            # Display subject/description
+            if room_info.subject:
+                self.subject_label.setText(room_info.subject)
+            else:
+                self.subject_label.setText("(Subject not yet available)")
+
         else:
+            # No room info found - show defaults
             self.room_name_label.setText(self.room_jid)
             self.room_jid_label.setText(self.room_jid)
+            self.persistent_label.setText("❓ Unknown")
+            self.members_only_label.setText("❓ Unknown")
+            self.password_protected_label.setText("❓ Unknown")
+            self.public_label.setText("❓ Unknown")
+            self.moderated_label.setText("❓ Unknown")
+            self.nonanonymous_label.setText("❓ Unknown")
+            self.omemo_compatible_label.setText("❓ Room features not yet discovered")
+            self.omemo_compatible_label.setStyleSheet("color: gray;")
+            self.subject_label.setText("(Subject not yet available)")
 
         # Load avatar
         try:
@@ -313,80 +353,11 @@ class MUCDetailsDialog(QDialog):
         except Exception as e:
             logger.error(f"Failed to load avatar: {e}")
 
-        # Get conversation data (includes room features)
-        jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (self.room_jid,))
-        if not jid_row:
-            logger.warning(f"JID {self.room_jid} not found in database")
-            return
-
-        jid_id = jid_row['id']
-        conv = self.db.fetchone("""
-            SELECT
-                type,
-                muc_nonanonymous,
-                muc_membersonly
-            FROM conversation
-            WHERE account_id = ? AND jid_id = ? AND type = 1
-        """, (self.account_id, jid_id))
-
-        if conv:
-            # Get MUC features from conversation
-            muc_nonanonymous = bool(conv['muc_nonanonymous'] or 0)
-            muc_membersonly = bool(conv['muc_membersonly'] or 0)
-
-            # For now, we only have nonanonymous and membersonly from conversation table
-            # Other features would need to be queried via disco#info
-            # TODO: Query room features via DrunkXMPP.get_room_features() and cache them
-
-            self.nonanonymous_label.setText("✅ Yes" if muc_nonanonymous else "❌ No")
-            self.members_only_label.setText("✅ Yes" if muc_membersonly else "❌ No")
-
-            # Placeholder values for other features (not yet stored)
-            self.persistent_label.setText("❓ Unknown")
-            self.password_protected_label.setText("❓ Unknown")
-            self.public_label.setText("❓ Unknown")
-            self.moderated_label.setText("❓ Unknown")
-
-            # OMEMO compatibility
-            omemo_compatible = muc_nonanonymous and muc_membersonly
-            if omemo_compatible:
-                self.omemo_compatible_label.setText("✅ This room supports OMEMO encryption")
-                self.omemo_compatible_label.setStyleSheet("color: green;")
-            else:
-                self.omemo_compatible_label.setText("⚠️ This room does NOT support OMEMO encryption")
-                self.omemo_compatible_label.setStyleSheet("color: orange;")
-
-                # Explain why
-                if not muc_nonanonymous:
-                    reason = QLabel("Reason: Room is anonymous (must be non-anonymous for OMEMO)")
-                    reason.setStyleSheet("color: gray; font-size: 9pt;")
-                    self.omemo_compatible_label.parent().layout().addWidget(reason)
-                elif not muc_membersonly:
-                    reason = QLabel("Reason: Room is open (should be members-only for OMEMO)")
-                    reason.setStyleSheet("color: gray; font-size: 9pt;")
-                    self.omemo_compatible_label.parent().layout().addWidget(reason)
-        else:
-            # No conversation found - show unknowns
-            self.persistent_label.setText("❓ Unknown")
-            self.members_only_label.setText("❓ Unknown")
-            self.password_protected_label.setText("❓ Unknown")
-            self.public_label.setText("❓ Unknown")
-            self.moderated_label.setText("❓ Unknown")
-            self.nonanonymous_label.setText("❓ Unknown")
-            self.omemo_compatible_label.setText("❓ Room features not yet discovered")
-            self.omemo_compatible_label.setStyleSheet("color: gray;")
-
-        # TODO: Load room subject from somewhere (not currently stored)
-        self.subject_label.setText("(Subject not yet available)")
-
     def _load_participants(self):
         """
-        Load and display room participants from DrunkXMPP's in-memory roster.
-
-        Per standard XMPP architecture: Presence is ephemeral and queried from live XMPP stream,
-        not stored in database. slixmpp's XEP-0045 plugin maintains roster in memory.
+        Load and display room participants using barrel API.
         """
-        # Get account client
+        # Get account
         account = self.account_manager.get_account(self.account_id)
         if not account or not account.client:
             self.sync_notice_label.setVisible(False)
@@ -398,11 +369,10 @@ class MUCDetailsDialog(QDialog):
             # Check if we've fully joined the room
             room_joined = self.room_jid in account.client.joined_rooms
 
-            # Query slixmpp's in-memory MUC roster (XEP-0045)
-            xep_0045 = account.client.plugin['xep_0045']
+            # Use barrel API to get participants
+            participants = account.muc.get_participants(self.room_jid)
 
-            roster = xep_0045.get_roster(self.room_jid)
-            if not roster:
+            if not participants:
                 # Determine appropriate message based on join state
                 if not room_joined:
                     message = "⏳ Joining room... Please wait."
@@ -425,30 +395,6 @@ class MUCDetailsDialog(QDialog):
             self.refresh_timer.stop()
             self.sync_notice_label.setVisible(False)
 
-            # Convert roster dict to list of participant dicts with role/affiliation
-            from slixmpp.jid import JID
-            room_jid_obj = JID(self.room_jid)
-            participants = []
-
-            for nick in roster:
-                # Get real JID if available (depends on room configuration)
-                real_jid_str = xep_0045.get_jid_property(room_jid_obj, nick, 'jid')
-                bare_jid = str(real_jid_str).split('/')[0] if real_jid_str else None
-
-                # Get role and affiliation from presence
-                role = xep_0045.get_jid_property(room_jid_obj, nick, 'role') or 'participant'
-                affiliation = xep_0045.get_jid_property(room_jid_obj, nick, 'affiliation') or 'none'
-
-                participants.append({
-                    'nick': nick,
-                    'bare_jid': bare_jid,
-                    'role': role,
-                    'affiliation': affiliation
-                })
-
-            # Sort by nickname (case-insensitive)
-            participants.sort(key=lambda p: p['nick'].lower())
-
         except Exception as e:
             logger.error(f"Failed to load MUC roster: {e}")
             import traceback
@@ -463,8 +409,8 @@ class MUCDetailsDialog(QDialog):
         unique_jids = set()
         anonymous_count = 0
         for p in participants:
-            if p['bare_jid']:
-                unique_jids.add(p['bare_jid'])
+            if p.jid:
+                unique_jids.add(p.jid)
             else:
                 # Anonymous room or JID not available
                 anonymous_count += 1
@@ -478,25 +424,25 @@ class MUCDetailsDialog(QDialog):
 
         for row_idx, participant in enumerate(participants):
             # Nickname
-            nick_item = QTableWidgetItem(participant['nick'])
+            nick_item = QTableWidgetItem(participant.nick)
             nick_item.setFlags(nick_item.flags() & ~Qt.ItemIsEditable)
             self.participants_table.setItem(row_idx, 0, nick_item)
 
             # JID (if known - depends on room being non-anonymous)
-            jid_text = participant['bare_jid'] if participant['bare_jid'] else "(hidden)"
+            jid_text = participant.jid if participant.jid else "(hidden)"
             jid_item = QTableWidgetItem(jid_text)
             jid_item.setFlags(jid_item.flags() & ~Qt.ItemIsEditable)
-            if not participant['bare_jid']:
+            if not participant.jid:
                 jid_item.setForeground(Qt.gray)
             self.participants_table.setItem(row_idx, 1, jid_item)
 
             # Role (from live presence)
-            role_item = QTableWidgetItem(participant['role'])
+            role_item = QTableWidgetItem(participant.role)
             role_item.setFlags(role_item.flags() & ~Qt.ItemIsEditable)
             self.participants_table.setItem(row_idx, 2, role_item)
 
             # Affiliation (from live presence)
-            affiliation_item = QTableWidgetItem(participant['affiliation'])
+            affiliation_item = QTableWidgetItem(participant.affiliation)
             affiliation_item.setFlags(affiliation_item.flags() & ~Qt.ItemIsEditable)
             self.participants_table.setItem(row_idx, 3, affiliation_item)
 
@@ -538,154 +484,39 @@ class MUCDetailsDialog(QDialog):
         self._load_participants()
 
     def _load_settings(self):
-        """Load local settings from database."""
-        # Get conversation
-        jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (self.room_jid,))
-        if not jid_row:
+        """Load local settings using barrel API."""
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
             return
 
-        jid_id = jid_row['id']
-        conv = self.db.fetchone("""
-            SELECT
-                notification,
-                send_typing
-            FROM conversation
-            WHERE account_id = ? AND jid_id = ? AND type = 1
-        """, (self.account_id, jid_id))
-
-        if conv:
-            # Load conversation settings
-            self.notifications_checkbox.setChecked(bool(conv['notification']))
-            self.typing_checkbox.setChecked(bool(conv['send_typing']))
-
-        # Get bookmark settings (load all fields for server sync)
-        bookmark = self.db.fetchone("""
-            SELECT name, nick, password, autojoin
-            FROM bookmark
-            WHERE account_id = ? AND jid_id = ?
-        """, (self.account_id, jid_id))
-
-        if bookmark:
-            self.autojoin_checkbox.setChecked(bool(bookmark['autojoin']))
-
-        # Get conversation setting for local alias
-        conversation_id = self.db.get_or_create_conversation(self.account_id, jid_id, 1)
-        alias = self.db.get_conversation_setting(conversation_id, 'local_alias', default='')
-        self.alias_input.setText(alias)
-
-        # Get history limit setting
-        history_limit = self.db.get_conversation_setting(conversation_id, 'history_limit', default='100')
-        self.history_limit_spinbox.setValue(int(history_limit))
+        # Use barrel API to get room settings
+        settings = account.muc.get_room_settings(self.room_jid)
+        if settings:
+            self.notifications_checkbox.setChecked(settings.notification > 0)
+            self.typing_checkbox.setChecked(settings.send_typing)
+            self.autojoin_checkbox.setChecked(settings.autojoin)
+            self.alias_input.setText(settings.local_alias)
+            self.history_limit_spinbox.setValue(settings.history_limit)
 
     def _save_settings(self):
-        """Save local settings to database."""
+        """Save local settings using barrel API."""
         try:
-            # Get jid_id and conversation_id
-            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (self.room_jid,))
-            if not jid_row:
-                QMessageBox.warning(self, "Error", "Room not found in database")
+            # Get account
+            account = self.account_manager.get_account(self.account_id)
+            if not account:
+                QMessageBox.warning(self, "Error", "Account not found")
                 return
 
-            jid_id = jid_row['id']
-            conversation_id = self.db.get_or_create_conversation(self.account_id, jid_id, 1)
-
-            # Update conversation settings
-            self.db.execute("""
-                UPDATE conversation
-                SET notification = ?, send_typing = ?
-                WHERE id = ?
-            """, (
-                1 if self.notifications_checkbox.isChecked() else 0,
-                1 if self.typing_checkbox.isChecked() else 0,
-                conversation_id
+            # Use barrel API to update settings
+            asyncio.create_task(account.muc.update_room_settings(
+                room_jid=self.room_jid,
+                notification=1 if self.notifications_checkbox.isChecked() else 0,
+                send_typing=self.typing_checkbox.isChecked(),
+                autojoin=self.autojoin_checkbox.isChecked(),
+                local_alias=self.alias_input.text(),
+                history_limit=self.history_limit_spinbox.value()
             ))
-
-            # Sync bookmark to server (XEP-0402)
-            autojoin = self.autojoin_checkbox.isChecked()
-
-            # Get current bookmark data or prepare defaults for new bookmark
-            bookmark = self.db.fetchone("""
-                SELECT name, nick, password
-                FROM bookmark
-                WHERE account_id = ? AND jid_id = ?
-            """, (self.account_id, jid_id))
-
-            if bookmark or autojoin:
-                # If bookmark exists or user wants to create one (by checking autojoin)
-                # Get room name from bookmark or disco
-                room_name = bookmark['name'] if (bookmark and bookmark['name']) else self.room_jid
-
-                # Get nick from bookmark or account default
-                if bookmark and bookmark['nick']:
-                    nick = bookmark['nick']
-                else:
-                    # Get account data for default nick
-                    account = self.account_manager.get_account(self.account_id)
-                    account_data = self.db.fetchone("SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?", (self.account_id,))
-                    nick = (account_data.get('muc_nickname') or
-                           account_data.get('nickname') or
-                           account_data.get('bare_jid', '').split('@')[0] or
-                           'User') if account_data else 'User'
-
-                # Decode password if exists
-                password = None
-                if bookmark and bookmark['password']:
-                    try:
-                        password = base64.b64decode(bookmark['password']).decode()
-                    except Exception as e:
-                        logger.warning(f"Failed to decode bookmark password: {e}")
-
-                # Sync to server if connected
-                account = self.account_manager.get_account(self.account_id)
-                if account and account.client and account.is_connected():
-                    asyncio.create_task(
-                        account.client.add_bookmark(
-                            jid=self.room_jid,
-                            name=room_name,
-                            nick=nick,
-                            password=password,
-                            autojoin=autojoin
-                        )
-                    )
-                    logger.info(f"Syncing bookmark to server: {self.room_jid} (autojoin={autojoin})")
-                else:
-                    logger.warning(f"Cannot sync bookmark - account offline")
-
-            # Update local database
-            # Use INSERT OR REPLACE to create bookmark if it doesn't exist
-            if autojoin or bookmark:
-                # Get bookmark data for local DB (re-use variables from above)
-                room_name = bookmark['name'] if (bookmark and bookmark['name']) else self.room_jid
-                if bookmark and bookmark['nick']:
-                    nick_db = bookmark['nick']
-                else:
-                    account_data = self.db.fetchone("SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?", (self.account_id,))
-                    nick_db = (account_data.get('muc_nickname') or
-                              account_data.get('nickname') or
-                              account_data.get('bare_jid', '').split('@')[0] or
-                              'User') if account_data else 'User'
-
-                password_db = bookmark['password'] if bookmark else None
-
-                self.db.execute("""
-                    INSERT INTO bookmark (account_id, jid_id, name, nick, password, autojoin)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (account_id, jid_id) DO UPDATE SET
-                        autojoin = excluded.autojoin
-                """, (
-                    self.account_id,
-                    jid_id,
-                    room_name,
-                    nick_db,
-                    password_db,
-                    1 if autojoin else 0
-                ))
-
-            # Save conversation settings (local alias, history limit)
-            self.db.set_conversation_setting(conversation_id, 'local_alias', self.alias_input.text())
-            self.db.set_conversation_setting(conversation_id, 'history_limit', str(self.history_limit_spinbox.value()))
-
-            self.db.commit()
 
             logger.info(f"Saved settings for room {self.room_jid}")
 

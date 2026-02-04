@@ -13,10 +13,71 @@ Responsibilities:
 
 import logging
 import base64
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
+from dataclasses import dataclass
 
 from ...db.database import get_db
+
+
+# =============================================================================
+# Data Classes for MUC Service Layer
+# =============================================================================
+
+@dataclass
+class RoomInfo:
+    """Encapsulates MUC room information."""
+    jid: str
+    name: Optional[str]
+    description: Optional[str]
+    subject: Optional[str]
+    # Room features (from conversation table)
+    nonanonymous: bool
+    membersonly: bool
+    persistent: bool = False
+    public: bool = False
+    moderated: bool = False
+    password_protected: bool = False
+    # Additional info
+    omemo_compatible: bool = False
+    participant_count: int = 0
+    # Config metadata
+    config_fetched: Optional[int] = None  # Timestamp
+
+
+@dataclass
+class RoomSettings:
+    """Per-room local settings (from conversation + bookmark tables)."""
+    room_jid: str
+    # From conversation table
+    notification: int = 1  # 0=off, 1=all, 2=mentions
+    send_typing: bool = True
+    send_marker: bool = True
+    encryption: int = 0  # 0=plain, 1=OMEMO
+    # From bookmark table
+    autojoin: bool = False
+    # From conversation_settings
+    local_alias: str = ''
+    history_limit: int = 100
+
+
+@dataclass
+class Participant:
+    """MUC room participant."""
+    nick: str
+    jid: Optional[str]  # Real JID (None if anonymous/hidden)
+    role: str  # moderator, participant, visitor, none
+    affiliation: str  # owner, admin, member, outcast, none
+
+
+@dataclass
+class Bookmark:
+    """MUC bookmark data."""
+    room_jid: str
+    name: Optional[str]
+    nick: str
+    password: Optional[str]  # Base64 encoded in DB, decoded here
+    autojoin: bool
 
 
 class MucBarrel:
@@ -606,3 +667,437 @@ class MucBarrel:
                 self.logger.error(f"Failed to update room name for {room_jid}: {e}")
                 import traceback
                 self.logger.error(traceback.format_exc())
+
+    # =========================================================================
+    # MUC Service Layer API (for GUI abstraction)
+    # =========================================================================
+
+    def get_room_info(self, room_jid: str) -> Optional[RoomInfo]:
+        """
+        Get comprehensive room information from database and live roster.
+
+        Args:
+            room_jid: Room JID
+
+        Returns:
+            RoomInfo object or None if room not found
+        """
+        try:
+            # Get jid_id
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
+            if not jid_row:
+                return None
+
+            jid_id = jid_row['id']
+
+            # Get room data from conversation + bookmark
+            room_data = self.db.fetchone("""
+                SELECT
+                    c.muc_nonanonymous,
+                    c.muc_membersonly,
+                    b.name
+                FROM conversation c
+                LEFT JOIN bookmark b ON b.account_id = c.account_id AND b.jid_id = c.jid_id
+                WHERE c.account_id = ? AND c.jid_id = ? AND c.type = 1
+            """, (self.account_id, jid_id))
+
+            if not room_data:
+                return None
+
+            # Extract values
+            nonanonymous = bool(room_data['muc_nonanonymous'] or 0)
+            membersonly = bool(room_data['muc_membersonly'] or 0)
+            room_name = room_data['name'] or room_jid
+
+            # Get participant count from live roster
+            participant_count = 0
+            if self.client and room_jid in self.client.joined_rooms:
+                try:
+                    xep_0045 = self.client.plugin['xep_0045']
+                    roster = xep_0045.get_roster(room_jid)
+                    if roster:
+                        participant_count = len(roster)
+                except Exception:
+                    pass  # Non-critical, just skip count
+
+            # Build RoomInfo
+            return RoomInfo(
+                jid=room_jid,
+                name=room_name,
+                description=None,  # TODO: Will be added in Phase 2
+                subject=None,      # TODO: Will be added in Phase 2
+                nonanonymous=nonanonymous,
+                membersonly=membersonly,
+                persistent=False,  # TODO: Will be added in Phase 2
+                public=False,      # TODO: Will be added in Phase 2
+                moderated=False,   # TODO: Will be added in Phase 2
+                password_protected=False,  # TODO: Will be added in Phase 2
+                omemo_compatible=(nonanonymous and membersonly),
+                participant_count=participant_count,
+                config_fetched=None  # TODO: Will be added in Phase 2
+            )
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to get room info for {room_jid}: {e}")
+            return None
+
+    def get_room_settings(self, room_jid: str) -> Optional[RoomSettings]:
+        """
+        Get all room settings (conversation + bookmark + conversation_settings).
+
+        Args:
+            room_jid: Room JID
+
+        Returns:
+            RoomSettings object or None if room not found
+        """
+        try:
+            # Get jid_id
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
+            if not jid_row:
+                return None
+
+            jid_id = jid_row['id']
+
+            # Get conversation settings
+            conv_data = self.db.fetchone("""
+                SELECT
+                    id,
+                    notification,
+                    send_typing,
+                    send_marker,
+                    encryption
+                FROM conversation
+                WHERE account_id = ? AND jid_id = ? AND type = 1
+            """, (self.account_id, jid_id))
+
+            if not conv_data:
+                return None
+
+            conversation_id = conv_data['id']
+
+            # Get bookmark autojoin
+            bookmark_data = self.db.fetchone("""
+                SELECT autojoin
+                FROM bookmark
+                WHERE account_id = ? AND jid_id = ?
+            """, (self.account_id, jid_id))
+
+            autojoin = bool(bookmark_data['autojoin']) if bookmark_data else False
+
+            # Get conversation_settings
+            local_alias = self.db.get_conversation_setting(conversation_id, 'local_alias', default='')
+            history_limit = int(self.db.get_conversation_setting(conversation_id, 'history_limit', default='100'))
+
+            return RoomSettings(
+                room_jid=room_jid,
+                notification=conv_data['notification'] or 1,
+                send_typing=bool(conv_data['send_typing']),
+                send_marker=bool(conv_data['send_marker']),
+                encryption=conv_data['encryption'] or 0,
+                autojoin=autojoin,
+                local_alias=local_alias,
+                history_limit=history_limit
+            )
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to get room settings for {room_jid}: {e}")
+            return None
+
+    async def update_room_settings(self, room_jid: str, **kwargs):
+        """
+        Update room settings in database and sync to server if needed.
+
+        Args:
+            room_jid: Room JID
+            **kwargs: Settings to update (notification, send_typing, autojoin, etc.)
+
+        Raises:
+            RuntimeError: If room not found or update fails
+        """
+        try:
+            # Get jid_id and conversation_id
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
+            if not jid_row:
+                raise RuntimeError(f"Room {room_jid} not found in database")
+
+            jid_id = jid_row['id']
+            conversation_id = self.db.get_or_create_conversation(self.account_id, jid_id, 1)
+
+            # Update conversation table fields
+            conv_updates = {}
+            if 'notification' in kwargs:
+                conv_updates['notification'] = int(kwargs['notification'])
+            if 'send_typing' in kwargs:
+                conv_updates['send_typing'] = 1 if kwargs['send_typing'] else 0
+            if 'send_marker' in kwargs:
+                conv_updates['send_marker'] = 1 if kwargs['send_marker'] else 0
+            if 'encryption' in kwargs:
+                conv_updates['encryption'] = int(kwargs['encryption'])
+
+            if conv_updates:
+                set_clause = ', '.join([f"{key} = ?" for key in conv_updates.keys()])
+                values = list(conv_updates.values()) + [conversation_id]
+                self.db.execute(f"""
+                    UPDATE conversation
+                    SET {set_clause}
+                    WHERE id = ?
+                """, values)
+
+            # Update conversation_settings
+            if 'local_alias' in kwargs:
+                self.db.set_conversation_setting(conversation_id, 'local_alias', str(kwargs['local_alias']))
+            if 'history_limit' in kwargs:
+                self.db.set_conversation_setting(conversation_id, 'history_limit', str(kwargs['history_limit']))
+
+            # Handle autojoin (requires bookmark sync)
+            if 'autojoin' in kwargs:
+                autojoin = bool(kwargs['autojoin'])
+
+                # Get current bookmark or create with defaults
+                bookmark = self.db.fetchone("""
+                    SELECT name, nick, password
+                    FROM bookmark
+                    WHERE account_id = ? AND jid_id = ?
+                """, (self.account_id, jid_id))
+
+                if bookmark or autojoin:
+                    # Determine values for bookmark
+                    room_name = bookmark['name'] if (bookmark and bookmark['name']) else room_jid
+
+                    # Get nick from bookmark or account default
+                    if bookmark and bookmark['nick']:
+                        nick = bookmark['nick']
+                    else:
+                        nick = (self.account_data.get('muc_nickname') or
+                               self.account_data.get('nickname') or
+                               self.account_data.get('bare_jid', '').split('@')[0] or
+                               'User')
+
+                    # Decode password if exists
+                    password = None
+                    if bookmark and bookmark['password']:
+                        try:
+                            password = base64.b64decode(bookmark['password']).decode()
+                        except Exception as e:
+                            if self.logger:
+                                self.logger.warning(f"Failed to decode bookmark password: {e}")
+
+                    # Update local DB
+                    password_b64 = bookmark['password'] if bookmark else None
+                    self.db.execute("""
+                        INSERT INTO bookmark (account_id, jid_id, name, nick, password, autojoin)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (account_id, jid_id) DO UPDATE SET
+                            autojoin = excluded.autojoin
+                    """, (self.account_id, jid_id, room_name, nick, password_b64, 1 if autojoin else 0))
+
+                    # Sync to server if connected
+                    if self.client and hasattr(self.client, 'add_bookmark'):
+                        try:
+                            await self.client.add_bookmark(
+                                jid=room_jid,
+                                name=room_name,
+                                nick=nick,
+                                password=password,
+                                autojoin=autojoin
+                            )
+                            if self.logger:
+                                self.logger.info(f"Synced bookmark to server: {room_jid} (autojoin={autojoin})")
+                        except Exception as e:
+                            if self.logger:
+                                self.logger.warning(f"Failed to sync bookmark to server: {e}")
+
+            self.db.commit()
+
+            # Refresh GUI roster to update star indicator
+            self.signals['roster_updated'].emit(self.account_id)
+
+            if self.logger:
+                self.logger.info(f"Updated settings for room {room_jid}: {kwargs}")
+
+        except Exception as e:
+            self.db.execute("ROLLBACK")
+            if self.logger:
+                self.logger.error(f"Failed to update room settings for {room_jid}: {e}")
+            raise
+
+    def get_participants(self, room_jid: str) -> List[Participant]:
+        """
+        Get list of current participants from live slixmpp roster.
+
+        Args:
+            room_jid: Room JID
+
+        Returns:
+            List of Participant objects (empty if not joined or no roster yet)
+        """
+        participants = []
+
+        try:
+            if not self.client or room_jid not in self.client.joined_rooms:
+                return participants
+
+            # Query slixmpp's in-memory MUC roster (XEP-0045)
+            xep_0045 = self.client.plugin['xep_0045']
+            roster = xep_0045.get_roster(room_jid)
+
+            if not roster:
+                return participants
+
+            # Convert roster dict to list of Participant objects
+            from slixmpp.jid import JID
+            room_jid_obj = JID(room_jid)
+
+            for nick in roster:
+                # Get real JID if available (depends on room configuration)
+                real_jid_str = xep_0045.get_jid_property(room_jid_obj, nick, 'jid')
+                bare_jid = str(real_jid_str).split('/')[0] if real_jid_str else None
+
+                # Get role and affiliation from presence
+                role = xep_0045.get_jid_property(room_jid_obj, nick, 'role') or 'participant'
+                affiliation = xep_0045.get_jid_property(room_jid_obj, nick, 'affiliation') or 'none'
+
+                participants.append(Participant(
+                    nick=nick,
+                    jid=bare_jid,
+                    role=role,
+                    affiliation=affiliation
+                ))
+
+            # Sort by nickname (case-insensitive)
+            participants.sort(key=lambda p: p.nick.lower())
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to get participants for {room_jid}: {e}")
+
+        return participants
+
+    def get_bookmark(self, room_jid: str) -> Optional[Bookmark]:
+        """
+        Get bookmark data for a room.
+
+        Args:
+            room_jid: Room JID
+
+        Returns:
+            Bookmark object or None if not found
+        """
+        try:
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
+            if not jid_row:
+                return None
+
+            bookmark_data = self.db.fetchone("""
+                SELECT name, nick, password, autojoin
+                FROM bookmark
+                WHERE account_id = ? AND jid_id = ?
+            """, (self.account_id, jid_row['id']))
+
+            if not bookmark_data:
+                return None
+
+            # Decode password if present
+            password = None
+            if bookmark_data['password']:
+                try:
+                    password = base64.b64decode(bookmark_data['password']).decode()
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"Failed to decode bookmark password: {e}")
+
+            return Bookmark(
+                room_jid=room_jid,
+                name=bookmark_data['name'],
+                nick=bookmark_data['nick'],
+                password=password,
+                autojoin=bool(bookmark_data['autojoin'])
+            )
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to get bookmark for {room_jid}: {e}")
+            return None
+
+    async def create_or_update_bookmark(
+        self,
+        room_jid: str,
+        name: Optional[str] = None,
+        nick: Optional[str] = None,
+        password: Optional[str] = None,
+        autojoin: bool = False
+    ):
+        """
+        Create or update bookmark in local DB and sync to server.
+
+        Args:
+            room_jid: Room JID
+            name: Room name (defaults to JID if not provided)
+            nick: Nickname (defaults to account's muc_nickname)
+            password: Room password (plain text, will be base64 encoded)
+            autojoin: Whether to auto-join on connect
+
+        Raises:
+            RuntimeError: If update fails
+        """
+        try:
+            # Get or create JID entry
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
+            if jid_row:
+                jid_id = jid_row['id']
+            else:
+                cursor = self.db.execute("INSERT INTO jid (bare_jid) VALUES (?)", (room_jid,))
+                jid_id = cursor.lastrowid
+
+            # Use provided values or defaults
+            room_name = name or room_jid
+            room_nick = nick or (
+                self.account_data.get('muc_nickname') or
+                self.account_data.get('nickname') or
+                self.account_data.get('bare_jid', '').split('@')[0] or
+                'User'
+            )
+
+            # Encode password if provided
+            password_b64 = base64.b64encode(password.encode()).decode() if password else None
+
+            # Insert or update in local DB
+            self.db.execute("""
+                INSERT INTO bookmark (account_id, jid_id, name, nick, password, autojoin)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (account_id, jid_id) DO UPDATE SET
+                    name = excluded.name,
+                    nick = excluded.nick,
+                    password = excluded.password,
+                    autojoin = excluded.autojoin
+            """, (self.account_id, jid_id, room_name, room_nick, password_b64, 1 if autojoin else 0))
+
+            self.db.commit()
+
+            # Sync to server if connected
+            if self.client and hasattr(self.client, 'add_bookmark'):
+                try:
+                    await self.client.add_bookmark(
+                        jid=room_jid,
+                        name=room_name,
+                        nick=room_nick,
+                        password=password,
+                        autojoin=autojoin
+                    )
+                    if self.logger:
+                        self.logger.info(f"Created/updated bookmark and synced to server: {room_jid}")
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"Failed to sync bookmark to server: {e}")
+
+            # Refresh GUI
+            self.signals['roster_updated'].emit(self.account_id)
+
+        except Exception as e:
+            self.db.execute("ROLLBACK")
+            if self.logger:
+                self.logger.error(f"Failed to create/update bookmark for {room_jid}: {e}")
+            raise
