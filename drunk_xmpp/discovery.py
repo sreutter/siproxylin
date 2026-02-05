@@ -184,6 +184,170 @@ class DiscoveryMixin:
                 'error': str(e)
             }
 
+    async def get_room_config(self, room_jid: str) -> Optional[Dict[str, Any]]:
+        """
+        Query MUC room configuration form (XEP-0045 §10).
+
+        Fetches the owner configuration form for detailed room settings.
+        This is separate from disco#info features and requires owner permissions.
+
+        Args:
+            room_jid: Room JID to query
+
+        Returns:
+            Dict with room configuration, or None if unavailable:
+            {
+                'roomname': str,            # from muc#roomconfig_roomname
+                'roomdesc': str,            # from muc#roomconfig_roomdesc
+                'persistent': bool,         # from muc#roomconfig_persistentroom
+                'public': bool,             # from muc#roomconfig_publicroom
+                'moderated': bool,          # from muc#roomconfig_moderatedroom
+                'membersonly': bool,        # from muc#roomconfig_membersonly
+                'password_protected': bool, # from muc#roomconfig_passwordprotectedroom
+                'max_users': int or None,   # from muc#roomconfig_maxusers (None = unlimited)
+                'allow_invites': bool,      # from muc#roomconfig_allowinvites
+                'allow_subject_change': bool, # from muc#roomconfig_changesubject
+                'enable_logging': bool,     # from muc#roomconfig_enablelogging
+                'whois': str,               # 'anyone' or 'moderators' (from muc#roomconfig_whois)
+                'error': str or None        # Error message if query failed
+            }
+
+        Notes:
+            - Requires owner permissions (will fail for non-owners)
+            - Not all servers expose room config (some return forbidden)
+            - Boolean values are normalized to Python bool
+            - Returns None if room doesn't support config queries
+        """
+        try:
+            xep_0045 = self.plugin['xep_0045']
+
+            # Query room config form (XEP-0045 §10.2)
+            self.logger.debug(f"Querying room configuration for {room_jid}")
+            form = await xep_0045.get_room_config(room=room_jid, timeout=10)
+
+            # Extract form values
+            values = form.get_values()
+
+            # Helper to parse boolean values (forms return '0', '1', 'true', 'false')
+            def parse_bool(value, default=False):
+                if value is None:
+                    return default
+                if isinstance(value, bool):
+                    return value
+                return str(value).lower() in ('1', 'true')
+
+            # Helper to parse integer (with None for unlimited)
+            def parse_int(value, default=None):
+                if value is None or value == '' or str(value).lower() == 'none':
+                    return default
+                try:
+                    return int(value)
+                except (ValueError, TypeError):
+                    return default
+
+            # Map form fields to result dict
+            result = {
+                'roomname': values.get('muc#roomconfig_roomname', ''),
+                'roomdesc': values.get('muc#roomconfig_roomdesc', ''),
+                'persistent': parse_bool(values.get('muc#roomconfig_persistentroom'), False),
+                'public': parse_bool(values.get('muc#roomconfig_publicroom'), False),
+                'moderated': parse_bool(values.get('muc#roomconfig_moderatedroom'), False),
+                'membersonly': parse_bool(values.get('muc#roomconfig_membersonly'), False),
+                'password_protected': parse_bool(values.get('muc#roomconfig_passwordprotectedroom'), False),
+                'max_users': parse_int(values.get('muc#roomconfig_maxusers')),
+                'allow_invites': parse_bool(values.get('muc#roomconfig_allowinvites'), True),
+                'allow_subject_change': parse_bool(values.get('muc#roomconfig_changesubject'), False),
+                'enable_logging': parse_bool(values.get('muc#roomconfig_enablelogging'), False),
+                'whois': values.get('muc#roomconfig_whois', 'moderators'),  # 'anyone' or 'moderators'
+                'error': None
+            }
+
+            self.logger.info(
+                f"Room {room_jid} config: persistent={result['persistent']}, "
+                f"public={result['public']}, moderated={result['moderated']}, "
+                f"max_users={result['max_users']}"
+            )
+
+            return result
+
+        except ValueError as e:
+            # Room doesn't provide config form
+            self.logger.debug(f"Room {room_jid} does not provide config form: {e}")
+            return {
+                'error': 'Config form not available',
+                'roomname': None,
+                'roomdesc': None,
+                'persistent': False,
+                'public': False,
+                'moderated': False,
+                'membersonly': False,
+                'password_protected': False,
+                'max_users': None,
+                'allow_invites': True,
+                'allow_subject_change': False,
+                'enable_logging': False,
+                'whois': 'moderators'
+            }
+        except IqError as e:
+            error_condition = e.iq['error']['condition']
+            self.logger.warning(f"Failed to query room config for {room_jid}: {error_condition}")
+
+            # Distinguish permission errors from other errors
+            if error_condition == 'forbidden':
+                error_msg = 'Permission denied (owner-only)'
+            else:
+                error_msg = f'IQ error: {error_condition}'
+
+            return {
+                'error': error_msg,
+                'roomname': None,
+                'roomdesc': None,
+                'persistent': False,
+                'public': False,
+                'moderated': False,
+                'membersonly': False,
+                'password_protected': False,
+                'max_users': None,
+                'allow_invites': True,
+                'allow_subject_change': False,
+                'enable_logging': False,
+                'whois': 'moderators'
+            }
+        except IqTimeout:
+            self.logger.warning(f"Timeout querying room config for {room_jid}")
+            return {
+                'error': 'Timeout',
+                'roomname': None,
+                'roomdesc': None,
+                'persistent': False,
+                'public': False,
+                'moderated': False,
+                'membersonly': False,
+                'password_protected': False,
+                'max_users': None,
+                'allow_invites': True,
+                'allow_subject_change': False,
+                'enable_logging': False,
+                'whois': 'moderators'
+            }
+        except Exception as e:
+            self.logger.exception(f"Unexpected error querying room config for {room_jid}: {e}")
+            return {
+                'error': str(e),
+                'roomname': None,
+                'roomdesc': None,
+                'persistent': False,
+                'public': False,
+                'moderated': False,
+                'membersonly': False,
+                'password_protected': False,
+                'max_users': None,
+                'allow_invites': True,
+                'allow_subject_change': False,
+                'enable_logging': False,
+                'whois': 'moderators'
+            }
+
     # ============================================================================
     # XEP-0092: Software Version
     # ============================================================================

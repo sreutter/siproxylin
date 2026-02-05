@@ -297,12 +297,26 @@ class MUCDetailsDialog(QDialog):
             self.room_jid_label.setText(room_info.jid)
 
             # Display features
+            # For disco fields (always available from disco#info)
             self.nonanonymous_label.setText("✅ Yes" if room_info.nonanonymous else "❌ No")
             self.members_only_label.setText("✅ Yes" if room_info.membersonly else "❌ No")
-            self.persistent_label.setText("✅ Yes" if room_info.persistent else "❌ No" if room_info.config_fetched else "❓ Unknown")
-            self.password_protected_label.setText("✅ Yes" if room_info.password_protected else "❌ No" if room_info.config_fetched else "❓ Unknown")
-            self.public_label.setText("✅ Yes" if room_info.public else "❌ No" if room_info.config_fetched else "❓ Unknown")
-            self.moderated_label.setText("✅ Yes" if room_info.moderated else "❌ No" if room_info.config_fetched else "❓ Unknown")
+
+            # For config fields (only available if config_fetched is set)
+            # config_fetched: None=not cached, 1=cached in memory
+            has_config = room_info.config_fetched is not None
+
+            if has_config:
+                # Show real values from in-memory cache
+                self.persistent_label.setText("✅ Yes" if room_info.persistent else "❌ No")
+                self.password_protected_label.setText("✅ Yes" if room_info.password_protected else "❌ No")
+                self.public_label.setText("✅ Yes" if room_info.public else "❌ No")
+                self.moderated_label.setText("✅ Yes" if room_info.moderated else "❌ No")
+            else:
+                # Show unknown (config not cached)
+                self.persistent_label.setText("❓ Unknown")
+                self.password_protected_label.setText("❓ Unknown")
+                self.public_label.setText("❓ Unknown")
+                self.moderated_label.setText("❓ Unknown")
 
             # OMEMO compatibility
             if room_info.omemo_compatible:

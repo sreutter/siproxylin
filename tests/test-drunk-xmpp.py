@@ -139,6 +139,7 @@ def print_help_grouped():
     print("  /bookmark-add <jid> <name> <nick> [password] - Add/update bookmark")
     print("  /bookmark-rm <jid>           - Remove bookmark")
     print("  /room-features <room_jid>    - Query MUC room features (OMEMO compatibility)")
+    print("  /room-config <room_jid>      - Query MUC room configuration (owner config form)")
     print()
 
     print("FILE TRANSFER:")
@@ -242,6 +243,7 @@ def print_help_alphabetical():
         "/replyenc <jid> <1|2> <msg>  - Reply with OMEMO encryption",
         "/revoke <jid>                - Revoke their subscription (RFC 6121)",
         "/room-features <room_jid>    - Query MUC room features (OMEMO compatibility)",
+        "/room-config <room_jid>      - Query MUC room configuration (owner config form)",
         "/send <jid> <message>        - Send plaintext message",
         "/sendenc <jid> <message>     - Send OMEMO-encrypted message",
         "/sendmuc <room> <message>    - Send plaintext to MUC room",
@@ -1165,6 +1167,62 @@ async def main():
                                 logger.info(f"    - Room should be members-only (XEP-0384 recommendation)")
                         logger.info("")
                         logger.info(f"  All features: {', '.join(features['features'][:10])}{'...' if len(features['features']) > 10 else ''}")
+                except Exception as e:
+                    logger.error(f"Failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            elif command.startswith("/room-config "):
+                parts = command.split(None, 1)
+                if len(parts) < 2:
+                    logger.error("Usage: /room-config <room_jid>")
+                    continue
+
+                _, room_jid = parts
+                logger.info(f"Querying room configuration for {room_jid}...")
+                logger.info("(Note: Requires room owner permissions)")
+                try:
+                    config = await client.get_room_config(room_jid)
+
+                    if config and config.get('error'):
+                        logger.error(f"✗ Failed to query room config: {config['error']}")
+                        logger.info("")
+                        if config['error'] == 'Permission denied (owner-only)':
+                            logger.info("  You must be a room owner to view configuration.")
+                            logger.info("  Try /room-features instead for disco#info (available to all users)")
+                    else:
+                        logger.info(f"✓ Room configuration for {room_jid}:")
+                        logger.info("")
+                        logger.info("  Basic Info:")
+                        logger.info(f"    Room name: {config['roomname'] or '(not set)'}")
+                        logger.info(f"    Description: {config['roomdesc'] or '(not set)'}")
+                        logger.info("")
+                        logger.info("  Access Control:")
+                        logger.info(f"    Persistent: {config['persistent']} (room persists when empty)")
+                        logger.info(f"    Public: {config['public']} (searchable)")
+                        logger.info(f"    Members-only: {config['membersonly']} (only members can join)")
+                        logger.info(f"    Password protected: {config['password_protected']}")
+                        logger.info(f"    Max users: {config['max_users'] or 'unlimited'}")
+                        logger.info(f"    Who can see JIDs: {config['whois']} (anyone or moderators)")
+                        logger.info("")
+                        logger.info("  Moderation:")
+                        logger.info(f"    Moderated: {config['moderated']} (only participants with voice can send)")
+                        logger.info(f"    Allow subject change: {config['allow_subject_change']}")
+                        logger.info("")
+                        logger.info("  Features:")
+                        logger.info(f"    Allow invites: {config['allow_invites']}")
+                        logger.info(f"    Enable logging: {config['enable_logging']}")
+                        logger.info("")
+                        # OMEMO compatibility check
+                        omemo_ok = config['membersonly'] and (config['whois'] == 'anyone')
+                        if omemo_ok:
+                            logger.info("  ✓ Room configuration SUPPORTS OMEMO encryption")
+                        else:
+                            logger.info("  ✗ Room configuration does NOT support OMEMO encryption")
+                            if not config['membersonly']:
+                                logger.info("    - Should be members-only (XEP-0384)")
+                            if config['whois'] != 'anyone':
+                                logger.info("    - Should allow anyone to see JIDs (whois=anyone)")
                 except Exception as e:
                     logger.error(f"Failed: {e}")
                     import traceback

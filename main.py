@@ -147,6 +147,7 @@ def main():
     logger.info("Initializing database...")
     try:
         db = get_db()
+        db.initialize()  # Run schema creation + migrations (blocking)
         logger.info("Database initialized successfully")
     except RuntimeError as e:
         logger.error(f"Failed to initialize database: {e}")

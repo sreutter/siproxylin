@@ -1263,6 +1263,9 @@ def get_db() -> Database:
     """
     Get global database instance.
 
+    Note: This is a simple getter. Call db.initialize() explicitly
+    at application startup to run migrations.
+
     Returns:
         Database instance
 
@@ -1272,6 +1275,5 @@ def get_db() -> Database:
     global _db_instance
     if _db_instance is None:
         _db_instance = Database()
-        _db_instance.acquire_lock()  # Acquire lock before initializing
-        _db_instance.initialize()
+        _db_instance.acquire_lock()  # Acquire lock before any operations
     return _db_instance

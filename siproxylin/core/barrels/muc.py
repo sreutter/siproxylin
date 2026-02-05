@@ -38,11 +38,16 @@ class RoomInfo:
     public: bool = False
     moderated: bool = False
     password_protected: bool = False
+    # Extended config fields (v13 schema)
+    max_users: Optional[int] = None  # None = unlimited
+    allow_invites: bool = True
+    allow_subject_change: bool = False
+    enable_logging: bool = False
     # Additional info
     omemo_compatible: bool = False
     participant_count: int = 0
     # Config metadata
-    config_fetched: Optional[int] = None  # Timestamp
+    config_fetched: Optional[int] = None  # Timestamp (None=never, 0=failed, >0=success)
 
 
 @dataclass
@@ -105,6 +110,10 @@ class MucBarrel:
         # Track rooms waiting for MAM retrieval (after self-presence received)
         self._pending_mam_rooms = set()
 
+        # In-memory cache for room configurations (XEP-0045 §10)
+        # Format: {room_jid: {persistent: bool, public: bool, ...}}
+        self.room_configs: Dict[str, Dict[str, Any]] = {}
+
     async def add_and_join_room(self, room_jid: str, nick: str, password: str = None):
         """
         Add a room to the client's configuration and join it.
@@ -159,6 +168,13 @@ class MucBarrel:
                 except Exception as e:
                     if self.logger:
                         self.logger.warning(f"Failed to query room features for {room_jid}: {e}")
+
+                # Attempt to fetch room configuration (owner-only, non-blocking)
+                try:
+                    await self.fetch_and_store_room_config(room_jid)
+                except Exception as e:
+                    if self.logger:
+                        self.logger.debug(f"Could not fetch room config for {room_jid}: {e}")
 
             # Mark room for MAM retrieval after self-presence is received
             # MAM will be retrieved by on_muc_joined callback to ensure OMEMO sessions are ready
@@ -234,6 +250,65 @@ class MucBarrel:
 
             # Emit roster_updated to refresh GUI
             self.signals['roster_updated'].emit(self.account_id)
+
+    async def fetch_and_store_room_config(self, room_jid: str) -> bool:
+        """
+        Fetch room configuration from server and store in memory.
+
+        This queries the room owner configuration form (XEP-0045 §10) and
+        caches the result for the session. Requires owner permissions.
+
+        Args:
+            room_jid: Room JID
+
+        Returns:
+            True if config was successfully fetched and cached, False otherwise
+        """
+        if not self.client:
+            if self.logger:
+                self.logger.debug("Cannot fetch room config: not connected")
+            return False
+
+        try:
+            # Query room configuration (requires owner permissions)
+            config = await self.client.get_room_config(room_jid)
+
+            if not config:
+                if self.logger:
+                    self.logger.debug(f"No config returned for {room_jid}")
+                return False
+
+            # Check for errors
+            if config.get('error'):
+                if self.logger:
+                    self.logger.debug(f"Failed to fetch room config for {room_jid}: {config['error']}")
+                return False
+
+            # Store config in memory
+            self.room_configs[room_jid] = {
+                'persistent': config.get('persistent', False),
+                'public': config.get('public', False),
+                'moderated': config.get('moderated', False),
+                'password_protected': config.get('password_protected', False),
+                'description': config.get('roomdesc'),
+                'subject': config.get('roomname'),
+                'max_users': config.get('max_users'),
+                'allow_invites': config.get('allow_invites', True),
+                'allow_subject_change': config.get('allow_subject_change', False),
+                'enable_logging': config.get('enable_logging', False),
+            }
+
+            if self.logger:
+                self.logger.info(f"✓ Cached room config for {room_jid} (persistent={config.get('persistent')}, public={config.get('public')}, moderated={config.get('moderated')})")
+
+            return True
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to fetch/cache room config for {room_jid}: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+            return False
 
     async def on_muc_joined(self, room_jid: str, nick: str):
         """
@@ -502,6 +577,13 @@ class MucBarrel:
                     if self.logger:
                         self.logger.warning(f"Failed to query room features for {room_jid}: {e}")
 
+                # Attempt to fetch room configuration (owner-only, non-blocking)
+                try:
+                    await self.fetch_and_store_room_config(room_jid)
+                except Exception as e:
+                    if self.logger:
+                        self.logger.debug(f"Could not fetch room config for {room_jid}: {e}")
+
             except Exception as e:
                 if self.logger:
                     self.logger.error(f"Failed to auto-join {room_jid}: {e}")
@@ -674,7 +756,7 @@ class MucBarrel:
 
     def get_room_info(self, room_jid: str) -> Optional[RoomInfo]:
         """
-        Get comprehensive room information from database and live roster.
+        Get comprehensive room information from database, in-memory cache, and live roster.
 
         Args:
             room_jid: Room JID
@@ -704,10 +786,25 @@ class MucBarrel:
             if not room_data:
                 return None
 
-            # Extract values
+            # Extract values from database
             nonanonymous = bool(room_data['muc_nonanonymous'] or 0)
             membersonly = bool(room_data['muc_membersonly'] or 0)
             room_name = room_data['name'] or room_jid
+
+            # Get config from in-memory cache (if available)
+            config = self.room_configs.get(room_jid, {})
+            has_config = bool(config)
+
+            persistent = config.get('persistent', False)
+            public = config.get('public', False)
+            moderated = config.get('moderated', False)
+            password_protected = config.get('password_protected', False)
+            description = config.get('description')
+            subject = config.get('subject')
+            max_users = config.get('max_users')
+            allow_invites = config.get('allow_invites', True)
+            allow_subject_change = config.get('allow_subject_change', False)
+            enable_logging = config.get('enable_logging', False)
 
             # Get participant count from live roster
             participant_count = 0
@@ -720,21 +817,25 @@ class MucBarrel:
                 except Exception:
                     pass  # Non-critical, just skip count
 
-            # Build RoomInfo
+            # Build RoomInfo with in-memory config
             return RoomInfo(
                 jid=room_jid,
                 name=room_name,
-                description=None,  # TODO: Will be added in Phase 2
-                subject=None,      # TODO: Will be added in Phase 2
+                description=description,
+                subject=subject,
                 nonanonymous=nonanonymous,
                 membersonly=membersonly,
-                persistent=False,  # TODO: Will be added in Phase 2
-                public=False,      # TODO: Will be added in Phase 2
-                moderated=False,   # TODO: Will be added in Phase 2
-                password_protected=False,  # TODO: Will be added in Phase 2
+                persistent=persistent,
+                public=public,
+                moderated=moderated,
+                password_protected=password_protected,
+                max_users=max_users,
+                allow_invites=allow_invites,
+                allow_subject_change=allow_subject_change,
+                enable_logging=enable_logging,
                 omemo_compatible=(nonanonymous and membersonly),
                 participant_count=participant_count,
-                config_fetched=None  # TODO: Will be added in Phase 2
+                config_fetched=1 if has_config else None  # Simplified: 1 if cached, None if not
             )
 
         except Exception as e:
