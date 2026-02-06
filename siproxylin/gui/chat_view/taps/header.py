@@ -996,16 +996,186 @@ class ChatHeaderWidget(QFrame):
         self.join_room_button.setEnabled(True)
         self.join_room_button.setText("Join Room")
 
-        # Format error message: friendly message on first line, server details in parentheses on second
+        # Check if this is a membership-required error
+        if "Membership required" in friendly_msg or "registration-required" in server_details.lower():
+            # Show special dialog with "Request Membership" button
+            self._show_membership_required_dialog(room_jid, friendly_msg, server_details)
+        else:
+            # Show regular error dialog
+            error_message = f"{friendly_msg}\n\n({server_details})"
+
+            # Show non-blocking error dialog (use .show() instead of .exec() to avoid blocking async event loop)
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setWindowTitle("Cannot Join Room")
+            msg_box.setText(error_message)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.show()  # Non-blocking
+
+    def _show_membership_required_dialog(self, room_jid: str, friendly_msg: str, server_details: str):
+        """
+        Show dialog for membership-required error with "Request Membership" button.
+
+        Args:
+            room_jid: Room JID that requires membership
+            friendly_msg: User-friendly error message
+            server_details: Server error details
+        """
+        from PySide6.QtWidgets import QInputDialog
+
         error_message = f"{friendly_msg}\n\n({server_details})"
 
-        # Show non-blocking error dialog (use .show() instead of .exec() to avoid blocking async event loop)
+        # Show non-blocking dialog with custom buttons
         msg_box = QMessageBox(self)
-        msg_box.setIcon(QMessageBox.Critical)
-        msg_box.setWindowTitle("Cannot Join Room")
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setWindowTitle("Membership Required")
         msg_box.setText(error_message)
-        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.setInformativeText("\nWould you like to request membership from the room administrators?")
+
+        # Add custom buttons
+        request_button = msg_box.addButton("Request Membership", QMessageBox.AcceptRole)
+        cancel_button = msg_box.addButton("Cancel", QMessageBox.RejectRole)
+
+        # Handle button click
+        def on_button_clicked(button):
+            if msg_box.clickedButton() == request_button:
+                # User wants to request membership
+                self._request_room_membership(room_jid)
+
+        msg_box.buttonClicked.connect(on_button_clicked)
         msg_box.show()  # Non-blocking
+
+    def _request_room_membership(self, room_jid: str):
+        """
+        Request membership in a room after user confirms.
+
+        Args:
+            room_jid: Room JID to request membership from
+        """
+        from PySide6.QtWidgets import QInputDialog, QFormLayout, QDialogButtonBox, QLabel
+
+        # Get account to determine default nickname
+        account = self.account_manager.get_account(self.current_account_id)
+        if not account:
+            logger.error(f"Account {self.current_account_id} not found")
+            QMessageBox.critical(self, "Error", "Account not found")
+            return
+
+        # Get default nickname: muc_nickname || nickname || JID localpart
+        try:
+            db = account.muc.db
+            account_data = db.fetchone("SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?", (self.current_account_id,))
+            if account_data:
+                default_nick = account_data['muc_nickname'] or account_data['nickname'] or account_data['bare_jid'].split('@')[0]
+            else:
+                default_nick = account.client.boundjid.user if account.client else "user"
+        except Exception as e:
+            logger.warning(f"Failed to get default nickname: {e}")
+            default_nick = account.client.boundjid.user if account.client else "user"
+
+        # Create custom dialog for nickname and reason
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Request Membership")
+        dialog.setModal(True)
+
+        layout = QVBoxLayout()
+        form = QFormLayout()
+
+        # Nickname field (pre-filled, editable)
+        nick_input = QLineEdit(default_nick)
+        form.addRow("Nickname:", nick_input)
+
+        # Reason field (optional)
+        reason_input = QLineEdit()
+        reason_input.setPlaceholderText("Optional message to room administrators")
+        form.addRow("Reason:", reason_input)
+
+        layout.addLayout(form)
+
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        dialog.setLayout(layout)
+
+        if dialog.exec() != QDialog.Accepted:
+            # User cancelled
+            return
+
+        nickname = nick_input.text().strip()
+        reason = reason_input.text().strip()
+
+        if not nickname:
+            QMessageBox.warning(self, "Invalid Input", "Nickname cannot be empty")
+            return
+
+        # Perform the request
+        async def do_request():
+            try:
+                # Call the API with nickname
+                result = await account.muc.request_membership(room_jid, nickname, reason)
+
+                if result['success']:
+                    # Success! Save the nickname to the bookmark so we use it when joining
+                    try:
+                        bookmark = account.muc.get_bookmark(room_jid)
+                        if bookmark:
+                            # Update existing bookmark with the new nickname
+                            await account.muc.create_or_update_bookmark(
+                                room_jid=room_jid,
+                                name=bookmark.name,
+                                nick=nickname,  # Use the nickname from registration
+                                password=bookmark.password,
+                                autojoin=bookmark.autojoin
+                            )
+                            logger.info(f"Updated bookmark nickname to '{nickname}' for {room_jid}")
+                        else:
+                            # Create new bookmark with the chosen nickname
+                            await account.muc.create_or_update_bookmark(
+                                room_jid=room_jid,
+                                name=None,  # Will be fetched on join
+                                nick=nickname,
+                                password=None,
+                                autojoin=False
+                            )
+                            logger.info(f"Created bookmark with nickname '{nickname}' for {room_jid}")
+                    except Exception as e:
+                        logger.warning(f"Failed to save nickname to bookmark: {e}")
+                        # Don't fail the whole operation, just log it
+
+                    # Show success message
+                    QMessageBox.information(
+                        self,
+                        "Request Sent",
+                        "Membership request sent successfully.\n\n"
+                        "Room administrators will review your request. "
+                        "Try joining again once your membership is approved."
+                    )
+                    logger.info(f"Membership request sent successfully for {room_jid}")
+                else:
+                    # Failed
+                    error = result.get('error', 'Unknown error')
+                    QMessageBox.critical(
+                        self,
+                        "Request Failed",
+                        f"Failed to request membership:\n\n{error}"
+                    )
+                    logger.error(f"Membership request failed for {room_jid}: {error}")
+
+            except Exception as e:
+                logger.error(f"Error requesting membership for {room_jid}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"An unexpected error occurred:\n\n{str(e)}"
+                )
+
+        # Schedule the async task
+        QTimer.singleShot(0, lambda: asyncio.create_task(do_request()))
 
     def _on_spell_check_button_clicked(self):
         """Show spell check menu when button is clicked."""

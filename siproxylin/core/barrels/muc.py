@@ -1234,6 +1234,61 @@ class MucBarrel:
                 self.logger.error(f"Failed to get bookmark for {room_jid}: {e}")
             return None
 
+    async def request_membership(self, room_jid: str, nickname: str, reason: str = "") -> Dict[str, Any]:
+        """
+        Request membership in a members-only MUC room.
+
+        Uses XEP-0077 in-band registration to request membership. The room
+        may auto-approve or queue the request for admin approval.
+
+        Args:
+            room_jid: Room JID to request membership from
+            nickname: Desired nickname for the room
+            reason: Optional reason/message for room admin
+
+        Returns:
+            Dict with 'success' (bool) and 'error' (str or None)
+
+        Example:
+            result = await muc.request_membership(
+                'room@conference.example.com',
+                nickname='mynick',
+                reason='I would like to join this group'
+            )
+            if result['success']:
+                print("Membership requested successfully")
+            else:
+                print(f"Failed: {result['error']}")
+        """
+        if not self.client:
+            return {
+                'success': False,
+                'error': 'Not connected'
+            }
+
+        try:
+            # Call DrunkXMPP's wrapper
+            result = await self.client.request_room_membership(room_jid, nickname, reason)
+
+            if result['success']:
+                if self.logger:
+                    self.logger.info(f"Membership request sent successfully to {room_jid}")
+            else:
+                if self.logger:
+                    self.logger.warning(f"Membership request failed for {room_jid}: {result.get('error')}")
+
+            return result
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Error requesting membership for {room_jid}: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+            return {
+                'success': False,
+                'error': f"Unexpected error: {str(e)}"
+            }
+
     async def create_or_update_bookmark(
         self,
         room_jid: str,

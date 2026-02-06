@@ -156,6 +156,14 @@ def print_help_grouped():
     print("  /blocked                     - List blocked contacts (XEP-0191)")
     print()
 
+    print("PEP/PUBSUB (XEP-0060/0163):")
+    print("  /pep-nodes                   - List all PEP nodes on server")
+    print("  /pep-get <node>              - Get items from a PEP node")
+    print("  /pep-delete <node>           - Delete a PEP node (WARNING: permanent!)")
+    print("  /pep-subscriptions           - List all PEP subscriptions")
+    print("  /pep-unsubscribe <jid> <node> - Unsubscribe from a PEP node")
+    print()
+
     print("ROSTER/SUBSCRIPTION:")
     print("  /subscribe <jid>             - Request presence subscription (RFC 6121)")
     print("  /approve <jid>               - Approve subscription request (RFC 6121)")
@@ -232,6 +240,11 @@ def print_help_alphabetical():
         "/leave <room>                - Leave MUC room",
         "/mam-check <jid>             - Check if JID supports MAM",
         "/marker <jid> <msg_id> <type> - Send chat marker (received/displayed/acknowledged)",
+        "/pep-delete <node>           - Delete a PEP node (WARNING: permanent!)",
+        "/pep-get <node>              - Get items from a PEP node",
+        "/pep-nodes                   - List all PEP nodes on server",
+        "/pep-subscriptions           - List all PEP subscriptions",
+        "/pep-unsubscribe <jid> <node> - Unsubscribe from a PEP node",
         "/quit                        - Exit",
         "/react <jid> <1|2> <emoji>   - React to message with emoji",
         "/receipt <jid> <msg_id>      - Send delivery receipt",
@@ -1443,6 +1456,253 @@ async def main():
                         logger.info("No blocked contacts")
                 except Exception as e:
                     logger.error(f"Failed: {e}")
+
+            elif command == "/pep-nodes":
+                logger.info("Listing all PEP nodes on server...")
+                try:
+                    xep_0060 = client.plugin['xep_0060']
+                    own_jid = client.boundjid.bare
+
+                    logger.info(f"Querying disco#items for {own_jid}...")
+                    result = await xep_0060.get_nodes(own_jid)
+
+                    if result and 'disco_items' in result and 'items' in result['disco_items']:
+                        items = result['disco_items']['items']
+                        logger.info(f"✓ Found {len(items)} PEP nodes:")
+                        logger.info("")
+
+                        omemo_nodes = []
+                        other_nodes = []
+
+                        for item in items:
+                            node_name = item[1]  # (jid, node, name) tuple
+                            if node_name:
+                                if 'omemo' in node_name.lower() or 'axolotl' in node_name.lower():
+                                    omemo_nodes.append(node_name)
+                                else:
+                                    other_nodes.append(node_name)
+
+                        if omemo_nodes:
+                            logger.info("OMEMO-related nodes:")
+                            for node in omemo_nodes:
+                                logger.info(f"  - {node}")
+                            logger.info("")
+
+                        if other_nodes:
+                            logger.info(f"Other nodes ({len(other_nodes)}):")
+                            for node in other_nodes[:10]:
+                                logger.info(f"  - {node}")
+                            if len(other_nodes) > 10:
+                                logger.info(f"  ... and {len(other_nodes) - 10} more")
+                    else:
+                        logger.info("No PEP nodes found")
+
+                except Exception as e:
+                    logger.error(f"Failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            elif command.startswith("/pep-get "):
+                parts = command.split(None, 1)
+                if len(parts) < 2:
+                    logger.error("Usage: /pep-get <node>")
+                    continue
+
+                node = parts[1]
+                logger.info(f"Getting items from PEP node: {node}")
+                try:
+                    xep_0060 = client.plugin['xep_0060']
+                    own_jid = client.boundjid.bare
+
+                    result = await xep_0060.get_items(own_jid, node)
+
+                    if result and 'pubsub' in result and 'items' in result['pubsub']:
+                        items = result['pubsub']['items']
+                        item_list = list(items)
+
+                        logger.info(f"✓ Found {len(item_list)} items in node {node}:")
+                        logger.info("")
+
+                        for idx, item in enumerate(item_list, 1):
+                            item_id = item.get('id', 'no-id')
+                            logger.info(f"  Item {idx}: {item_id}")
+
+                            # Show XML content
+                            from xml.etree import ElementTree as ET
+                            xml_str = ET.tostring(item.xml, encoding='unicode')
+                            logger.info(f"    XML: {xml_str}")
+                            logger.info("")
+                    else:
+                        logger.info(f"No items found in node {node}")
+
+                except Exception as e:
+                    logger.error(f"Failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            elif command.startswith("/pep-delete "):
+                parts = command.split(None, 1)
+                if len(parts) < 2:
+                    logger.error("Usage: /pep-delete <node>")
+                    continue
+
+                node = parts[1]
+
+                # Confirmation prompt
+                logger.warning("=" * 60)
+                logger.warning("⚠ WARNING: PERMANENT NODE DELETION ⚠")
+                logger.warning("=" * 60)
+                logger.warning(f"You are about to DELETE the PEP node:")
+                logger.warning(f"  {node}")
+                logger.warning("")
+                logger.warning("This will remove all data in this node from the server.")
+                logger.warning("Type 'DELETE' to confirm, or anything else to cancel:")
+                logger.warning("=" * 60)
+
+                confirmation = await asyncio.get_event_loop().run_in_executor(
+                    None, input, "Confirmation: "
+                )
+
+                if confirmation.strip() != "DELETE":
+                    logger.info("Node deletion cancelled.")
+                    continue
+
+                logger.info(f"Deleting PEP node: {node}")
+                try:
+                    xep_0060 = client.plugin['xep_0060']
+                    own_jid = client.boundjid.bare
+
+                    result = await xep_0060.delete_node(own_jid, node)
+
+                    logger.info("=" * 60)
+                    logger.info(f"✓ PEP node deleted successfully: {node}")
+                    logger.info("=" * 60)
+
+                except Exception as e:
+                    logger.error(f"Failed to delete node: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            elif command == "/pep-subscriptions":
+                logger.info("Listing PEP subscriptions...")
+                try:
+                    xep_0060 = client.plugin['xep_0060']
+
+                    # Query subscriptions from own JID (PEP)
+                    own_jid = client.boundjid.bare
+                    logger.info(f"Querying subscriptions for {own_jid}...")
+                    result = await xep_0060.get_subscriptions(own_jid)
+
+                    if result and 'pubsub' in result and 'subscriptions' in result['pubsub']:
+                        subs = result['pubsub']['subscriptions']
+                        logger.info(f"✓ Found {len(subs)} PEP subscriptions:")
+                        for sub in subs:
+                            node = sub.get('node', 'N/A')
+                            jid = sub.get('jid', 'N/A')
+                            subscription = sub.get('subscription', 'N/A')
+                            logger.info(f"  - Node: {node}")
+                            logger.info(f"    JID: {jid}, Status: {subscription}")
+                    else:
+                        logger.info("No PEP subscriptions found")
+
+                    # Also check pubsub.conversations.im
+                    pubsub_jid = "pubsub.conversations.im"
+                    logger.info(f"\nQuerying subscriptions from {pubsub_jid}...")
+                    try:
+                        result = await xep_0060.get_subscriptions(pubsub_jid)
+                        if result and 'pubsub' in result and 'subscriptions' in result['pubsub']:
+                            subs = result['pubsub']['subscriptions']
+                            logger.info(f"✓ Found {len(subs)} subscriptions on pubsub service:")
+                            for sub in subs:
+                                node = sub.get('node', 'N/A')
+                                jid = sub.get('jid', 'N/A')
+                                subscription = sub.get('subscription', 'N/A')
+                                logger.info(f"  - Node: {node}")
+                                logger.info(f"    JID: {jid}, Status: {subscription}")
+                        else:
+                            logger.info("No subscriptions on pubsub service")
+                    except Exception as e:
+                        logger.warning(f"Could not query pubsub service: {e}")
+
+                except Exception as e:
+                    logger.error(f"Failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            elif command.startswith("/pep-unsubscribe "):
+                parts = command.split(None, 2)
+                if len(parts) < 3:
+                    logger.error("Usage: /pep-unsubscribe <service_jid> <node>")
+                    logger.error("Example: /pep-unsubscribe pubsub.conversations.im eu.siacs.conversations.axolotl.devicelist")
+                    continue
+
+                service_jid = parts[1]
+                node = parts[2]
+
+                logger.info(f"Unsubscribing from node '{node}' on {service_jid}...")
+                logger.info("Trying multiple methods to force unsubscribe...")
+
+                try:
+                    xep_0060 = client.plugin['xep_0060']
+                    own_jid = client.boundjid.bare
+
+                    # Method 1: Standard unsubscribe
+                    logger.info(f"Method 1: Standard unsubscribe")
+                    try:
+                        iq = client.make_iq_set(ito=service_jid)
+                        iq['pubsub']['unsubscribe']['node'] = node
+                        iq['pubsub']['unsubscribe']['jid'] = own_jid
+                        result = await iq.send()
+                        logger.info(f"✓ Method 1 succeeded")
+                    except Exception as e:
+                        logger.warning(f"Method 1 failed: {e}")
+
+                        # Method 2: Try with explicit subscriber JID
+                        logger.info(f"Method 2: Trying alternate format...")
+                        try:
+                            iq = client.make_iq_set(ito=service_jid)
+                            unsub = iq['pubsub']['unsubscribe']
+                            unsub['node'] = node
+                            unsub['jid'] = own_jid
+                            # Force ifrom to be own JID
+                            iq['from'] = own_jid
+                            result = await iq.send()
+                            logger.info(f"✓ Method 2 succeeded")
+                        except Exception as e2:
+                            logger.warning(f"Method 2 failed: {e2}")
+
+                            # Method 3: Try querying and deleting by subid
+                            logger.info(f"Method 3: Finding subscription ID...")
+                            try:
+                                subs_result = await xep_0060.get_subscriptions(service_jid)
+                                if subs_result and 'pubsub' in subs_result:
+                                    subs = subs_result['pubsub']['subscriptions']
+                                    for sub in subs:
+                                        if sub.get('node') == node:
+                                            subid = sub.get('subid')
+                                            if subid:
+                                                logger.info(f"Found subid: {subid}, trying to unsubscribe with it...")
+                                                iq = client.make_iq_set(ito=service_jid)
+                                                unsub = iq['pubsub']['unsubscribe']
+                                                unsub['node'] = node
+                                                unsub['jid'] = own_jid
+                                                unsub['subid'] = subid
+                                                result = await iq.send()
+                                                logger.info(f"✓ Method 3 succeeded with subid")
+                                                break
+                                    else:
+                                        raise Exception("No matching subscription found")
+                            except Exception as e3:
+                                logger.error(f"All methods failed. Last error: {e3}")
+                                logger.error("These may be phantom subscriptions that require server admin intervention.")
+                                raise
+
+                    logger.info(f"✓ Successfully unsubscribed from {node} on {service_jid}")
+
+                except Exception as e:
+                    logger.error(f"Failed to unsubscribe: {e}")
+                    import traceback
+                    traceback.print_exc()
 
             elif command.startswith("/subscribe "):
                 parts = command.split(None, 1)

@@ -235,21 +235,27 @@ class ContactListWidget(QWidget):
                 ORDER BY name, j.bare_jid
             """, (account_id, account_id))
 
-            # Get 1-to-1 contacts from roster (exclude MUCs)
+            # Get 1-to-1 contacts from roster OR with conversations (exclude MUCs)
             muc_jids = {room['bare_jid'] for room in rooms}
             contacts = self.db.fetchall("""
-                SELECT
+                SELECT DISTINCT
                     r.id,
-                    r.account_id,
+                    ? as account_id,
                     j.bare_jid,
                     r.name,
                     r.subscription,
                     r.blocked
-                FROM roster r
-                JOIN jid j ON r.jid_id = j.id
-                WHERE r.account_id = ?
-                ORDER BY r.name, j.bare_jid
-            """, (account_id,))
+                FROM jid j
+                LEFT JOIN roster r ON r.jid_id = j.id AND r.account_id = ?
+                WHERE (
+                    r.id IS NOT NULL  -- In roster
+                    OR EXISTS (       -- OR has a 1-to-1 conversation with messages
+                        SELECT 1 FROM conversation c
+                        WHERE c.account_id = ? AND c.jid_id = j.id AND c.type = 0
+                    )
+                )
+                ORDER BY COALESCE(r.name, j.bare_jid), j.bare_jid
+            """, (account_id, account_id, account_id))
 
             # Filter out MUCs from contacts list
             contacts = [c for c in contacts if c['bare_jid'] not in muc_jids]
