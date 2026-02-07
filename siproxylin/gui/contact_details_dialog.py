@@ -463,10 +463,16 @@ class ContactDetailsDialog(QDialog):
         actions_group = QGroupBox("Actions")
         actions_layout = QVBoxLayout(actions_group)
 
-        # Clear chat history
-        clear_history_button = QPushButton("Clear Chat History")
+        # Clear history
+        clear_history_button = QPushButton("Clear History")
         clear_history_button.clicked.connect(self._on_clear_history)
         actions_layout.addWidget(clear_history_button)
+
+        # Delete chat (removes conversation entirely)
+        delete_chat_button = QPushButton("Delete Chat")
+        delete_chat_button.setStyleSheet("QPushButton { background-color: #d9534f; color: white; padding: 8px; }")
+        delete_chat_button.clicked.connect(self._on_delete_chat)
+        actions_layout.addWidget(delete_chat_button)
 
         # Remove contact
         remove_button = QPushButton("Remove Contact")
@@ -758,12 +764,12 @@ class ContactDetailsDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")
 
     def _on_clear_history(self):
-        """Handle Clear Chat History button click."""
+        """Handle Clear History button click - deletes messages, keeps conversation."""
         reply = QMessageBox.question(
             self,
-            "Clear Chat History",
-            f"Are you sure you want to clear all chat history with {self.jid}?\n\n"
-            "This action cannot be undone.",
+            "Clear History",
+            f"Are you sure you want to clear the history with {self.jid}?\n\n"
+            "This will permanently delete all messages. This action cannot be undone.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
@@ -782,23 +788,78 @@ class ContactDetailsDialog(QDialog):
             # Get conversation_id
             conversation_id = self.db.get_or_create_conversation(self.account_id, jid_id, 0)
 
-            # Mark all content items as hidden instead of deleting (preserves integrity)
+            # Delete all content items (privacy-first: hard delete, not hide)
             self.db.execute("""
-                UPDATE content_item
-                SET hide = 1
+                DELETE FROM content_item
                 WHERE conversation_id = ?
             """, (conversation_id,))
 
             self.db.commit()
 
-            logger.info(f"Cleared chat history for {self.jid}")
-            QMessageBox.information(self, "History Cleared", f"Chat history with {self.jid} has been cleared.")
+            logger.info(f"Deleted all messages for {self.jid}")
+            QMessageBox.information(self, "History Cleared", f"History with {self.jid} has been cleared.")
 
         except Exception as e:
             logger.error(f"Failed to clear history: {e}")
             import traceback
             logger.error(traceback.format_exc())
             QMessageBox.critical(self, "Error", f"Failed to clear history: {e}")
+
+    def _on_delete_chat(self):
+        """Handle Delete Chat button click - removes conversation entirely."""
+        reply = QMessageBox.question(
+            self,
+            "Delete Chat",
+            f"Are you sure you want to delete this chat with {self.jid}?\n\n"
+            "This will permanently delete all messages and remove the conversation. "
+            "This action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            # Get jid_id
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (self.jid,))
+            if not jid_row:
+                return
+
+            jid_id = jid_row['id']
+
+            # Get conversation_id (don't create if doesn't exist)
+            conversation_row = self.db.fetchone("""
+                SELECT id FROM conversation
+                WHERE account_id = ? AND jid_id = ? AND type = 0
+            """, (self.account_id, jid_id))
+
+            if not conversation_row:
+                logger.info(f"No conversation found for {self.jid}, nothing to delete")
+                QMessageBox.information(self, "No Chat", f"No conversation found with {self.jid}.")
+                return
+
+            conversation_id = conversation_row['id']
+
+            # Delete the conversation (CASCADE will delete content_items and conversation_settings)
+            self.db.execute("""
+                DELETE FROM conversation
+                WHERE id = ?
+            """, (conversation_id,))
+
+            self.db.commit()
+
+            logger.info(f"Deleted chat with {self.jid}")
+            QMessageBox.information(self, "Chat Deleted", f"Chat with {self.jid} has been deleted.")
+
+            # Close dialog and signal refresh
+            self.accept()
+
+        except Exception as e:
+            logger.error(f"Failed to delete chat: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            QMessageBox.critical(self, "Error", f"Failed to delete chat: {e}")
 
     def _on_remove_contact(self):
         """Handle Remove Contact button click."""

@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QLabel, QLineEdit, QHBoxLayout, QMenu, QPushButton, QFrame, QToolButton
+    QLabel, QLineEdit, QHBoxLayout, QMenu, QPushButton, QFrame, QToolButton, QMessageBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QAction, QColor
@@ -235,27 +235,26 @@ class ContactListWidget(QWidget):
                 ORDER BY name, j.bare_jid
             """, (account_id, account_id))
 
-            # Get 1-to-1 contacts from roster OR with conversations (exclude MUCs)
+            # Get 1-to-1 chats (only show conversations with messages - chat list, not contact list)
             muc_jids = {room['bare_jid'] for room in rooms}
             contacts = self.db.fetchall("""
                 SELECT DISTINCT
                     r.id,
-                    ? as account_id,
+                    c.account_id,
                     j.bare_jid,
                     r.name,
                     r.subscription,
                     r.blocked
-                FROM jid j
-                LEFT JOIN roster r ON r.jid_id = j.id AND r.account_id = ?
-                WHERE (
-                    r.id IS NOT NULL  -- In roster
-                    OR EXISTS (       -- OR has a 1-to-1 conversation with messages
-                        SELECT 1 FROM conversation c
-                        WHERE c.account_id = ? AND c.jid_id = j.id AND c.type = 0
-                    )
-                )
+                FROM conversation c
+                JOIN jid j ON c.jid_id = j.id
+                LEFT JOIN roster r ON r.jid_id = j.id AND r.account_id = c.account_id
+                WHERE c.account_id = ? AND c.type = 0
+                  AND EXISTS (  -- Only show conversations with messages
+                    SELECT 1 FROM content_item ci
+                    WHERE ci.conversation_id = c.id
+                  )
                 ORDER BY COALESCE(r.name, j.bare_jid), j.bare_jid
-            """, (account_id, account_id, account_id))
+            """, (account_id,))
 
             # Filter out MUCs from contacts list
             contacts = [c for c in contacts if c['bare_jid'] not in muc_jids]
@@ -704,6 +703,13 @@ class ContactListWidget(QWidget):
         delete_history_action.triggered.connect(lambda: self.delete_chat_requested.emit(account_id, jid))
         menu.addAction(delete_history_action)
 
+        # Delete Chat (removes conversation entirely)
+        delete_chat_action = QAction("Delete Chat", self)
+        delete_chat_action.triggered.connect(lambda: self._on_delete_chat(data))
+        menu.addAction(delete_chat_action)
+
+        menu.addSeparator()
+
         # Remove from Contacts (full deletion)
         delete_contact_action = QAction("Remove from Contacts", self)
         delete_contact_action.triggered.connect(lambda: self._on_delete_contact_clicked(account_id, jid, roster_id))
@@ -730,6 +736,62 @@ class ContactListWidget(QWidget):
 
         # Show menu
         menu.exec_(self.contact_tree.viewport().mapToGlobal(position))
+
+    def _on_delete_chat(self, contact_data: ContactDisplayData):
+        """Delete chat entirely (delete messages + remove conversation row)."""
+        reply = QMessageBox.question(
+            self,
+            "Delete Chat",
+            f"Are you sure you want to delete this chat with {contact_data.name}?\n\n"
+            "This will permanently delete all messages and remove the conversation. "
+            "This action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            # Get jid_id
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (contact_data.jid,))
+            if not jid_row:
+                return
+
+            jid_id = jid_row['id']
+
+            # Get conversation_id (don't create if doesn't exist)
+            conversation_row = self.db.fetchone("""
+                SELECT id FROM conversation
+                WHERE account_id = ? AND jid_id = ? AND type = 0
+            """, (contact_data.account_id, jid_id))
+
+            if not conversation_row:
+                logger.info(f"No conversation found for {contact_data.jid}, nothing to delete")
+                QMessageBox.information(self, "No Chat", f"No conversation found with {contact_data.name}.")
+                return
+
+            conversation_id = conversation_row['id']
+
+            # Delete the conversation (CASCADE will delete content_items and conversation_settings)
+            self.db.execute("""
+                DELETE FROM conversation
+                WHERE id = ?
+            """, (conversation_id,))
+
+            self.db.commit()
+
+            logger.info(f"Deleted chat with {contact_data.jid}")
+            QMessageBox.information(self, "Chat Deleted", f"Chat with {contact_data.name} has been deleted.")
+
+            # Refresh contact list to remove from UI
+            self.load_roster()
+
+        except Exception as e:
+            logger.error(f"Failed to delete chat: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            QMessageBox.critical(self, "Error", f"Failed to delete chat: {e}")
 
     def _on_delete_contact_clicked(self, account_id: int, jid: str, roster_id: int):
         """Handle delete contact menu click with debug logging."""

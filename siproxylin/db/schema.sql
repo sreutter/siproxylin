@@ -228,7 +228,8 @@ CREATE TABLE content_item (
     local_time INTEGER NOT NULL,        -- Local receipt timestamp
     content_type INTEGER NOT NULL,      -- 0=message, 2=file_transfer, 3=call
     foreign_id INTEGER NOT NULL,        -- References message.id, file_transfer.id, or call.id
-    hide INTEGER NOT NULL DEFAULT 0,    -- Hidden from view (e.g., deleted)
+    hide INTEGER NOT NULL DEFAULT 0,    -- 0=visible, 1=hidden (for selective hiding, e.g., sensitive content)
+                                        -- Future: Add hide/unhide buttons for privacy control
     UNIQUE (content_type, foreign_id) ON CONFLICT IGNORE,
     FOREIGN KEY (conversation_id) REFERENCES conversation(id) ON DELETE CASCADE
 );

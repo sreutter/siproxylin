@@ -163,19 +163,6 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        # File -> Add Contact
-        add_contact_action = QAction("Add C&ontact...", self)
-        add_contact_action.setShortcut("Ctrl+N")
-        add_contact_action.triggered.connect(self._on_new_contact)
-        file_menu.addAction(add_contact_action)
-
-        # File -> Add Group
-        add_group_action = QAction("Add &Group...", self)
-        add_group_action.triggered.connect(self._on_new_group)
-        file_menu.addAction(add_group_action)
-
-        file_menu.addSeparator()
-
         # File -> Settings
         settings_action = QAction("&Settings...", self)
         settings_action.setShortcut("Ctrl+,")
@@ -201,6 +188,30 @@ class MainWindow(QMainWindow):
         # =====================================================================
         self.view_menu = menubar.addMenu("&View")
         self._populate_view_menu()
+
+        # =====================================================================
+        # Contacts Menu
+        # =====================================================================
+        contacts_menu = menubar.addMenu("&Contacts")
+
+        # Contacts -> Add Contact
+        add_contact_action_menu = QAction("&Add Contact...", self)
+        add_contact_action_menu.setShortcut("Ctrl+N")
+        add_contact_action_menu.triggered.connect(self._on_new_contact)
+        contacts_menu.addAction(add_contact_action_menu)
+
+        # Contacts -> Add Group
+        add_group_action_menu = QAction("Add &Group...", self)
+        add_group_action_menu.triggered.connect(self._on_new_group)
+        contacts_menu.addAction(add_group_action_menu)
+
+        contacts_menu.addSeparator()
+
+        # Contacts -> Manage Contacts
+        manage_contacts_action = QAction("&Manage Contacts...", self)
+        manage_contacts_action.setShortcut("Ctrl+Shift+C")
+        manage_contacts_action.triggered.connect(self._on_manage_contacts)
+        contacts_menu.addAction(manage_contacts_action)
 
         # =====================================================================
         # Help Menu
@@ -232,12 +243,8 @@ class MainWindow(QMainWindow):
 
         self.edit_menu.addSeparator()
 
-        # Edit -> Contacts (opens Manage Contacts dialog)
-        contacts_action = QAction("&Contacts...", self)
-        contacts_action.triggered.connect(self._on_manage_contacts)
-        self.edit_menu.addAction(contacts_action)
-
-        self.edit_menu.addSeparator()
+        # Edit -> Accounts (submenu)
+        accounts_menu = self.edit_menu.addMenu("&Accounts")
 
         # Get all accounts from database
         accounts = self.db.fetchall("SELECT id, bare_jid, nickname FROM account ORDER BY id")
@@ -246,18 +253,18 @@ class MainWindow(QMainWindow):
             # No accounts yet
             no_accounts_action = QAction("(No accounts)", self)
             no_accounts_action.setEnabled(False)
-            self.edit_menu.addAction(no_accounts_action)
+            accounts_menu.addAction(no_accounts_action)
         else:
             # Add menu item for each account
             for account in accounts:
                 account_id = account['id']
                 account_label = account['nickname'] or account['bare_jid']
 
-                edit_account_action = QAction(f"Account {account_id}: {account_label}...", self)
+                edit_account_action = QAction(f"{account_id}: {account_label}...", self)
                 edit_account_action.triggered.connect(
                     lambda checked, aid=account_id: self._on_edit_account(aid)
                 )
-                self.edit_menu.addAction(edit_account_action)
+                accounts_menu.addAction(edit_account_action)
 
         logger.debug(f"Edit menu populated with {len(accounts)} accounts")
 
@@ -1034,6 +1041,9 @@ class MainWindow(QMainWindow):
         logger.debug(f"Contact selected: {jid} (account {account_id})")
         self.chat_view.load_conversation(account_id, jid)
 
+        # Refresh contact list (in case conversation was just created)
+        self.contact_list.load_roster()
+
         # Select the contact in the roster (useful when opened from dialog)
         self.contact_list.select_contact(account_id, jid)
 
@@ -1754,6 +1764,15 @@ class MainWindow(QMainWindow):
             # Only send markers for actual new messages, not for marker/receipt updates
             self.chat_view.refresh(send_markers=(not is_marker))
             logger.debug(f"Chat view refreshed for {event_type}")
+
+        # Check if this is a new conversation (not currently in chat list)
+        # Only refresh roster for new conversations to avoid expensive reloads
+        if not is_marker:
+            item = self.contact_list._find_contact_item(account_id, from_jid)
+            if item is None:
+                # New conversation - contact not in chat list yet
+                logger.debug(f"New conversation from {from_jid}, refreshing chat list")
+                self.contact_list.load_roster()
 
         # Update unread indicators in contact list (always, even if chat is open)
         self.contact_list.update_unread_indicators(account_id, from_jid)
