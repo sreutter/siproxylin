@@ -476,11 +476,18 @@ class ChatViewWidget(QWidget):
         if role == 'visitor':
             self._set_input_enabled(True)  # Keep field enabled so overlay is clickable
             self.input_field.show_visitor_overlay()
+            # Reset throttling timer when becoming visitor (e.g., voice revoked)
+            # This allows immediate new request after demotion
+            account.muc.reset_voice_request_timer(room_jid)
             logger.info(f"User is visitor in {room_jid} - showing voice request overlay")
         else:
             # Participant, moderator, or role not yet known - enable normal input
             self._set_input_enabled(True)
             self.input_field.hide_visitor_overlay()
+            # Reset throttling timer when promoted (voice granted)
+            # This allows new request if demoted again later
+            account.muc.reset_voice_request_timer(room_jid)
+            logger.debug(f"User has voice in {room_jid} - hiding overlay and resetting timer")
 
     def _update_encryption_button_visibility(self):
         """
@@ -879,12 +886,29 @@ class ChatViewWidget(QWidget):
             logger.warning("Voice request clicked but account not connected")
             return
 
-        # Request voice
-        account.muc.request_voice(self.current_jid)
-        logger.info(f"Voice requested in {self.current_jid}")
+        # Request voice (returns dict with success, message, cooldown_remaining)
+        result = account.muc.request_voice(self.current_jid)
+        logger.info(f"Voice request result for {self.current_jid}: {result}")
 
-        # Show feedback to user (overlay stays visible until role changes)
-        # Could optionally show a toast/statusbar message here
+        # Update overlay text based on result
+        if result['success']:
+            # Request sent successfully
+            self.input_field.update_visitor_overlay_text(
+                "Voice request sent to moderators. Waiting for approval..."
+            )
+        else:
+            # Request failed or throttled
+            if result['cooldown_remaining'] > 0:
+                # Throttled - show cooldown
+                minutes = result['cooldown_remaining'] // 60
+                self.input_field.update_visitor_overlay_text(
+                    f"Voice request already sent. You can request again in {minutes} minute(s)."
+                )
+            else:
+                # Other error
+                self.input_field.update_visitor_overlay_text(
+                    f"Request failed: {result['message']}"
+                )
 
     def _send_composing_state(self):
         """Send 'composing' chat state to peer (XEP-0085)."""

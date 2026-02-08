@@ -123,6 +123,7 @@ class MainWindow(QMainWindow):
             account.chat_state_changed.connect(self._on_chat_state_changed)
             account.presence_changed.connect(self._on_presence_changed)
             account.muc_invite_received.connect(self._on_muc_invite_received)
+            account.muc_role_changed.connect(self._on_muc_role_changed)
             account.avatar_updated.connect(self._on_avatar_updated)
             account.nickname_updated.connect(self._on_nickname_updated)
             account.subscription_request_received.connect(self._on_subscription_request_received)
@@ -580,6 +581,7 @@ class MainWindow(QMainWindow):
                     account.message_received.connect(self._on_message_received)
                     account.chat_state_changed.connect(self._on_chat_state_changed)
                     account.muc_invite_received.connect(self._on_muc_invite_received)
+                    account.muc_role_changed.connect(self._on_muc_role_changed)
                     account.avatar_updated.connect(self._on_avatar_updated)
                     account.subscription_request_received.connect(self._on_subscription_request_received)
                     account.subscription_changed.connect(self._on_subscription_changed)
@@ -2235,6 +2237,27 @@ class MainWindow(QMainWindow):
             import traceback
             logger.error(traceback.format_exc())
             QMessageBox.critical(self, "Error", f"Failed to join room: {e}")
+
+    def _on_muc_role_changed(self, account_id: int, room_jid: str, old_role: str, new_role: str):
+        """
+        Handle MUC role change (e.g., visitor → participant when voice granted).
+
+        Updates UI if currently viewing this room.
+
+        Args:
+            account_id: Account ID
+            room_jid: Room JID where role changed
+            old_role: Previous role
+            new_role: New role
+        """
+        logger.info(f"MUC role changed in {room_jid}: {old_role} → {new_role}")
+
+        # If this is the currently open chat, update input state
+        if (self.chat_view.current_account_id == account_id and
+            self.chat_view.current_jid == room_jid and
+            self.chat_view.current_is_muc):
+            logger.debug(f"Updating input state for current room: {room_jid}")
+            self.chat_view._update_muc_input_state(account_id, room_jid)
 
     def _on_manage_subscription(self, account_id: int, jid: str, roster_id: int):
         """

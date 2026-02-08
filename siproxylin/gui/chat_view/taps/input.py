@@ -98,6 +98,12 @@ class MessageInputField(QTextEdit):
 
     def show_visitor_overlay(self):
         """Show the visitor overlay (user is visitor in moderated room)."""
+        # Reset to original text with clickable link
+        self.visitor_overlay.setText(
+            'You are a visitor in this moderated room. '
+            '<a href="#request">Request voice</a> to send messages.'
+        )
+        self.visitor_overlay.setOpenExternalLinks(False)  # Handle clicks ourselves
         self.visitor_overlay.show()
         self.visitor_overlay.raise_()  # Bring to front
         logger.debug("Visitor overlay shown")
@@ -106,6 +112,17 @@ class MessageInputField(QTextEdit):
         """Hide the visitor overlay (user can send messages)."""
         self.visitor_overlay.hide()
         logger.debug("Visitor overlay hidden")
+
+    def update_visitor_overlay_text(self, text: str):
+        """
+        Update the visitor overlay text (e.g., after request sent or throttled).
+
+        Args:
+            text: New text to display
+        """
+        self.visitor_overlay.setText(text)
+        self.visitor_overlay.setOpenExternalLinks(False)  # Disable links when showing status
+        logger.debug(f"Visitor overlay text updated: {text}")
 
     def resizeEvent(self, event):
         """Keep overlay sized to match input field on resize."""

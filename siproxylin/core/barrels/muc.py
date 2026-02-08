@@ -114,6 +114,10 @@ class MucBarrel:
         # Format: {room_jid: {persistent: bool, public: bool, ...}}
         self.room_configs: Dict[str, Dict[str, Any]] = {}
 
+        # Track voice request timestamps per room (for throttling)
+        # Format: {room_jid: timestamp}
+        self._voice_request_timestamps: Dict[str, float] = {}
+
     async def add_and_join_room(self, room_jid: str, nick: str, password: str = None):
         """
         Add a room to the client's configuration and join it.
@@ -1188,39 +1192,101 @@ class MucBarrel:
         affiliation = self.get_own_affiliation(room_jid)
         return affiliation in ('owner', 'admin')
 
-    def request_voice(self, room_jid: str) -> None:
+    def request_voice(self, room_jid: str) -> dict:
         """
         Request voice (participant role) in a moderated room.
 
         Use this when you are a visitor and want to be able to send messages.
         Moderators will receive the request and can approve/deny it.
 
+        Implements throttling: only allows one request per hour per room.
+
         Args:
             room_jid: Room JID to request voice in
+
+        Returns:
+            dict with keys:
+                - success (bool): Whether request was sent
+                - message (str): User-friendly status message
+                - cooldown_remaining (int): Seconds until next request allowed (0 if allowed now)
 
         Note:
             - Only works if you're currently a visitor in the room
             - Request is sent to room moderators
-            - No response/feedback - moderators must manually grant participant role
+            - Throttled to prevent spam (1 hour cooldown)
         """
+        import time
+
+        # Check throttling (1 hour = 3600 seconds)
+        COOLDOWN_SECONDS = 3600
+        now = time.time()
+        last_request = self._voice_request_timestamps.get(room_jid, 0)
+        time_since_last = now - last_request
+
+        if time_since_last < COOLDOWN_SECONDS:
+            cooldown_remaining = int(COOLDOWN_SECONDS - time_since_last)
+            minutes_remaining = cooldown_remaining // 60
+            if self.logger:
+                self.logger.warning(f"Voice request throttled for {room_jid}: {cooldown_remaining}s remaining")
+            return {
+                'success': False,
+                'message': f"Please wait {minutes_remaining} minute(s) before requesting again.",
+                'cooldown_remaining': cooldown_remaining
+            }
+
         if not self.client:
             if self.logger:
                 self.logger.error(f"Cannot request voice in {room_jid}: client not connected")
-            return
+            return {
+                'success': False,
+                'message': "Not connected to server.",
+                'cooldown_remaining': 0
+            }
 
         xep_0045 = self.client.plugin.get('xep_0045', None)
         if not xep_0045:
             if self.logger:
                 self.logger.error("XEP-0045 plugin not loaded")
-            return
+            return {
+                'success': False,
+                'message': "MUC plugin not available.",
+                'cooldown_remaining': 0
+            }
 
         try:
             xep_0045.request_voice(room_jid, role='participant')
+            # Record timestamp for throttling
+            self._voice_request_timestamps[room_jid] = now
             if self.logger:
                 self.logger.info(f"Requested voice in room: {room_jid}")
+            return {
+                'success': True,
+                'message': "Voice request sent to moderators.",
+                'cooldown_remaining': 0
+            }
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Failed to request voice in {room_jid}: {e}", exc_info=True)
+            return {
+                'success': False,
+                'message': f"Request failed: {str(e)}",
+                'cooldown_remaining': 0
+            }
+
+    def reset_voice_request_timer(self, room_jid: str) -> None:
+        """
+        Reset the voice request throttling timer for a room.
+
+        Called when role changes (promoted or demoted) to allow immediate
+        new request if needed.
+
+        Args:
+            room_jid: Room JID to reset timer for
+        """
+        if room_jid in self._voice_request_timestamps:
+            del self._voice_request_timestamps[room_jid]
+            if self.logger:
+                self.logger.debug(f"Voice request timer reset for {room_jid}")
 
     def get_bookmark(self, room_jid: str) -> Optional[Bookmark]:
         """

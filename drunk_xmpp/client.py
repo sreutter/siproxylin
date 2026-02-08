@@ -299,6 +299,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         on_muc_invite_callback: Optional[Callable] = None,
         on_muc_joined_callback: Optional[Callable] = None,
         on_muc_join_error_callback: Optional[Callable] = None,
+        on_muc_role_changed_callback: Optional[Callable] = None,
         on_message_correction_callback: Optional[Callable] = None,
         on_room_config_changed_callback: Optional[Callable] = None,
         on_avatar_update_callback: Optional[Callable] = None,
@@ -342,6 +343,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             on_bookmarks_received_callback: Optional callback for bookmarks sync (bookmarks_list) - XEP-0402
             on_muc_invite_callback: Optional callback for MUC invites (room_jid, inviter_jid, reason, password) - XEP-0045
             on_muc_joined_callback: Optional callback for MUC room joined (room_jid, nick) - Fires after self-presence received (status code 110)
+            on_muc_role_changed_callback: Optional callback for MUC role changes (room_jid, old_role, new_role) - XEP-0045
             on_room_config_changed_callback: Optional callback for room config changes (room_jid, room_name) - XEP-0045 status code 104
             on_avatar_update_callback: Optional callback for avatar updates (jid, avatar_data) - XEP-0084/0153
             on_nickname_update_callback: Optional callback for nickname updates (jid, nickname) - XEP-0172
@@ -409,6 +411,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.on_muc_invite_callback = on_muc_invite_callback
         self.on_muc_joined_callback = on_muc_joined_callback
         self.on_muc_join_error_callback = on_muc_join_error_callback
+        self.on_muc_role_changed_callback = on_muc_role_changed_callback
         self.on_message_correction_callback = on_message_correction_callback
         self.on_room_config_changed_callback = on_room_config_changed_callback
         self.on_avatar_update_callback = on_avatar_update_callback

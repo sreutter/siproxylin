@@ -60,6 +60,7 @@ class XMPPAccount(QObject):
     presence_changed = Signal(int, str, str)  # (account_id, jid, presence) - contact presence changed
     muc_invite_received = Signal(int, str, str, str, str)  # (account_id, room_jid, inviter_jid, reason, password)
     muc_join_error = Signal(str, str, str)  # (room_jid, friendly_message, server_error_text)
+    muc_role_changed = Signal(int, str, str, str)  # (account_id, room_jid, old_role, new_role)
     avatar_updated = Signal(int, str)  # (account_id, jid) - avatar fetched/updated
     nickname_updated = Signal(int, str, str)  # (account_id, jid, nickname) - contact nickname updated (XEP-0172)
     subscription_request_received = Signal(int, str)  # (account_id, from_jid) - incoming subscription request
@@ -253,6 +254,7 @@ class XMPPAccount(QObject):
             'on_muc_invite_callback': self.muc.on_muc_invite,
             'on_muc_joined_callback': self.muc.on_muc_joined,
             'on_muc_join_error_callback': self.muc.on_muc_join_error,
+            'on_muc_role_changed_callback': self._on_muc_role_changed,
             'on_room_config_changed_callback': self.muc.on_room_config_changed,
             'on_message_correction_callback': self.messages._on_message_correction,
             'on_avatar_update_callback': self.avatars.on_avatar_update,
@@ -747,6 +749,20 @@ class XMPPAccount(QObject):
     async def _on_presence_changed(self, from_jid: str, show: str):
         """Handle presence change - delegates to PresenceBarrel."""
         await self.presence._on_presence_changed(from_jid, show)
+
+    async def _on_muc_role_changed(self, room_jid: str, old_role: str, new_role: str):
+        """
+        Handle MUC role change (e.g., visitor → participant when voice granted).
+
+        Emits signal to update UI (hide visitor overlay, enable input).
+
+        Args:
+            room_jid: Bare JID of the room
+            old_role: Previous role (visitor, participant, moderator, none)
+            new_role: New role
+        """
+        logger.info(f"[Account {self.account_id}] Role changed in {room_jid}: {old_role} → {new_role}")
+        self.muc_role_changed.emit(self.account_id, room_jid, old_role, new_role)
 
     # =========================================================================
     # Avatar Management (delegates to AvatarBarrel)
