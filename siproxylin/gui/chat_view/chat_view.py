@@ -172,6 +172,9 @@ class ChatViewWidget(QWidget):
         self.input_field.paused_state.connect(self._send_paused_state)
         self.input_field.active_state.connect(self._send_active_state)
 
+        # Connect voice request signal
+        self.input_field.voice_request_clicked.connect(self._handle_voice_request)
+
         # Set document and content margins (margin_top=7, margin_bottom=7)
         self.input_field.document().setDocumentMargin(2)
         self.input_field.setContentsMargins(4, 6, 4, 6)  # left, top, right, bottom
@@ -334,8 +337,8 @@ class ChatViewWidget(QWidget):
             base_contact_name = f"👥 {display_name}"
             roster_name = None  # MUCs don't have roster names
             is_blocked = False
-            # MUCs cannot be blocked - always enable input (users leave room instead)
-            self._set_input_enabled(True)
+            # MUCs cannot be blocked - check if user can send messages (based on role)
+            self._update_muc_input_state(account_id, jid)
         else:
             # 1-on-1 contact
             contact = self.db.fetchone("""
@@ -364,6 +367,8 @@ class ChatViewWidget(QWidget):
                 # Not in roster, assume not blocked
                 is_blocked = False
                 self._set_input_enabled(True)
+            # Always hide visitor overlay for 1-on-1 chats
+            self.input_field.hide_visitor_overlay()
 
         # Load header with all conversation info
         # Note: send_typing is still loaded from DB above but not passed to header (no button anymore)
@@ -449,6 +454,33 @@ class ChatViewWidget(QWidget):
         self.emoji_button.setEnabled(enabled)
         self.send_button.setEnabled(enabled)
         # OMEMO button is now in header, not in input area
+
+    def _update_muc_input_state(self, account_id: int, room_jid: str):
+        """
+        Update MUC input state based on user's role (visitor check).
+
+        Args:
+            account_id: Account ID
+            room_jid: Room JID
+        """
+        account = self.account_manager.get_account(account_id)
+        if not account or not account.is_connected():
+            self._set_input_enabled(True)
+            self.input_field.hide_visitor_overlay()
+            return
+
+        role = account.muc.get_own_role(room_jid)
+        logger.debug(f"MUC role for {room_jid}: {role}")
+
+        # Visitor in moderated room cannot send messages
+        if role == 'visitor':
+            self._set_input_enabled(True)  # Keep field enabled so overlay is clickable
+            self.input_field.show_visitor_overlay()
+            logger.info(f"User is visitor in {room_jid} - showing voice request overlay")
+        else:
+            # Participant, moderator, or role not yet known - enable normal input
+            self._set_input_enabled(True)
+            self.input_field.hide_visitor_overlay()
 
     def _update_encryption_button_visibility(self):
         """
@@ -835,6 +867,24 @@ class ChatViewWidget(QWidget):
         """
         # Delegate to message actions manager
         self.message_actions.format_selection(prefix, suffix)
+
+    def _handle_voice_request(self):
+        """Handle voice request button click (user is visitor in moderated room)."""
+        if not self.current_account_id or not self.current_jid or not self.current_is_muc:
+            logger.warning("Voice request clicked but not in MUC context")
+            return
+
+        account = self.account_manager.get_account(self.current_account_id)
+        if not account or not account.is_connected():
+            logger.warning("Voice request clicked but account not connected")
+            return
+
+        # Request voice
+        account.muc.request_voice(self.current_jid)
+        logger.info(f"Voice requested in {self.current_jid}")
+
+        # Show feedback to user (overlay stays visible until role changes)
+        # Could optionally show a toast/statusbar message here
 
     def _send_composing_state(self):
         """Send 'composing' chat state to peer (XEP-0085)."""

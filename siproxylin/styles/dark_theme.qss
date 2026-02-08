@@ -219,6 +219,21 @@ ChatViewWidget QTextEdit#inputField:focus {
     border: 1px solid #0d7377;
 }
 
+/* Visitor overlay (shown when user is visitor in moderated room) */
+ChatViewWidget QLabel#visitorOverlay {
+    background-color: rgba(255, 152, 0, 0.9);  /* Orange warning */
+    border: 1px solid #ff9800;
+    border-radius: 4px;
+    padding: 8px;
+    color: #1e1e1e;  /* Dark text on orange background */
+    font-size: {{BASE_FONT_SIZE}}pt;
+}
+
+ChatViewWidget QLabel#visitorOverlay a {
+    color: #1565c0;  /* Blue link */
+    text-decoration: underline;
+}
+
 /* OMEMO encryption toggle button */
 ChatViewWidget QToolButton#encryptionButton {
     background-color: transparent;

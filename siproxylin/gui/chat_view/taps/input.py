@@ -8,7 +8,7 @@ Provides the message input field with:
 """
 
 import logging
-from PySide6.QtWidgets import QTextEdit
+from PySide6.QtWidgets import QTextEdit, QLabel
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QKeyEvent
 
@@ -24,6 +24,8 @@ class MessageInputField(QTextEdit):
     composing_state = Signal()  # User started typing
     paused_state = Signal()     # User paused typing (30s timeout)
     active_state = Signal()     # User is active (sent message or cleared field)
+    # Signal for voice request
+    voice_request_clicked = Signal()  # User clicked "Request voice" link
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -39,6 +41,19 @@ class MessageInputField(QTextEdit):
 
         # Connect to text changes to track typing
         self.textChanged.connect(self._on_text_changed)
+
+        # Visitor overlay (shown when user is visitor in moderated room)
+        self.visitor_overlay = QLabel(self)
+        self.visitor_overlay.setObjectName("visitorOverlay")  # For theme styling
+        self.visitor_overlay.setText(
+            'You are a visitor in this moderated room. '
+            '<a href="#request">Request voice</a> to send messages.'
+        )
+        self.visitor_overlay.setOpenExternalLinks(False)  # Handle clicks ourselves
+        self.visitor_overlay.linkActivated.connect(self._on_voice_request_link_clicked)
+        self.visitor_overlay.setAlignment(Qt.AlignCenter)
+        self.visitor_overlay.setWordWrap(True)
+        self.visitor_overlay.hide()  # Hidden by default
 
     def _on_text_changed(self):
         """Handle text changes to send composing/paused states."""
@@ -75,6 +90,28 @@ class MessageInputField(QTextEdit):
         self.is_composing = False
         self.pause_timer.stop()
         logger.debug("Chat state reset (message sent)")
+
+    def _on_voice_request_link_clicked(self, link: str):
+        """Handle click on 'Request voice' link in visitor overlay."""
+        logger.debug("Voice request link clicked")
+        self.voice_request_clicked.emit()
+
+    def show_visitor_overlay(self):
+        """Show the visitor overlay (user is visitor in moderated room)."""
+        self.visitor_overlay.show()
+        self.visitor_overlay.raise_()  # Bring to front
+        logger.debug("Visitor overlay shown")
+
+    def hide_visitor_overlay(self):
+        """Hide the visitor overlay (user can send messages)."""
+        self.visitor_overlay.hide()
+        logger.debug("Visitor overlay hidden")
+
+    def resizeEvent(self, event):
+        """Keep overlay sized to match input field on resize."""
+        super().resizeEvent(event)
+        # Make overlay same size as input field
+        self.visitor_overlay.setGeometry(self.rect())
 
     def keyPressEvent(self, event: QKeyEvent):
         """Override to catch arrow-up in empty field."""

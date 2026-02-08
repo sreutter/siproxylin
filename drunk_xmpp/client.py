@@ -886,9 +886,23 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                     xep_0045 = self.plugin['xep_0045']
                     affiliation = xep_0045.get_jid_property(room, nick, 'affiliation') or 'none'
                     role = xep_0045.get_jid_property(room, nick, 'role') or 'participant'
+
+                    # Check if role changed (for voice request approval detection)
+                    old_role = self.own_roles.get(room)
+                    role_changed = (old_role is not None) and (old_role != role)
+
                     self.own_affiliations[room] = affiliation
                     self.own_roles[room] = role
                     self.logger.debug(f"Captured our affiliation in {room}: {affiliation}, role: {role}")
+
+                    # Fire role change callback if role changed
+                    if role_changed:
+                        self.logger.info(f"Role changed in {room}: {old_role} → {role}")
+                        if self.on_muc_role_changed_callback:
+                            try:
+                                await self.on_muc_role_changed_callback(room, old_role, role)
+                            except Exception as e:
+                                self.logger.error(f"Error in on_muc_role_changed_callback for {room}: {e}")
 
                     if room not in self.joined_rooms:
                         self.joined_rooms.add(room)

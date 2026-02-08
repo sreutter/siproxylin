@@ -1188,6 +1188,40 @@ class MucBarrel:
         affiliation = self.get_own_affiliation(room_jid)
         return affiliation in ('owner', 'admin')
 
+    def request_voice(self, room_jid: str) -> None:
+        """
+        Request voice (participant role) in a moderated room.
+
+        Use this when you are a visitor and want to be able to send messages.
+        Moderators will receive the request and can approve/deny it.
+
+        Args:
+            room_jid: Room JID to request voice in
+
+        Note:
+            - Only works if you're currently a visitor in the room
+            - Request is sent to room moderators
+            - No response/feedback - moderators must manually grant participant role
+        """
+        if not self.client:
+            if self.logger:
+                self.logger.error(f"Cannot request voice in {room_jid}: client not connected")
+            return
+
+        xep_0045 = self.client.plugin.get('xep_0045', None)
+        if not xep_0045:
+            if self.logger:
+                self.logger.error("XEP-0045 plugin not loaded")
+            return
+
+        try:
+            xep_0045.request_voice(room_jid, role='participant')
+            if self.logger:
+                self.logger.info(f"Requested voice in room: {room_jid}")
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to request voice in {room_jid}: {e}", exc_info=True)
+
     def get_bookmark(self, room_jid: str) -> Optional[Bookmark]:
         """
         Get bookmark data for a room.
