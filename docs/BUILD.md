@@ -116,10 +116,26 @@ python main.py
 
 ### Prerequisites
 
-- `appimage-builder` - Install via pip or download AppImage version
-- `appimagetool` - Auto-downloaded by build script
+**Required tools:**
+- `patchelf` - **CRITICAL** for portable AppImage (patches ELF binaries)
+- `python3` and `pip3` - Python runtime and package installer
+- `wget` - Download tool
+- `file` - File type detection
+- `appimage-builder` - Bundle system dependencies (install via pip or use AppImage version)
+- `appimagetool` - Final packaging tool (auto-downloaded by build script)
+
+**Optional:**
+- `imagemagick` (convert) - Icon conversion from SVG to PNG
+
+**Install on Debian/Ubuntu:**
+```bash
+sudo apt install patchelf python3 python3-pip wget file imagemagick
+pip install appimage-builder
+```
 
 **Before building:** Unset `PYTHONHOME` and `PYTHONPATH` to prevent host Python interference
+
+**Note:** The build script will check for all required tools and fail early with helpful error messages if anything is missing.
 
 ### Build Modes
 

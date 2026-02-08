@@ -74,6 +74,7 @@ jobs:
           imagemagick \
           wget \
           file \
+          patchelf \
           desktop-file-utils \
           fuse \
           squashfs-tools \

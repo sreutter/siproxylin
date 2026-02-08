@@ -282,8 +282,16 @@ package_appimage() {
 main() {
     print_header "$PKG_NAME AppImage Builder"
 
-    # Step 1: Validate
-    log_step "1/10" "Validating build environment..."
+    # Step 1: Validate tools
+    log_step "1/11" "Checking build tools..."
+    if ! check_required_tools; then
+        log_error "Required build tools missing"
+        exit 1
+    fi
+    print_separator
+
+    # Step 2: Validate files
+    log_step "2/11" "Validating build environment..."
     if ! check_required_files; then
         log_error "Required files missing"
         exit 1
@@ -291,8 +299,8 @@ main() {
     log_success "All required files present"
     print_separator
 
-    # Step 2: Build Go service
-    log_step "2/10" "Checking Go call service binary..."
+    # Step 3: Build Go service
+    log_step "3/11" "Checking Go call service binary..."
     if ! check_go_binary "linux"; then
         log_info "Building Go service..."
         if ! build_go_service "linux"; then
@@ -302,39 +310,39 @@ main() {
     fi
     print_separator
 
-    # Step 3: Clean previous build (optional - keep for incremental builds)
-    log_step "3/10" "Cleaning previous AppImage output..."
+    # Step 4: Clean previous build (optional - keep for incremental builds)
+    log_step "4/11" "Cleaning previous AppImage output..."
     rm -f Siproxylin-*.AppImage
     log_success "Cleaned old AppImage files"
     print_separator
 
-    # Step 4: Create directory structure
+    # Step 5: Create directory structure
     if [ ! -d "$APPDIR" ]; then
         if ! create_base_structure "$APPDIR" "fhs"; then
             exit 1
         fi
     else
-        log_step "4/10" "Reusing existing AppDir structure..."
+        log_step "5/11" "Reusing existing AppDir structure..."
         log_info "Delete AppDir/ to force clean rebuild"
     fi
     print_separator
 
-    # Step 5: Bundle system libraries (one-time with appimage-builder)
-    log_step "5/10" "Bundling system libraries..."
+    # Step 6: Bundle system libraries (one-time with appimage-builder)
+    log_step "6/11" "Bundling system libraries..."
     if ! bundle_system_libraries "$APPDIR"; then
         exit 1
     fi
     print_separator
 
-    # Step 6: Install Python dependencies
-    log_step "6/10" "Installing Python dependencies..."
+    # Step 7: Install Python dependencies
+    log_step "7/11" "Installing Python dependencies..."
     if ! install_python_deps "$APPDIR"; then
         exit 1
     fi
     print_separator
 
-    # Step 7: Copy application files
-    log_step "7/10" "Copying application files..."
+    # Step 8: Copy application files
+    log_step "8/11" "Copying application files..."
 
     # Verify version.sh exists (will be copied by copy_python_code)
     if [ ! -f "version.sh" ]; then
@@ -347,15 +355,15 @@ main() {
     # Note: Icon and desktop file handled by setup_appdir_root() in Step 8
     print_separator
 
-    # Step 8: Create AppImage-specific files
-    log_step "8/10" "Creating AppImage-specific files..."
+    # Step 9: Create AppImage-specific files
+    log_step "9/11" "Creating AppImage-specific files..."
     create_apprun_script "$APPDIR"
     setup_appdir_root "$APPDIR"
     copy_dynamic_linker "$APPDIR"
     print_separator
 
-    # Step 9: Cleanup & Optimization
-    log_step "9/10" "Cleaning up and optimizing size..."
+    # Step 10: Cleanup & Optimization
+    log_step "10/11" "Cleaning up and optimizing size..."
     cleanup_python_cache "$APPDIR"
     cleanup_development_files "$APPDIR"
     remove_documentation "$APPDIR"
@@ -367,8 +375,8 @@ main() {
     log_info "Skipping strip (breaks patched binaries)"
     print_separator
 
-    # Step 10: Package
-    log_step "10/10" "Packaging AppImage..."
+    # Step 11: Package
+    log_step "11/11" "Packaging AppImage..."
     if ! package_appimage "$APPDIR" "$APPIMAGE_OUTPUT"; then
         exit 1
     fi

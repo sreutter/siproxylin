@@ -80,6 +80,10 @@ log_warning() {
     echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET} ${1}"
 }
 
+log_warn() {
+    log_warning "$1"
+}
+
 log_error() {
     echo -e "  ${COLOR_RED}✗${COLOR_RESET} ${1}"
 }
@@ -99,6 +103,76 @@ print_separator() {
 # =============================================================================
 # VALIDATION FUNCTIONS
 # =============================================================================
+
+check_required_tools() {
+    local missing=0
+
+    log_step "TOOLS" "Checking required build tools..."
+
+    # Critical tools (build will fail without these)
+    local critical_tools=(
+        "patchelf:patchelf --version:CRITICAL for portable AppImage (patches ELF interpreter):apt install patchelf"
+        "python3:python3 --version:Python runtime:apt install python3"
+        "pip3:pip3 --version:Python package installer:apt install python3-pip"
+        "wget:wget --version:Download tool:apt install wget"
+        "file:file --version:File type detection:apt install file"
+    )
+
+    # Optional but recommended tools
+    local optional_tools=(
+        "convert:convert --version:ImageMagick for icon conversion:apt install imagemagick"
+    )
+
+    # Check critical tools
+    for tool_spec in "${critical_tools[@]}"; do
+        IFS=':' read -r cmd version_cmd description install_cmd <<< "$tool_spec"
+
+        if ! command -v "$cmd" &> /dev/null; then
+            log_error "$cmd not found - $description"
+            log_info "Install: $install_cmd"
+            missing=1
+        else
+            local version_output=$($version_cmd 2>&1 | head -1 | cut -c1-60)
+            log_success "$cmd: $version_output"
+        fi
+    done
+
+    # Check appimage-builder separately (can be path or command)
+    if ! command -v "$APPIMAGE_BUILDER" &> /dev/null; then
+        log_error "appimage-builder not found: $APPIMAGE_BUILDER"
+        log_info "Install: pip install appimage-builder"
+        log_info "Or download: wget https://github.com/AppImageCrafters/appimage-builder/releases"
+        log_info "Then set: export APPIMAGE_BUILDER=/path/to/appimage-builder.AppImage"
+        missing=1
+    else
+        log_success "appimage-builder: $APPIMAGE_BUILDER"
+    fi
+
+    # Check optional tools (warnings only)
+    for tool_spec in "${optional_tools[@]}"; do
+        IFS=':' read -r cmd version_cmd description install_cmd <<< "$tool_spec"
+
+        if ! command -v "$cmd" &> /dev/null; then
+            log_warning "$cmd not found - $description (optional)"
+            log_info "Install: $install_cmd"
+        else
+            local version_output=$($version_cmd 2>&1 | head -1 | cut -c1-60)
+            log_success "$cmd: $version_output"
+        fi
+    done
+
+    if [ $missing -eq 1 ]; then
+        log_error "Missing required build tools - cannot continue"
+        log_info ""
+        log_info "Quick fix for Debian/Ubuntu:"
+        log_info "  sudo apt install patchelf python3 python3-pip wget file imagemagick"
+        log_info "  pip install appimage-builder"
+        return 1
+    fi
+
+    log_success "All required build tools present"
+    return 0
+}
 
 check_required_files() {
     local missing=0
