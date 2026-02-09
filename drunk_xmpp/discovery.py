@@ -348,6 +348,76 @@ class DiscoveryMixin:
                 'whois': 'moderators'
             }
 
+    async def set_room_config(self, room_jid: str, config: Dict[str, Any]) -> bool:
+        """
+        Submit room configuration to server (XEP-0045 §10).
+
+        Args:
+            room_jid: Room JID to configure
+            config: Dict with configuration fields:
+                {
+                    'roomname': str,
+                    'roomdesc': str,
+                    'membersonly': bool,
+                    'moderatedroom': bool,
+                    'passwordprotectedroom': bool,
+                    'roomsecret': str (password),
+                    'maxusers': int or None,
+                    'persistentroom': bool,
+                    'publicroom': bool,
+                    'enablelogging': bool,
+                }
+
+        Returns:
+            True if config was successfully submitted, False otherwise
+        """
+        try:
+            xep_0045 = self.plugin['xep_0045']
+
+            # Get current config form to submit modified values
+            self.logger.info(f"Setting room config for {room_jid}: {config}")
+            form = await xep_0045.get_room_config(room=room_jid, timeout=10)
+
+            # Log available fields
+            self.logger.debug(f"Available form fields: {list(form['values'].keys())}")
+
+            # Update form values with new config
+            fields = form.get_fields()
+            for key, value in config.items():
+                # Map our simplified keys to muc#roomconfig_* field names
+                field_name = f'muc#roomconfig_{key}'
+
+                # Check if field exists in server's form
+                if field_name not in fields:
+                    self.logger.warning(f"Skipping {field_name} - not supported by server")
+                    continue
+
+                # Special handling for different field types
+                if isinstance(value, bool):
+                    # Convert bool to string for form submission
+                    fields[field_name]['value'] = '1' if value else '0'
+                elif value is None:
+                    # None means use server default (usually unlimited for maxusers)
+                    fields[field_name]['value'] = ''
+                else:
+                    # String or int values
+                    fields[field_name]['value'] = str(value)
+
+                self.logger.info(f"Setting {field_name} = {fields[field_name]['value']} (original: {value})")
+
+            # Submit the configured form
+            self.logger.debug(f"Submitting room configuration for {room_jid}")
+            await xep_0045.set_room_config(room=room_jid, config=form, timeout=15)
+
+            self.logger.info(f"Successfully updated room configuration for {room_jid}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to set room config for {room_jid}: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return False
+
     # ============================================================================
     # XEP-0092: Software Version
     # ============================================================================

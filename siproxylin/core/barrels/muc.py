@@ -271,6 +271,50 @@ class MucBarrel:
                 self.logger.error(traceback.format_exc())
             return False
 
+    async def set_room_config(self, room_jid: str, config: Dict[str, Any]) -> bool:
+        """
+        Submit room configuration to server.
+
+        Args:
+            room_jid: Room JID
+            config: Dict with configuration fields:
+                {
+                    'roomname': str,
+                    'roomdesc': str,
+                    'membersonly': bool,
+                    'moderatedroom': bool,
+                    'passwordprotectedroom': bool,
+                    'roomsecret': str (password),
+                    'maxusers': int or None,
+                    'persistentroom': bool,
+                    'publicroom': bool,
+                    'enablelogging': bool,
+                }
+
+        Returns:
+            True if config was successfully submitted, False otherwise
+        """
+        if not self.client:
+            if self.logger:
+                self.logger.debug("Cannot set room config: not connected")
+            return False
+
+        try:
+            # Submit config via DrunkXMPP
+            success = await self.client.set_room_config(room_jid, config)
+
+            if success and self.logger:
+                self.logger.info(f"✓ Room configuration updated for {room_jid}")
+
+            return success
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to set room config for {room_jid}: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+            return False
+
     async def _perform_room_join(self, room_jid: str, nick: str, password: str = None) -> bool:
         """
         Core room join logic (no metadata fetching).

@@ -589,9 +589,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.add_event_handler("muc::%s::self-presence" % '*', self._on_muc_presence)
         self.add_event_handler("muc::%s::got-online" % '*', self._on_muc_presence)
         self.add_event_handler("muc::%s::got-offline" % '*', self._on_muc_presence)
-        # MUC join errors: presence_error is the only event that fires for MUC errors
-        # (muc::*::presence-error exists but slixmpp's XEP-0045 doesn't propagate it)
-        self.add_event_handler("presence_error", self._on_muc_error)
+        # MUC join errors: Wildcard handler doesn't work reliably, so we register per-room handlers in join_room()
         self.add_event_handler("groupchat_invite", self._on_groupchat_invite)
 
         # Subscription events (roster management)
@@ -874,8 +872,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                         del self.own_affiliations[room]
                     if room in self.own_roles:
                         del self.own_roles[room]
-                    # Attempt rejoin after delay
-                    asyncio.create_task(self._rejoin_room_delayed(room, 5))
+                    # Attempt rejoin after delay only if room is still in our rooms dict
+                    # (room gets removed when user explicitly leaves, so we don't rejoin)
+                    if room in self.rooms:
+                        asyncio.create_task(self._rejoin_room_delayed(room, 5))
+                    else:
+                        self.logger.debug(f"Room {room} not in rooms dict, skipping rejoin (user left intentionally)")
                 else:
                     # Self-presence received - we're joined!
                     # Capture our occupant-id (XEP-0421) for reliable message direction detection
@@ -931,17 +933,18 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         Handler for MUC presence errors.
 
         Called when joining a room fails (e.g., banned, members-only, password incorrect).
-        This handles the generic 'presence_error' event and filters for MUC rooms.
         """
         room = presence['from'].bare
 
         # Only process if this is a MUC room we're trying to join
         if room not in self.rooms:
-            return  # Not a MUC room
+            self.logger.debug(f"MUC error for {room} but room not in rooms dict, ignoring")
+            return
 
         error = presence['error']
         if not error:
-            return  # No error in presence
+            self.logger.debug(f"MUC error presence for {room} but no error element, ignoring")
+            return
 
         condition = error['condition']
         text = error.get('text', '')
@@ -2390,9 +2393,15 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             password: Optional room password
         """
         room_config = {'nick': nick, 'password': password}
-        await self._join_room(room_jid, room_config)
-        # Add to rooms dict for persistence across reconnects
+        # Add to rooms dict BEFORE sending join (so error handler can find it)
         self.rooms[room_jid] = room_config
+
+        # Register per-room error handler (disposable=True removes it after first use)
+        # Note: slixmpp's wildcard handlers (muc::*::presence-error) don't work reliably
+        event_name = f"muc::{room_jid}::presence-error"
+        self.add_event_handler(event_name, self._on_muc_error, disposable=True)
+
+        await self._join_room(room_jid, room_config)
 
     def leave_room(self, room_jid: str):
         """

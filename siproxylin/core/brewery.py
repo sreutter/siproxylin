@@ -60,6 +60,7 @@ class XMPPAccount(QObject):
     presence_changed = Signal(int, str, str)  # (account_id, jid, presence) - contact presence changed
     muc_invite_received = Signal(int, str, str, str, str)  # (account_id, room_jid, inviter_jid, reason, password)
     muc_join_error = Signal(str, str, str)  # (room_jid, friendly_message, server_error_text)
+    muc_join_success = Signal(int, str)  # (account_id, room_jid)
     muc_role_changed = Signal(int, str, str, str)  # (account_id, room_jid, old_role, new_role)
     avatar_updated = Signal(int, str)  # (account_id, jid) - avatar fetched/updated
     nickname_updated = Signal(int, str, str)  # (account_id, jid, nickname) - contact nickname updated (XEP-0172)
@@ -252,7 +253,7 @@ class XMPPAccount(QObject):
             'on_presence_changed_callback': self._on_presence_changed,
             'on_bookmarks_received_callback': self.muc.sync_bookmarks,
             'on_muc_invite_callback': self.muc.on_muc_invite,
-            'on_muc_joined_callback': self.muc.on_muc_joined,
+            'on_muc_joined_callback': self._on_muc_joined,
             'on_muc_join_error_callback': self.muc.on_muc_join_error,
             'on_muc_role_changed_callback': self._on_muc_role_changed,
             'on_room_config_changed_callback': self.muc.on_room_config_changed,
@@ -749,6 +750,23 @@ class XMPPAccount(QObject):
     async def _on_presence_changed(self, from_jid: str, show: str):
         """Handle presence change - delegates to PresenceBarrel."""
         await self.presence._on_presence_changed(from_jid, show)
+
+    async def _on_muc_joined(self, room_jid: str, nick: str):
+        """
+        Handle MUC join success (self-presence received).
+
+        Emits signal to update UI (hide join button, show as joined).
+        Then delegates to MUC barrel for MAM retrieval and metadata fetch.
+
+        Args:
+            room_jid: Bare JID of the room
+            nick: Our nickname in the room
+        """
+        logger.info(f"[Account {self.account_id}] Successfully joined MUC {room_jid} as {nick}")
+        self.muc_join_success.emit(self.account_id, room_jid)
+
+        # Delegate to barrel for MAM and metadata fetch
+        await self.muc.on_muc_joined(room_jid, nick)
 
     async def _on_muc_role_changed(self, room_jid: str, old_role: str, new_role: str):
         """

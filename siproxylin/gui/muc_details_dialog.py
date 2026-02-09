@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QWidget, QFormLayout, QCheckBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
-    QSpinBox, QMessageBox
+    QSpinBox, QMessageBox, QTextEdit
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
@@ -33,6 +33,9 @@ class MUCDetailsDialog(QDialog):
         self.account_id = account_id
         self.room_jid = room_jid
         self.account_manager = get_account_manager()
+
+        # Shared room info for both Info and Config tabs
+        self.room_info = None
 
         # Auto-refresh timer for participant list
         self.refresh_timer = QTimer(self)
@@ -70,6 +73,10 @@ class MUCDetailsDialog(QDialog):
         self.settings_tab = self._create_settings_tab()
         self.tabs.addTab(self.settings_tab, "Settings")
 
+        # Config tab (server-side room configuration - owner only)
+        self.config_tab = self._create_config_tab()
+        self.config_tab_index = self.tabs.addTab(self.config_tab, "Config")
+
         # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
@@ -88,6 +95,7 @@ class MUCDetailsDialog(QDialog):
         self._load_room_info()
         self._load_participants()
         self._load_settings()
+        self._load_config()
 
         logger.debug(f"MUC details dialog opened for {room_jid}")
 
@@ -298,6 +306,86 @@ class MUCDetailsDialog(QDialog):
         layout.addStretch()
         return tab
 
+    def _create_config_tab(self):
+        """Create the Config tab for server-side room configuration (owner only)."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        # Warning/info box at top
+        self.config_info_label = QLabel()
+        self.config_info_label.setWordWrap(True)
+        self.config_info_label.setStyleSheet("color: #856404; background-color: #fff3cd; padding: 8px; border-radius: 4px;")
+        layout.addWidget(self.config_info_label)
+
+        # Room Configuration (XEP-0045)
+        config_group = QGroupBox("Room Configuration (XEP-0045)")
+        config_layout = QFormLayout(config_group)
+        config_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        # 1. Room name
+        self.config_name_input = QLineEdit()
+        self.config_name_input.setPlaceholderText("Room display name")
+        config_layout.addRow("Room name:", self.config_name_input)
+
+        # 2. Description
+        self.config_description_input = QTextEdit()
+        self.config_description_input.setPlaceholderText("Room description")
+        self.config_description_input.setMaximumHeight(80)
+        config_layout.addRow("Description:", self.config_description_input)
+
+        # 3. Members-only
+        self.config_members_only_checkbox = QCheckBox("Only members can join")
+        config_layout.addRow("Members-only:", self.config_members_only_checkbox)
+
+        # 4. Moderated
+        self.config_moderated_checkbox = QCheckBox("New participants are visitors by default")
+        config_layout.addRow("Moderated:", self.config_moderated_checkbox)
+
+        # 5. Password protected
+        password_layout = QHBoxLayout()
+        self.config_password_checkbox = QCheckBox("Protect with password")
+        password_layout.addWidget(self.config_password_checkbox)
+        self.config_password_input = QLineEdit()
+        self.config_password_input.setPlaceholderText("Room password")
+        self.config_password_input.setEchoMode(QLineEdit.Password)
+        self.config_password_input.setEnabled(False)
+        password_layout.addWidget(self.config_password_input)
+        # Enable password field when checkbox is checked
+        self.config_password_checkbox.toggled.connect(self.config_password_input.setEnabled)
+        config_layout.addRow("Password:", password_layout)
+
+        # 6. Max participants
+        self.config_max_users_input = QLineEdit()
+        self.config_max_users_input.setPlaceholderText("100")
+        config_layout.addRow("Max participants:", self.config_max_users_input)
+
+        # 7. Persistent room
+        self.config_persistent_checkbox = QCheckBox("Room persists when last member leaves")
+        config_layout.addRow("Persistent room:", self.config_persistent_checkbox)
+
+        # 8. Publicly searchable
+        self.config_public_checkbox = QCheckBox("Room is listed in public directory")
+        config_layout.addRow("Publicly searchable:", self.config_public_checkbox)
+
+        # 9. Enable message history (MAM)
+        self.config_mam_checkbox = QCheckBox("Server archives messages for history (XEP-0313, MAM)")
+        config_layout.addRow("Enable message history:", self.config_mam_checkbox)
+
+        layout.addWidget(config_group)
+
+        # Save button for config (separate from local settings)
+        save_config_layout = QHBoxLayout()
+        save_config_layout.addStretch()
+        self.save_config_button = QPushButton("Save Room Configuration")
+        self.save_config_button.setStyleSheet("QPushButton { background-color: #0066cc; color: white; padding: 8px; }")
+        self.save_config_button.clicked.connect(self._save_config)
+        save_config_layout.addWidget(self.save_config_button)
+        layout.addLayout(save_config_layout)
+
+        layout.addStretch()
+        return tab
+
     def _load_room_info(self):
         """Load and display room information using barrel API."""
         # Get account
@@ -306,8 +394,9 @@ class MUCDetailsDialog(QDialog):
             logger.warning(f"Account {self.account_id} not found")
             return
 
-        # Use barrel API to get room info
-        room_info = account.muc.get_room_info(self.room_jid)
+        # Use barrel API to get room info (shared with Config tab)
+        self.room_info = account.muc.get_room_info(self.room_jid)
+        room_info = self.room_info
 
         if room_info:
             # Display room name and JID
@@ -581,6 +670,101 @@ class MUCDetailsDialog(QDialog):
             self.alias_input.setText(settings.local_alias)
             self.history_limit_spinbox.setValue(settings.history_limit)
 
+    def _load_config(self):
+        """Load room configuration from barrel API and populate Config tab."""
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            return
+
+        # Check if user is room owner
+        is_owner = account.muc.is_room_owner(self.room_jid)
+
+        # Use shared room_info (already loaded by _load_room_info)
+        room_info = self.room_info
+
+        if not is_owner:
+            # Non-owner: disable Config tab and show info message
+            self.tabs.setTabEnabled(self.config_tab_index, False)
+            affiliation = account.muc.get_own_affiliation(self.room_jid)
+            affiliation_display = affiliation.capitalize() if affiliation else "Unknown"
+            self.config_info_label.setText(
+                f"⚠️ Only room owners can edit configuration. Your affiliation: {affiliation_display}"
+            )
+            # Disable all config fields
+            self.config_name_input.setEnabled(False)
+            self.config_description_input.setEnabled(False)
+            self.config_members_only_checkbox.setEnabled(False)
+            self.config_moderated_checkbox.setEnabled(False)
+            self.config_password_checkbox.setEnabled(False)
+            self.config_password_input.setEnabled(False)
+            self.config_max_users_input.setEnabled(False)
+            self.config_persistent_checkbox.setEnabled(False)
+            self.config_public_checkbox.setEnabled(False)
+            self.config_mam_checkbox.setEnabled(False)
+            self.save_config_button.setEnabled(False)
+            return
+
+        # Owner: enable tab and load config
+        self.tabs.setTabEnabled(self.config_tab_index, True)
+
+        if not room_info or room_info.config_fetched is None:
+            # Config not yet cached
+            self.config_info_label.setText(
+                "ℹ️ Room configuration not yet loaded. Click 'Refresh Configuration' in the Info tab first."
+            )
+            # Disable fields until config is loaded
+            self.config_name_input.setEnabled(False)
+            self.config_description_input.setEnabled(False)
+            self.config_members_only_checkbox.setEnabled(False)
+            self.config_moderated_checkbox.setEnabled(False)
+            self.config_password_checkbox.setEnabled(False)
+            self.config_password_input.setEnabled(False)
+            self.config_max_users_input.setEnabled(False)
+            self.config_persistent_checkbox.setEnabled(False)
+            self.config_public_checkbox.setEnabled(False)
+            self.config_mam_checkbox.setEnabled(False)
+            self.save_config_button.setEnabled(False)
+            return
+
+        # Config loaded: populate fields
+        self.config_info_label.setText(
+            "✅ You are the room owner. Changes will be submitted to the server."
+        )
+        self.config_info_label.setStyleSheet("color: #155724; background-color: #d4edda; padding: 8px; border-radius: 4px;")
+
+        # Populate fields from room_info
+        self.config_name_input.setText(room_info.name or "")
+        self.config_description_input.setText(room_info.description or "")
+        self.config_members_only_checkbox.setChecked(room_info.membersonly or False)
+        self.config_moderated_checkbox.setChecked(room_info.moderated or False)
+
+        # Password: check if password_protected is True
+        has_password = room_info.password_protected or False
+        self.config_password_checkbox.setChecked(has_password)
+        # Don't populate password field (servers typically don't return it)
+        self.config_password_input.setEnabled(has_password)
+
+        # Max users
+        if room_info.max_users:
+            self.config_max_users_input.setText(str(room_info.max_users))
+
+        self.config_persistent_checkbox.setChecked(room_info.persistent or False)
+        self.config_public_checkbox.setChecked(room_info.public or False)
+        self.config_mam_checkbox.setChecked(room_info.enable_logging or False)
+
+        # Enable all fields
+        self.config_name_input.setEnabled(True)
+        self.config_description_input.setEnabled(True)
+        self.config_members_only_checkbox.setEnabled(True)
+        self.config_moderated_checkbox.setEnabled(True)
+        self.config_password_checkbox.setEnabled(True)
+        self.config_max_users_input.setEnabled(True)
+        self.config_persistent_checkbox.setEnabled(True)
+        self.config_public_checkbox.setEnabled(True)
+        self.config_mam_checkbox.setEnabled(True)
+        self.save_config_button.setEnabled(True)
+
     def _save_settings(self):
         """Save local settings using barrel API."""
         try:
@@ -614,6 +798,144 @@ class MUCDetailsDialog(QDialog):
             logger.error(traceback.format_exc())
             QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")
 
+    def _save_config(self):
+        """Save room configuration to server via XEP-0004 data forms."""
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            QMessageBox.warning(self, "Error", "Account not found")
+            return
+
+        # Check ownership
+        if not account.muc.is_room_owner(self.room_jid):
+            QMessageBox.warning(
+                self,
+                "Permission Denied",
+                "Only room owners can change configuration."
+            )
+            return
+
+        # Validate max_users input
+        max_users_text = self.config_max_users_input.text().strip()
+        if max_users_text:
+            try:
+                max_users = int(max_users_text)
+                if max_users < 0:
+                    QMessageBox.warning(
+                        self,
+                        "Invalid Input",
+                        "Max participants must be a positive number."
+                    )
+                    return
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Input",
+                    "Max participants must be a number."
+                )
+                return
+        else:
+            max_users = None  # Use server default
+
+        # Collect config values from form
+        config = {
+            'roomname': self.config_name_input.text().strip(),
+            'roomdesc': self.config_description_input.toPlainText().strip(),
+            'membersonly': self.config_members_only_checkbox.isChecked(),
+            'moderatedroom': self.config_moderated_checkbox.isChecked(),
+            'passwordprotectedroom': self.config_password_checkbox.isChecked(),
+            'roomsecret': self.config_password_input.text() if self.config_password_checkbox.isChecked() else '',
+            'maxusers': max_users,
+            'persistentroom': self.config_persistent_checkbox.isChecked(),
+            'publicroom': self.config_public_checkbox.isChecked(),
+            'enablelogging': self.config_mam_checkbox.isChecked(),
+        }
+
+        # Disable button during save
+        self.save_config_button.setEnabled(False)
+        self.save_config_button.setText("Saving...")
+
+        async def do_save():
+            try:
+                # Submit config via barrel API
+                success = await account.muc.set_room_config(self.room_jid, config)
+
+                if success:
+                    # Re-fetch full config from server to update cache
+                    await account.muc.fetch_and_store_room_config(self.room_jid)
+
+                    # Update bookmark password if changed
+                    new_password = config['roomsecret']
+                    if new_password or config['passwordprotectedroom']:
+                        # Get JID ID
+                        jid_row = account.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (self.room_jid,))
+                        if jid_row:
+                            jid_id = jid_row['id']
+                            # Encode password (base64)
+                            import base64
+                            encoded_password = base64.b64encode(new_password.encode()).decode() if new_password else None
+                            # Update bookmark password
+                            account.db.execute(
+                                "UPDATE bookmark SET password = ? WHERE account_id = ? AND jid_id = ?",
+                                (encoded_password, self.account_id, jid_id)
+                            )
+                            account.db.commit()
+                            logger.info(f"Updated bookmark password for {self.room_jid}")
+
+                            # Sync bookmark to server (XEP-0402)
+                            bookmark_row = account.db.fetchone(
+                                "SELECT b.name, b.nick, b.autojoin FROM bookmark b WHERE b.account_id = ? AND b.jid_id = ?",
+                                (self.account_id, jid_id)
+                            )
+                            if bookmark_row:
+                                await account.client.add_bookmark(
+                                    jid=self.room_jid,
+                                    name=bookmark_row['name'] or self.room_jid,
+                                    nick=bookmark_row['nick'],
+                                    password=new_password,
+                                    autojoin=bool(bookmark_row['autojoin'])
+                                )
+                                logger.debug(f"Synced bookmark password to server: {self.room_jid}")
+
+                    # Reload both tabs from fresh server data
+                    self._load_room_info()  # Updates self.room_info + Info tab
+                    self._load_config()     # Config tab reads from self.room_info
+
+                    # Non-blocking success message
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Information)
+                    msg.setWindowTitle("Configuration Saved")
+                    msg.setText("Room configuration has been updated successfully.")
+                    msg.show()
+
+                    logger.info(f"Saved room configuration for {self.room_jid}")
+                else:
+                    # Non-blocking warning
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Warning)
+                    msg.setWindowTitle("Save Failed")
+                    msg.setText("Could not save room configuration. Please check the server logs.")
+                    msg.show()
+
+            except Exception as e:
+                logger.error(f"Failed to save room config: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Non-blocking error
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Error")
+                msg.setText(f"Failed to save configuration:\n{e}")
+                msg.show()
+
+            finally:
+                # Re-enable button
+                self.save_config_button.setEnabled(True)
+                self.save_config_button.setText("Save Room Configuration")
+
+        # Run async task
+        asyncio.create_task(do_save())
+
     def _on_refresh_config(self):
         """Manually refresh room configuration from server."""
         account = self.account_manager.get_account(self.account_id)
@@ -631,23 +953,31 @@ class MUCDetailsDialog(QDialog):
                 success = await account.muc.fetch_and_store_room_config(self.room_jid)
 
                 if success:
-                    # Reload room info to display updated values
+                    # Reload room info and config tabs to display updated values
                     self._load_room_info()
-                    QMessageBox.information(
-                        self,
-                        "Refresh Complete",
-                        "Room configuration has been refreshed from the server."
-                    )
+                    self._load_config()
+                    # Non-blocking success message
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Information)
+                    msg.setWindowTitle("Refresh Complete")
+                    msg.setText("Room configuration has been refreshed from the server.")
+                    msg.show()
                 else:
-                    QMessageBox.warning(
-                        self,
-                        "Refresh Failed",
-                        "Could not fetch room configuration. You may not have owner permissions."
-                    )
+                    # Non-blocking warning
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Warning)
+                    msg.setWindowTitle("Refresh Failed")
+                    msg.setText("Could not fetch room configuration. You may not have owner permissions.")
+                    msg.show()
 
             except Exception as e:
                 logger.error(f"Failed to refresh room config: {e}")
-                QMessageBox.critical(self, "Error", f"Failed to refresh: {e}")
+                # Non-blocking error
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Error")
+                msg.setText(f"Failed to refresh: {e}")
+                msg.show()
 
             finally:
                 # Re-enable button

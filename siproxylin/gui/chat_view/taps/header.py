@@ -374,9 +374,11 @@ class ChatHeaderWidget(QFrame):
         self.muc_info_refresh_timer.timeout.connect(self._refresh_muc_info_once)
         self.muc_refresh_attempts = 0
 
-        # Track MUC join error signal connection
+        # Track MUC signal connections
         self._muc_error_connection = None
         self._muc_error_account_id = None  # Track which account we're connected to
+        self._muc_join_success_connection = None
+        self._muc_join_success_account_id = None
 
         # Search result delegates (created in _setup_ui, stored for theme updates)
         self.search_dropdown_delegate = None
@@ -636,12 +638,16 @@ class ChatHeaderWidget(QFrame):
                     except:
                         pass  # Signal may not be connected
 
-            # Connect to new account's signal
+            # Connect to new account's signals
             account = self.account_manager.get_account(account_id)
             if account:
                 self._muc_error_connection = self._on_muc_join_error
                 account.muc_join_error.connect(self._muc_error_connection)
                 self._muc_error_account_id = account_id
+
+                self._muc_join_success_connection = self._on_muc_join_success
+                account.muc_join_success.connect(self._muc_join_success_connection)
+                self._muc_join_success_account_id = account_id
         else:
             # 1-1 chat: show presence indicator, hide MUC elements
             self._update_presence_indicator()
@@ -651,7 +657,7 @@ class ChatHeaderWidget(QFrame):
             self.join_room_button.hide()
             self.muc_info_refresh_timer.stop()
 
-            # Disconnect MUC error signal when not in MUC
+            # Disconnect MUC signals when not in MUC
             if self._muc_error_connection and self._muc_error_account_id is not None:
                 account = self.account_manager.get_account(self._muc_error_account_id)
                 if account:
@@ -661,6 +667,16 @@ class ChatHeaderWidget(QFrame):
                         pass
                 self._muc_error_connection = None
                 self._muc_error_account_id = None
+
+            if self._muc_join_success_connection and self._muc_join_success_account_id is not None:
+                account = self.account_manager.get_account(self._muc_join_success_account_id)
+                if account:
+                    try:
+                        account.muc_join_success.disconnect(self._muc_join_success_connection)
+                    except:
+                        pass
+                self._muc_join_success_connection = None
+                self._muc_join_success_account_id = None
 
         # Load and display avatar
         self._update_avatar()
@@ -970,6 +986,28 @@ class ChatHeaderWidget(QFrame):
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: asyncio.create_task(do_join()))
 
+    def _on_muc_join_success(self, account_id: int, room_jid: str):
+        """
+        Handle MUC join success signal.
+
+        Called when we successfully join a room (self-presence received).
+
+        Args:
+            account_id: Account ID that joined
+            room_jid: Room JID that was joined
+        """
+        # Only handle success for the currently displayed room
+        if room_jid != self.current_jid:
+            return
+
+        logger.info(f"MUC join success for {room_jid}, updating UI")
+
+        # Hide join button (we're now in the room)
+        self.join_room_button.hide()
+
+        # Update MUC info immediately (participant count, subject, etc.)
+        self._update_muc_info()
+
     def _on_muc_join_error(self, room_jid: str, friendly_msg: str, server_details: str):
         """
         Handle MUC join error signal.
@@ -981,25 +1019,27 @@ class ChatHeaderWidget(QFrame):
             friendly_msg: User-friendly error message
             server_details: Server error details (condition code + text)
         """
-        # Only handle errors for the currently displayed room
-        if room_jid != self.current_jid:
-            return
-
         logger.warning(f"MUC join error for {room_jid}: {friendly_msg}")
 
-        # Stop the MUC roster refresh timer (join failed, no roster to load)
-        if self.muc_info_refresh_timer.isActive():
-            self.muc_info_refresh_timer.stop()
-            logger.debug(f"Stopped MUC roster timer for {room_jid} (join failed)")
+        # Only update UI elements if this is the currently displayed room
+        if room_jid == self.current_jid:
+            # Stop the MUC roster refresh timer (join failed, no roster to load)
+            if self.muc_info_refresh_timer.isActive():
+                self.muc_info_refresh_timer.stop()
+                logger.debug(f"Stopped MUC roster timer for {room_jid} (join failed)")
 
-        # Re-enable join button
-        self.join_room_button.setEnabled(True)
-        self.join_room_button.setText("Join Room")
+            # Re-enable join button
+            self.join_room_button.setEnabled(True)
+            self.join_room_button.setText("Join Room")
 
         # Check if this is a membership-required error
         if "Membership required" in friendly_msg or "registration-required" in server_details.lower():
             # Show special dialog with "Request Membership" button
             self._show_membership_required_dialog(room_jid, friendly_msg, server_details)
+        # Check if this is a password error
+        elif "Password incorrect" in friendly_msg or "not-authorized" in server_details.lower():
+            # Show password prompt dialog
+            self._show_password_prompt_dialog(room_jid, friendly_msg, server_details)
         else:
             # Show regular error dialog
             error_message = f"{friendly_msg}\n\n({server_details})"
@@ -1011,6 +1051,90 @@ class ChatHeaderWidget(QFrame):
             msg_box.setText(error_message)
             msg_box.setStandardButtons(QMessageBox.Ok)
             msg_box.show()  # Non-blocking
+
+    def _show_password_prompt_dialog(self, room_jid: str, friendly_msg: str, server_details: str):
+        """
+        Show password prompt dialog for password-protected rooms.
+
+        Args:
+            room_jid: Room JID
+            friendly_msg: User-friendly error message
+            server_details: Server error details
+        """
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QDialogButtonBox
+        from PySide6.QtCore import Qt
+        import asyncio
+        import base64
+
+        # Create non-blocking custom dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Room Password Required")
+        dialog.setModal(True)
+
+        layout = QVBoxLayout(dialog)
+
+        # Info label
+        info_label = QLabel(f"This room requires a password:\n\n{room_jid}\n\nEnter password:")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        # Password input
+        password_input = QLineEdit()
+        password_input.setEchoMode(QLineEdit.Password)
+        password_input.setPlaceholderText("Password")
+        layout.addWidget(password_input)
+
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        layout.addWidget(button_box)
+
+        def on_accepted():
+            password = password_input.text()
+            if not password:
+                dialog.reject()
+                return
+
+            # Get account
+            account = self.account_manager.get_account(self.current_account_id)
+            if not account or not account.is_connected():
+                dialog.reject()
+                return
+
+            # Get nickname from bookmark
+            jid_row = account.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
+            if not jid_row:
+                dialog.reject()
+                return
+            jid_id = jid_row['id']
+
+            bookmark_row = account.db.fetchone(
+                "SELECT nick FROM bookmark WHERE account_id = ? AND jid_id = ?",
+                (self.current_account_id, jid_id)
+            )
+            nick = bookmark_row['nick'] if bookmark_row else 'User'
+
+            # Save password to bookmark
+            encoded_password = base64.b64encode(password.encode()).decode()
+            account.db.execute(
+                "UPDATE bookmark SET password = ? WHERE account_id = ? AND jid_id = ?",
+                (encoded_password, self.current_account_id, jid_id)
+            )
+            account.db.commit()
+            logger.info(f"Saved password to bookmark for {room_jid}")
+
+            # Retry join with password
+            self.join_room_button.setEnabled(False)
+            self.join_room_button.setText("Joining...")
+            asyncio.create_task(account.add_and_join_room(room_jid, nick, password))
+            logger.info(f"Retrying join with password: {room_jid}")
+
+            dialog.accept()
+
+        button_box.accepted.connect(on_accepted)
+        button_box.rejected.connect(dialog.reject)
+
+        # Show non-blocking
+        dialog.show()
 
     def _show_membership_required_dialog(self, room_jid: str, friendly_msg: str, server_details: str):
         """
