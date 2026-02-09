@@ -8,10 +8,12 @@ from .call_manager import CallManager
 from .notification_manager import NotificationManager
 from .menu_manager import MenuManager
 from .subscription_manager import SubscriptionManager
+from .message_manager import MessageManager
 
 __all__ = [
     'CallManager',
     'NotificationManager',
     'MenuManager',
     'SubscriptionManager',
+    'MessageManager',
 ]
