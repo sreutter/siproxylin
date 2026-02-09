@@ -35,7 +35,7 @@ from ..core import get_account_manager
 from ..core.contact_manager import get_contact_manager
 from ..styles.theme_manager import get_theme_manager
 from ..services.notification import get_notification_service
-from .managers import CallManager, NotificationManager, MenuManager, SubscriptionManager, MessageManager
+from .managers import CallManager, NotificationManager, MenuManager, SubscriptionManager, MessageManager, DialogManager
 
 
 logger = logging.getLogger('siproxylin.main_window')
@@ -95,6 +95,9 @@ class MainWindow(QMainWindow):
         self.chat_view.send_file.connect(self.message_manager.on_send_file)
         self.chat_view.edit_message.connect(self.message_manager.on_edit_message)
         self.chat_view.send_reply.connect(self.message_manager.on_send_reply)
+
+        # Dialog manager - handles dialog creation and launching
+        self.dialog_manager = DialogManager(self)
 
         # Load saved theme (or default to dark)
         self.theme_manager.load_theme(self.theme_manager.current_theme, save=False)
@@ -475,21 +478,12 @@ class MainWindow(QMainWindow):
     # =========================================================================
 
     def _on_new_account(self):
-        """Handle File -> New Account."""
-        logger.debug("New Account requested")
-
-        dialog = AccountDialog(parent=self)
-        dialog.account_saved.connect(self._on_account_saved)
-        dialog.account_deleted.connect(self._on_account_deleted)
-        dialog.show()
+        """Delegate to DialogManager."""
+        self.dialog_manager.show_new_account_dialog()
 
     def _on_create_account(self):
-        """Handle File -> Create Account (XEP-0077 registration wizard)."""
-        logger.debug("Create Account (XEP-0077) requested")
-
-        wizard = RegistrationWizard(parent=self)
-        wizard.account_registered.connect(self._on_account_registered)
-        wizard.exec()
+        """Delegate to DialogManager."""
+        self.dialog_manager.show_create_account_wizard()
 
     def _on_account_registered(self, account_id):
         """Handle account registered via wizard."""
@@ -572,20 +566,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Error", "Account not connected.")
 
     def _on_settings(self):
-        """Handle File -> Settings."""
-        logger.debug("Settings requested")
-        from .settings_dialog import SettingsDialog
-
-        # Get call bridge from first available account (call settings are app-wide)
-        call_bridge = None
-        for account in self.account_manager.accounts.values():
-            if hasattr(account, 'call_bridge'):
-                call_bridge = account.call_bridge
-                break
-
-        dialog = SettingsDialog(self, call_bridge=call_bridge)
-        dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.show()
+        """Delegate to DialogManager."""
+        self.dialog_manager.show_settings_dialog()
 
     def _on_copy(self):
         """Handle Edit -> Copy."""
@@ -596,26 +578,8 @@ class MainWindow(QMainWindow):
         pass  # Handled by Qt automatically
 
     def _on_edit_account(self, account_id: int):
-        """
-        Handle Edit -> Account X.
-
-        Args:
-            account_id: Account ID to edit
-        """
-        logger.debug(f"Edit Account {account_id} requested")
-
-        # Load account data
-        account = self.db.fetchone("SELECT * FROM account WHERE id = ?", (account_id,))
-        if not account:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.critical(self, "Error", f"Account {account_id} not found.")
-            return
-
-        # Open account dialog in edit mode
-        dialog = AccountDialog(parent=self, account_data=dict(account))
-        dialog.account_saved.connect(self._on_account_saved)
-        dialog.account_deleted.connect(self._on_account_deleted)
-        dialog.show()
+        """Delegate to DialogManager."""
+        self.dialog_manager.show_edit_account_dialog(account_id)
 
 
     def _on_contact_selected(self, account_id: int, jid: str):
@@ -732,14 +696,8 @@ class MainWindow(QMainWindow):
         dialog.show()
 
     def _on_about(self):
-        """Handle Help -> About."""
-        logger.debug("About dialog requested")
-
-        from .about_dialog import AboutDialog
-
-        dialog = AboutDialog(parent=self)
-        dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.show()
+        """Delegate to DialogManager."""
+        self.dialog_manager.show_about_dialog()
 
     def _test_open_contact_details_dialog(self, account_id: int, jid: str):
         """
@@ -1080,27 +1038,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to delete & block contact:\n{e}")
 
     def _on_view_muc_details(self, account_id: int, room_jid: str):
-        """
-        Handle View Details for MUC from context menu.
-
-        Args:
-            account_id: Account ID
-            room_jid: Room JID
-        """
-        logger.debug(f"View MUC details requested: {room_jid}")
-
-        # Import here to avoid circular imports
-        from .muc_details_dialog import MUCDetailsDialog
-
-        dialog = MUCDetailsDialog(
-            account_id=account_id,
-            room_jid=room_jid,
-            parent=self
-        )
-        # Connect dialog's leave signal to our centralized leave_muc method
-        dialog.leave_room_requested.connect(self.leave_muc)
-        dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.show()
+        """Delegate to DialogManager."""
+        self.dialog_manager.show_muc_details_dialog(account_id, room_jid)
 
     def leave_muc(self, account_id: int, room_jid: str):
         """
