@@ -53,16 +53,34 @@ class JoinRoomDialog(QDialog):
         self.room_jid_input.setPlaceholderText("room@conference.example.com")
         form.addRow("Room Address:", self.room_jid_input)
 
-        # Nickname
+        # Nickname (optional - will use JID localpart as default)
         self.nick_input = QLineEdit()
-        self.nick_input.setPlaceholderText("YourNickname")
+        # Default nickname is localpart of JID (part before @)
+        account = self.account_manager.get_account(self.account_id)
+        default_nick = None
+        if account:
+            bare_jid = account.account_data.get('bare_jid', '')
+            default_nick = bare_jid.split('@')[0] if '@' in bare_jid else bare_jid
+
+        if default_nick:
+            self.nick_input.setPlaceholderText(f"{default_nick} (default)")
+        else:
+            self.nick_input.setPlaceholderText("Nickname")
         form.addRow("Nickname:", self.nick_input)
 
         # Password (optional)
+        password_layout = QHBoxLayout()
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.setPlaceholderText("(optional)")
-        form.addRow("Password:", self.password_input)
+        password_layout.addWidget(self.password_input)
+
+        self.show_password_checkbox = QCheckBox("Show")
+        self.show_password_checkbox.toggled.connect(
+            lambda checked: self.password_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+        )
+        password_layout.addWidget(self.show_password_checkbox)
+        form.addRow("Password:", password_layout)
 
         # Bookmark name (optional)
         self.bookmark_name_input = QLineEdit()
@@ -111,9 +129,17 @@ class JoinRoomDialog(QDialog):
             QMessageBox.warning(self, "Error", "Please enter a room address.")
             return
 
+        # If nickname is empty, use the default (JID localpart)
         if not nick:
-            QMessageBox.warning(self, "Error", "Please enter a nickname.")
-            return
+            account = self.account_manager.get_account(self.account_id)
+            if account:
+                bare_jid = account.account_data.get('bare_jid', '')
+                nick = bare_jid.split('@')[0] if '@' in bare_jid else bare_jid
+                logger.info(f"Using default nickname: {nick}")
+
+            if not nick:
+                QMessageBox.warning(self, "Error", "Could not determine default nickname.")
+                return
 
         # Basic JID validation
         if '@' not in room_jid or '.' not in room_jid:

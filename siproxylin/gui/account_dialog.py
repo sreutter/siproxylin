@@ -173,10 +173,8 @@ class AccountDialog(QDialog):
         self.nickname_input.setPlaceholderText("Published to contacts (XEP-0172)")
         layout.addRow("Nickname:", self.nickname_input)
 
-        # MUC Nickname (optional) - used for group chat joins
-        self.muc_nickname_input = QLineEdit()
-        self.muc_nickname_input.setPlaceholderText("For group chats (optional, uses nickname if empty)")
-        layout.addRow("MUC Nickname:", self.muc_nickname_input)
+        # MUC Nickname removed - now uses JID localpart by default
+        # Users can override per-room when joining
 
         # Resource (optional)
         self.resource_input = QLineEdit()
@@ -821,7 +819,7 @@ class AccountDialog(QDialog):
         # Extract all settings from form
         settings = {
             'nickname': self.nickname_input.text().strip() or None,
-            'muc_nickname': self.muc_nickname_input.text().strip() or None,
+            'muc_nickname': None,  # Always use JID localpart (field removed from UI)
             'resource': resource,
             'enabled': int(self.enabled_checkbox.isChecked()),
             'server_override': self.server_override_input.text().strip() or None,
@@ -874,7 +872,7 @@ class AccountDialog(QDialog):
             self.password_input.setText(password)
 
         self.nickname_input.setText(account['nickname'] or '')
-        self.muc_nickname_input.setText(account['muc_nickname'] or '')
+        # muc_nickname field removed from UI - always uses JID localpart
         self.resource_input.setText(account['resource'] or '')
         self.enabled_checkbox.setChecked(bool(account['enabled']))
 

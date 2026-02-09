@@ -1078,11 +1078,20 @@ class ChatHeaderWidget(QFrame):
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
-        # Password input
+        # Password input with show/hide checkbox
+        from PySide6.QtWidgets import QHBoxLayout, QCheckBox
+        password_layout = QHBoxLayout()
         password_input = QLineEdit()
         password_input.setEchoMode(QLineEdit.Password)
         password_input.setPlaceholderText("Password")
-        layout.addWidget(password_input)
+        password_layout.addWidget(password_input)
+
+        show_password_checkbox = QCheckBox("Show")
+        show_password_checkbox.toggled.connect(
+            lambda checked: password_input.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+        )
+        password_layout.addWidget(show_password_checkbox)
+        layout.addLayout(password_layout)
 
         # Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
