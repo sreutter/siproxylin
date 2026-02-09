@@ -11,6 +11,7 @@ from .subscription_manager import SubscriptionManager
 from .message_manager import MessageManager
 from .dialog_manager import DialogManager
 from .roster_manager import RosterManager
+from .muc_manager import MUCManager
 
 __all__ = [
     'CallManager',
@@ -20,4 +21,5 @@ __all__ = [
     'MessageManager',
     'DialogManager',
     'RosterManager',
+    'MUCManager',
 ]

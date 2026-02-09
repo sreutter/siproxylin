@@ -35,7 +35,7 @@ from ..core import get_account_manager
 from ..core.contact_manager import get_contact_manager
 from ..styles.theme_manager import get_theme_manager
 from ..services.notification import get_notification_service
-from .managers import CallManager, NotificationManager, MenuManager, SubscriptionManager, MessageManager, DialogManager, RosterManager
+from .managers import CallManager, NotificationManager, MenuManager, SubscriptionManager, MessageManager, DialogManager, RosterManager, MUCManager
 
 
 logger = logging.getLogger('siproxylin.main_window')
@@ -102,6 +102,9 @@ class MainWindow(QMainWindow):
         # Roster manager - handles roster updates, presence, display names
         self.roster_manager = RosterManager(self)
 
+        # MUC manager - handles MUC invites, joins, role changes, leaving
+        self.muc_manager = MUCManager(self)
+
         # Load saved theme (or default to dark)
         self.theme_manager.load_theme(self.theme_manager.current_theme, save=False)
 
@@ -126,14 +129,15 @@ class MainWindow(QMainWindow):
         # Connect signals from all accounts
         for account_id, account in self.account_manager.accounts.items():
             account.connection_state_changed.connect(self._on_connection_state_changed)
-            account.muc_invite_received.connect(self._on_muc_invite_received)
-            account.muc_role_changed.connect(self._on_muc_role_changed)
 
             # Roster signals - handled by RosterManager
             self.roster_manager.connect_account_signals(account)
 
             # Subscription signals - handled by SubscriptionManager
             self.subscription_manager.connect_account_signals(account)
+
+            # MUC signals - handled by MUCManager
+            self.muc_manager.connect_account_signals(account)
 
             # Call signals (DrunkCALL integration) - handled by CallManager
             self.call_manager.connect_account_signals(account)
@@ -1042,99 +1046,8 @@ class MainWindow(QMainWindow):
         self.dialog_manager.show_muc_details_dialog(account_id, room_jid)
 
     def leave_muc(self, account_id: int, room_jid: str):
-        """
-        Leave a MUC room (centralized handler for all leave operations).
-
-        Handles:
-        - User confirmation
-        - Sending XMPP leave
-        - Removing bookmark from server
-        - Removing bookmark from database
-        - Updating UI (contact list, chat view)
-
-        Args:
-            account_id: Account ID
-            room_jid: Room JID
-        """
-        logger.debug(f"Leave MUC requested: {room_jid}")
-
-        # Check if account is connected
-        account = self.account_manager.get_account(account_id)
-        if not account or not account.is_connected():
-            QMessageBox.warning(
-                self,
-                "Cannot Perform Operation",
-                f"Cannot leave room while offline.\n\n"
-                f"Please connect the account first."
-            )
-            return
-
-        # Get room name for confirmation dialog
-        room_info = self.db.fetchone("""
-            SELECT b.name FROM bookmark b
-            JOIN jid j ON b.jid_id = j.id
-            WHERE b.account_id = ? AND j.bare_jid = ?
-        """, (account_id, room_jid))
-
-        room_name = room_info['name'] if (room_info and room_info['name']) else room_jid
-
-        # Confirm leaving
-        reply = QMessageBox.question(
-            self,
-            "Leave Room",
-            f"Leave room '{room_name}'?\n\n"
-            f"This will remove it from your bookmarks.\n"
-            f"Message history will be preserved.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-
-        if reply != QMessageBox.Yes:
-            return
-
-        try:
-            # Leave room via XMPP
-            account.client.leave_room(room_jid)
-            logger.debug(f"Sent leave room request for {room_jid}")
-
-            # Remove bookmark from server (XEP-0402)
-            asyncio.create_task(account.client.remove_bookmark(room_jid))
-            logger.debug(f"Syncing bookmark removal to server: {room_jid}")
-
-            # Remove bookmark and roster entry from local database
-            # (Some clients add MUCs to server roster, so clean both tables)
-            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
-            if jid_row:
-                jid_id = jid_row['id']
-
-                # Delete from bookmark table
-                self.db.execute("DELETE FROM bookmark WHERE account_id = ? AND jid_id = ?",
-                               (account_id, jid_id))
-
-                # Delete from roster table (if present)
-                self.db.execute("DELETE FROM roster WHERE account_id = ? AND jid_id = ?",
-                               (account_id, jid_id))
-
-                self.db.commit()
-                logger.debug(f"Removed MUC from bookmark and roster tables: {room_jid}")
-
-            # Refresh contact list to remove MUC entry
-            self.contact_list.refresh()
-
-            # Close chat view if currently viewing this room
-            if self.chat_view.current_account_id == account_id and self.chat_view.current_jid == room_jid:
-                self.chat_view.clear()
-
-            # Log to both main logger and account-specific app logger
-            logger.info(f"Left room {room_jid} and removed bookmark")
-            if account.app_logger:
-                account.app_logger.info(f"Left room '{room_name}' ({room_jid})")
-
-        except Exception as e:
-            logger.error(f"Failed to leave room: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            QMessageBox.critical(self, "Error", f"Failed to leave room:\n{e}")
+        """Delegate to MUCManager."""
+        self.muc_manager.leave_muc(account_id, room_jid)
 
     def _on_account_connect(self, account_id: int):
         """Handle Connect from account context menu."""
@@ -1256,174 +1169,6 @@ class MainWindow(QMainWindow):
         """Delegate to RosterManager."""
         self.roster_manager.refresh_contact_display_name(account_id, jid)
 
-    def _on_muc_invite_received(self, account_id: int, room_jid: str, inviter_jid: str, reason: str, password: str):
-        """
-        Handle MUC invitation.
-
-        Args:
-            account_id: Account ID
-            room_jid: MUC room JID
-            inviter_jid: JID of person who sent the invite
-            reason: Invitation reason (may be empty)
-            password: Room password (may be empty)
-        """
-        logger.info(f"MUC invite received: {room_jid} from {inviter_jid} (account {account_id})")
-
-        # Extract room name from JID localpart (before @)
-        room_name = room_jid.split('@')[0] if '@' in room_jid else room_jid
-
-        # Build invitation message
-        invite_msg = f"{inviter_jid} invited you to join:\n\n{room_name} ({room_jid})"
-        if reason:
-            invite_msg += f"\n\nReason: {reason}"
-        if password:
-            invite_msg += f"\n\n(Room is password protected)"
-
-        # Show dialog
-        reply = QMessageBox.question(
-            self,
-            "MUC Invitation",
-            invite_msg + "\n\nDo you want to join this room?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-
-        if reply == QMessageBox.Yes:
-            # Get account
-            account = self.account_manager.get_account(account_id)
-            if not account:
-                QMessageBox.warning(self, "Error", "Account not found.")
-                return
-
-            # Check if account is connected
-            if not account.is_connected():
-                QMessageBox.warning(
-                    self,
-                    "Cannot Add Group",
-                    "Cannot add group while offline.\n\n"
-                    "Please connect the account first."
-                )
-                return
-
-            # Get account nickname for MUC (with fallbacks: muc_nickname > nickname > JID localpart)
-            account_data = self.db.fetchone("SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?", (account_id,))
-            if account_data and account_data['muc_nickname']:
-                nick = account_data['muc_nickname']
-            elif account_data and account_data['nickname']:
-                nick = account_data['nickname']
-            elif account_data and account_data['bare_jid']:
-                # Fallback: use localpart of JID
-                nick = account_data['bare_jid'].split('@')[0]
-            else:
-                nick = 'User'
-
-            # Save bookmark and trigger join (all sync, delegate async work)
-            try:
-                # Get or create JID entry
-                jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
-                if jid_row:
-                    jid_id = jid_row['id']
-                else:
-                    cursor = self.db.execute("INSERT INTO jid (bare_jid) VALUES (?)", (room_jid,))
-                    jid_id = cursor.lastrowid
-
-                # Store bookmark locally (use JID as name for now, will be updated after join)
-                encoded_password = base64.b64encode(password.encode()).decode() if password else None
-                self.db.execute("""
-                    INSERT INTO bookmark (account_id, jid_id, name, nick, password, autojoin)
-                    VALUES (?, ?, ?, ?, ?, 1)
-                    ON CONFLICT (account_id, jid_id) DO UPDATE SET
-                        name = excluded.name,
-                        nick = excluded.nick,
-                        password = excluded.password,
-                        autojoin = excluded.autojoin
-                """, (account_id, jid_id, room_jid, nick, encoded_password))
-                self.db.commit()
-                logger.debug(f"Bookmark saved for {room_jid}")
-
-                # Refresh roster to show new bookmark
-                self.contact_list.load_roster()
-
-                # Defer async operations to escape XMPP callback context
-                # Using QTimer.singleShot(0) to queue for next event loop iteration
-                QTimer.singleShot(0, lambda: self._execute_room_join_from_invite(
-                    account_id, room_jid, nick, password
-                ))
-                logger.debug(f"Queued room join for next event loop: {room_jid}")
-
-            except Exception as e:
-                logger.error(f"Failed to save bookmark: {e}")
-                QMessageBox.critical(self, "Error", f"Failed to join room: {e}")
-
-    def _execute_room_join_from_invite(self, account_id: int, room_jid: str, nick: str, password: str):
-        """
-        Execute room join operations after escaping XMPP callback context.
-        Called via QTimer.singleShot(0) to defer to next event loop iteration.
-
-        Args:
-            account_id: Account ID
-            room_jid: MUC room JID
-            nick: Nickname to use
-            password: Room password (may be empty string)
-        """
-        logger.debug(f"Executing deferred room join: {room_jid}")
-
-        # Get account
-        account = self.account_manager.get_account(account_id)
-        if not account or not account.client:
-            logger.error(f"Cannot join room - account {account_id} not available")
-            QMessageBox.warning(self, "Error", "Account not available.")
-            return
-
-        # Check if still connected
-        if not account.is_connected():
-            logger.error(f"Cannot join room - account {account_id} disconnected")
-            QMessageBox.warning(self, "Error", "Account disconnected. Room will auto-join on next connection.")
-            return
-
-        try:
-            # Sync bookmark to server (XEP-0402)
-            asyncio.create_task(
-                account.client.add_bookmark(
-                    jid=room_jid,
-                    name=room_jid,  # Will be updated via disco#info after join
-                    nick=nick,
-                    password=password,
-                    autojoin=True
-                )
-            )
-            logger.debug(f"Syncing bookmark to server: {room_jid}")
-
-            # Join the room immediately
-            asyncio.create_task(account.add_and_join_room(room_jid, nick, password))
-            logger.debug(f"Joining room from invite: {room_jid}")
-
-        except Exception as e:
-            logger.error(f"Failed to join room: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            QMessageBox.critical(self, "Error", f"Failed to join room: {e}")
-
-    def _on_muc_role_changed(self, account_id: int, room_jid: str, old_role: str, new_role: str):
-        """
-        Handle MUC role change (e.g., visitor → participant when voice granted).
-
-        Updates UI if currently viewing this room.
-
-        Args:
-            account_id: Account ID
-            room_jid: Room JID where role changed
-            old_role: Previous role
-            new_role: New role
-        """
-        logger.info(f"MUC role changed in {room_jid}: {old_role} → {new_role}")
-
-        # If this is the currently open chat, update input state
-        if (self.chat_view.current_account_id == account_id and
-            self.chat_view.current_jid == room_jid and
-            self.chat_view.current_is_muc):
-            logger.debug(f"Updating input state for current room: {room_jid}")
-            self.chat_view._update_muc_input_state(account_id, room_jid)
 
     def _on_manage_subscription(self, account_id: int, jid: str, roster_id: int):
         """Delegate to SubscriptionManager."""
