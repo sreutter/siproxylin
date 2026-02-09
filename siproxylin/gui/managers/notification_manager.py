@@ -5,7 +5,6 @@ Extracted from MainWindow to improve maintainability.
 """
 
 import logging
-import os
 
 
 logger = logging.getLogger('siproxylin.notification_manager')
@@ -33,11 +32,8 @@ class NotificationManager:
         self.db = main_window.db
         self.notification_service = main_window.notification_service
 
-        # Get icon path once (vodka bottle logo) - works in both dev and AppImage
-        self.icon_path = os.path.abspath(os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),  # Go up from managers/ to gui/
-            "resources", "icons", "siproxylin.svg"
-        ))
+        # Get icon path from project root (vodka bottle logo) - works in both dev and AppImage
+        self.icon_path = str(main_window.paths.project_root / 'siproxylin' / 'resources' / 'icons' / 'siproxylin.svg')
 
         logger.debug(f"NotificationManager initialized (icon: {self.icon_path})")
 
