@@ -35,7 +35,7 @@ from ..core import get_account_manager
 from ..core.contact_manager import get_contact_manager
 from ..styles.theme_manager import get_theme_manager
 from ..services.notification import get_notification_service
-from .managers import CallManager, NotificationManager, MenuManager, SubscriptionManager, MessageManager, DialogManager
+from .managers import CallManager, NotificationManager, MenuManager, SubscriptionManager, MessageManager, DialogManager, RosterManager
 
 
 logger = logging.getLogger('siproxylin.main_window')
@@ -99,6 +99,9 @@ class MainWindow(QMainWindow):
         # Dialog manager - handles dialog creation and launching
         self.dialog_manager = DialogManager(self)
 
+        # Roster manager - handles roster updates, presence, display names
+        self.roster_manager = RosterManager(self)
+
         # Load saved theme (or default to dark)
         self.theme_manager.load_theme(self.theme_manager.current_theme, save=False)
 
@@ -123,14 +126,11 @@ class MainWindow(QMainWindow):
         # Connect signals from all accounts
         for account_id, account in self.account_manager.accounts.items():
             account.connection_state_changed.connect(self._on_connection_state_changed)
-            account.roster_updated.connect(self._on_roster_updated)
-            account.message_received.connect(self._on_message_received)
-            account.chat_state_changed.connect(self._on_chat_state_changed)
-            account.presence_changed.connect(self._on_presence_changed)
             account.muc_invite_received.connect(self._on_muc_invite_received)
             account.muc_role_changed.connect(self._on_muc_role_changed)
-            account.avatar_updated.connect(self._on_avatar_updated)
-            account.nickname_updated.connect(self._on_nickname_updated)
+
+            # Roster signals - handled by RosterManager
+            self.roster_manager.connect_account_signals(account)
 
             # Subscription signals - handled by SubscriptionManager
             self.subscription_manager.connect_account_signals(account)
@@ -1252,172 +1252,9 @@ class MainWindow(QMainWindow):
         # Update status bar to reflect new connection state
         self._update_status_bar_stats()
 
-    def _on_roster_updated(self, account_id: int):
-        """
-        Handle roster update signal from account.
-
-        Args:
-            account_id: Account ID whose roster was updated
-        """
-        logger.debug(f"Roster updated for account {account_id}, refreshing contact list")
-        self.contact_list.refresh()
-
-        # If the currently open chat is from this account, update its header display name
-        if self.chat_view.current_account_id == account_id and self.chat_view.current_jid:
-            jid = self.chat_view.current_jid
-            logger.debug(f"Updating chat header display name for open chat: {jid}")
-            # Use unified display name refresh (applies 3-source priority)
-            self._refresh_contact_display_name(account_id, jid)
-
-    @Slot(int, str, bool)
-    def _on_message_received(self, account_id: int, from_jid: str, is_marker: bool = False):
-        """
-        Handle incoming message signal from account.
-
-        Args:
-            account_id: Account ID
-            from_jid: Sender JID
-            is_marker: True if marker/receipt update, False if actual new message
-        """
-        event_type = "marker/receipt" if is_marker else "message"
-        logger.debug(f"{event_type.capitalize()} received from {from_jid} on account {account_id}")
-
-        # Check if this message is for the currently open chat
-        is_current_chat = (self.chat_view.current_account_id == account_id and
-                          self.chat_view.current_jid == from_jid)
-
-        if is_current_chat:
-            # Refresh the chat view
-            # Only send markers for actual new messages, not for marker/receipt updates
-            self.chat_view.refresh(send_markers=(not is_marker))
-            logger.debug(f"Chat view refreshed for {event_type}")
-
-        # Check if this is a new conversation (not currently in chat list)
-        # Only refresh roster for new conversations to avoid expensive reloads
-        if not is_marker:
-            item = self.contact_list._find_contact_item(account_id, from_jid)
-            if item is None:
-                # New conversation - contact not in chat list yet
-                logger.debug(f"New conversation from {from_jid}, refreshing chat list")
-                self.contact_list.load_roster()
-
-        # Update unread indicators in contact list (always, even if chat is open)
-        self.contact_list.update_unread_indicators(account_id, from_jid)
-
-        # Update status bar stats for actual new messages (not marker/receipt updates)
-        if not is_marker:
-            self._update_status_bar_stats()
-
-        # Send OS notification for actual new messages (not if chat is open or if it's a marker)
-        if not is_marker and not is_current_chat:
-            self.notification_manager.send_message_notification(account_id, from_jid)
-
-    def _on_chat_state_changed(self, account_id: int, from_jid: str, state: str):
-        """
-        Handle chat state change (typing indicators).
-
-        Args:
-            account_id: Account ID
-            from_jid: Contact JID
-            state: Chat state ('active', 'composing', 'paused', 'inactive', 'gone')
-        """
-        logger.debug(f"Chat state from {from_jid}: {state}")
-
-        # Update typing indicator in contact list
-        self.contact_list.update_typing_indicator(account_id, from_jid, state)
-
-        # Also update typing indicator in chat header if this is the current chat
-        if (self.chat_view.current_account_id == account_id and
-            self.chat_view.current_jid == from_jid):
-            self.chat_view.update_typing_indicator(state)
-
-    def _on_presence_changed(self, account_id: int, jid: str, presence: str):
-        """
-        Handle presence change (contact status updates).
-
-        Args:
-            account_id: Account ID
-            jid: Contact JID
-            presence: Presence show value ('available', 'away', 'xa', 'dnd', 'unavailable')
-        """
-        logger.debug(f"Presence change for {jid}: {presence}")
-
-        # Update presence indicator in contact list (event-driven, not polling!)
-        self.contact_list.update_presence_single(account_id, jid, presence)
-
     def _refresh_contact_display_name(self, account_id: int, jid: str):
-        """
-        Unified method to refresh display name for a contact.
-
-        Applies 3-source priority: roster.name → nickname → JID
-        Updates contact list and chat header if applicable.
-
-        Args:
-            account_id: Account ID
-            jid: Contact bare JID
-        """
-        # Get account
-        account = self.account_manager.get_account(account_id)
-        if not account:
-            return
-
-        # Get roster name (highest priority)
-        roster_name = None
-        if account.client:
-            roster = account.client.client_roster
-            if jid in roster:
-                try:
-                    roster_name = roster[jid]['name'] or None
-                except (KeyError, TypeError):
-                    pass
-
-        # Get display name using 3-source priority
-        display_name = account.get_contact_display_name(jid, roster_name=roster_name)
-
-        # Refresh contact list (for now, reload entire roster - can optimize later)
-        self.contact_list.load_roster()
-
-        # If this chat is open, update header
-        if (self.chat_view.current_account_id == account_id and
-            self.chat_view.current_jid == jid):
-            logger.debug(f"Updating chat header display name for open chat: {jid}")
-            base_name = f"💬 {display_name}"
-            self.chat_view.header.update_display_name(base_name)
-            self.chat_view.header.roster_name = roster_name
-
-    @Slot(int, str)
-    def _on_nickname_updated(self, account_id: int, jid: str, nickname: str):
-        """
-        Handle nickname update signal from account (XEP-0172).
-
-        Args:
-            account_id: Account ID
-            jid: JID whose nickname was updated
-            nickname: New nickname (empty string if cleared)
-        """
-        logger.debug(f"Nickname updated for {jid} on account {account_id}: {nickname if nickname else '(cleared)'}")
-        # Use unified display name refresh
-        self._refresh_contact_display_name(account_id, jid)
-
-    def _on_avatar_updated(self, account_id: int, jid: str):
-        """
-        Handle avatar update signal from account.
-
-        Args:
-            account_id: Account ID
-            jid: JID whose avatar was updated
-        """
-        logger.debug(f"Avatar updated for {jid} on account {account_id}")
-
-        # If this is the currently open chat, refresh the avatar
-        if (self.chat_view.current_account_id == account_id and
-            self.chat_view.current_jid == jid):
-            logger.debug(f"Refreshing avatar for current chat: {jid}")
-            # Invalidate cache for this JID
-            from ..utils.avatar import get_avatar_cache
-            get_avatar_cache().invalidate(jid)
-            # Refresh avatar display in header
-            self.chat_view.header._update_avatar()
+        """Delegate to RosterManager."""
+        self.roster_manager.refresh_contact_display_name(account_id, jid)
 
     def _on_muc_invite_received(self, account_id: int, room_jid: str, inviter_jid: str, reason: str, password: str):
         """

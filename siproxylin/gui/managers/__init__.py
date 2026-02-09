@@ -10,6 +10,7 @@ from .menu_manager import MenuManager
 from .subscription_manager import SubscriptionManager
 from .message_manager import MessageManager
 from .dialog_manager import DialogManager
+from .roster_manager import RosterManager
 
 __all__ = [
     'CallManager',
@@ -18,4 +19,5 @@ __all__ = [
     'SubscriptionManager',
     'MessageManager',
     'DialogManager',
+    'RosterManager',
 ]
