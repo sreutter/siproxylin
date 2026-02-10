@@ -6,7 +6,34 @@
 
 ## Quick Start
 
-**Download:** [Latest AppImage](https://github.com/yourusername/siproxylin/releases/latest) (Linux only for now)
+```bash
+# Install go 1.24:
+# https://go.dev/dl/
+
+# Install GStreamer libraries:
+# gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-gl, gstreamer1.0-gtk3, gstreamer1.0-libav, gstreamer1.0-nice, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-pulseaudio, gstreamer1.0-tools, gstreamer1.0-x, gstreamer1.0-x, libgstreamer-gl1.0-0, libgstreamer-plugins-bad1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-dev, libgstreamer1.0-0, libgstreamer1.0-0, libgstreamer1.0-dev, libgtk-4-media-gstreamer, qtgstreamer-plugins-qt5
+
+# Install Qt6:
+# libqt6*
+
+# Install hunspell if you want the spell checker
+
+# Build Go call service
+cd drunk_call_service
+./install-tools.sh 
+./build.sh
+cd -
+
+# Get Python dependencies
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+
+# Run the app
+venv/bin/python main.py
+```
+
+### Those with Debian 12 can try existing AppImage builds
+**Download:** [Latest AppImage](https://github.com/yourusername/siproxylin/releases/latest) (Debian 12 only, for now)
 
 **Run:**
 ```bash
@@ -14,7 +41,7 @@ chmod +x Siproxylin-*.AppImage
 ./Siproxylin-*.AppImage
 ```
 
-**Requirements:** Linux (Ubuntu 20.04+, Debian 11+, or equivalent)
+**Requirements:** Linux Debian 12 (AppImage build needs fixes to become truly OS independent)
 
 ---
 
@@ -50,15 +77,15 @@ But after a short while I realized we don't really have a solid desktop applicat
 3. **Multi-platform** - Works everywhere (Linux first, others coming)
 4. **Contacts grouped by account** - Clean separation of identities
 5. **Configurable logging** - Debug when needed, silent when not
-6. **Local files encryption** - Protect config, DB, attachments, logs (available via gocryptfs)
+6. **Local files encryption** - Protect config, DB, attachments, logs (available via gocryptfs, see --dot-data-dir option)
 7. **Notifications privacy** - Hide text/sender when needed
-8. **Standard classic menus** - No twisted GNOME labyrinth
+8. **Standard classic menus** - No twisted GNOME labyrinth, simple File->Add, Edit->Account, intuitive right-click context menus, etc.
 9. **Spell checker** - Actually works (Dino's didn't for me)
-10. **Theme support** - Dark mode matters
+10. **Theme support** - Dark mode matters, well most of the current design sucks, but themes are separated and easy to tweak.
 11. **Screen sharing** - Coming soon
 12. **Group calls** - Future goal
 
-Making a fully working client, for a single person who's not even an experienced developer (I'm an infra guy), would take a year. So I was carrying this idea with me, looking for existing options to start with, and then someone asked me: did you try AI-assisted development? I decided to give it a try (honestly I didn't believe we'd get far), but here we go: the version I'm releasing today became functional after **7 weeks of intense work and a considerable amount of non-halal beverages**. Russian-Irish mix, which I happen to be, comes with certain cultural obligations regarding beverages. Hence the app core is created using "brewery," "barrels," and "taps" metaphors wherever they fitted.
+Making a fully working client, for a single person who's not even an experienced developer (I'm an infra guy), would take a year. So I was carrying this idea with me, looking for existing options to start with, and then someone asked me: did you try AI-assisted development? I decided to give it a try (honestly I didn't believe we'd get far), but here we go: the version I'm releasing today became functional after **7 weeks of intense work and a considerable amount of non-halal beverages**. Russian-Irish mix, which I happen to be, comes with certain cultural obligations... Hence the app core is created using "brewery," "barrels," and "taps" - metaphors wherever they fitted.
 
 ---
 
@@ -66,7 +93,7 @@ Making a fully working client, for a single person who's not even an experienced
 
 No matter how badly I want this app to be perfect, I'm afraid it's not there yet. After all these hours spent testing, code reviewing, and three massive refactoring iterations, I still have some doubts and occasionally find issues. Even the most motivated developer using best-in-class AI assistance can start drifting into quick patches when dealing with a larger codebase, and we're talking about **100+ Python files and 35,000+ lines of code**. It took 7 weeks, which means 5k lines per week, or 1,000 lines per day.
 
-So definitely **use it with caution**, and please don't be shy about reporting issues if you find any.
+So definitely **use it with caution**, and please don't be shy about reporting issues, I bet you'll find quite a few.
 
 ---
 
@@ -74,7 +101,9 @@ So definitely **use it with caution**, and please don't be shy about reporting i
 
 - **Conversations.im → Siproxylin calls:** Won't connect due to ICE nomination issue in Conversations' WebRTC stack (Siproxylin → Conversations works fine)
 - **Platform:** Currently Linux-only (Windows/macOS support planned)
-- **MAM unread count:** Occasionally increments on restart (rare, investigating)
+- **Unread counters:** Sometimes pops up after app restart, investigating
+- **Unclear process of MUC membership:** There is lack of information on how members-only MUC are handled, currently it relies on the mercy of auto-approve by server
+- **MUC dialog lacks real-time:** Some changes do not update dialog GUI on the fly
 
 Report bugs: [GitHub Issues](https://github.com/yourusername/siproxylin/issues)
 
@@ -147,13 +176,13 @@ Siproxylin supports **audio calls** with most XMPP clients. Works perfectly with
 
 ### Call Privacy
 
-Siproxylin **forces calls to be relayed** to avoid IP leaks. The call window shows technical details: advertised IP addresses of both ends and the connection choice. Siproxylin requests TURN details from your XMPP server (XEP-0215), and if not received, should fall back to the public Jami TURN servers.
+Siproxylin **forces calls to be relayed** to avoid IP leaks. The call window shows technical details: advertised IP addresses of both ends and the connection choice. Siproxylin requests TURN details from your XMPP server (XEP-0215), and if not received, should fall back to the public Jami TURN servers (fallback wasn't properly tested).
 
 ---
 
 ## Installation
 
-### AppImage (Linux)
+### AppImage (Debian 12 Linux)
 
 Download the latest AppImage from [Releases](https://github.com/yourusername/siproxylin/releases):
 
