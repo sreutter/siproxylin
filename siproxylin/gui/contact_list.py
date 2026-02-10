@@ -8,9 +8,10 @@ import logging
 from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QLabel, QLineEdit, QHBoxLayout, QMenu, QPushButton, QFrame, QToolButton, QMessageBox
+    QLabel, QLineEdit, QHBoxLayout, QMenu, QPushButton, QFrame, QToolButton, QMessageBox,
+    QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QEvent
 from PySide6.QtGui import QIcon, QAction, QColor
 
 from ..db.database import get_db
@@ -81,8 +82,23 @@ class ContactListWidget(QWidget):
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search contacts...")
         self.search_box.textChanged.connect(self._on_search)
+        self.search_box.returnPressed.connect(self._on_search_enter)  # Handle Enter key
         search_layout.addWidget(self.search_box)
         layout.addLayout(search_layout)
+
+        # Search results dropdown (initially hidden)
+        self.contact_search_dropdown = QListWidget(self)
+        self.contact_search_dropdown.setObjectName("contactSearchDropdown")
+        self.contact_search_dropdown.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
+        self.contact_search_dropdown.setFixedWidth(600)  # Wider to fit long JIDs
+        self.contact_search_dropdown.setMaximumHeight(300)
+        self.contact_search_dropdown.setFocusPolicy(Qt.NoFocus)
+        self.contact_search_dropdown.setWordWrap(False)  # Prevent wrapping
+        self.contact_search_dropdown.itemClicked.connect(self._on_contact_search_selected)
+        self.contact_search_dropdown.hide()
+
+        # Install event filter on search box for key handling
+        self.search_box.installEventFilter(self)
 
         # Contact tree
         self.contact_tree = QTreeWidget()
@@ -337,9 +353,87 @@ class ContactListWidget(QWidget):
         logger.info(f"Loaded roster for {len(accounts)} accounts")
 
     def _on_search(self, text: str):
-        """Filter contacts based on search text."""
-        # TODO: Implement search filtering
-        pass
+        """Filter contacts based on search text - show dropdown with results."""
+        search_text = text.strip()
+
+        # Hide dropdown if less than 2 characters
+        if len(search_text) < 2:
+            self.contact_search_dropdown.hide()
+            return
+
+        # Query database for matching contacts (no limit - XMPP rosters are small)
+        query = f"%{search_text}%"
+
+        # Search across all enabled accounts
+        rows = self.db.fetchall("""
+            SELECT DISTINCT
+                c.id as conversation_id,
+                c.account_id,
+                j.bare_jid as jid,
+                c.type,
+                COALESCE(r.name, j.bare_jid) as display_name,
+                a.bare_jid as account_jid
+            FROM conversation c
+            JOIN account a ON c.account_id = a.id
+            JOIN jid j ON c.jid_id = j.id
+            LEFT JOIN roster r ON c.account_id = r.account_id AND c.jid_id = r.jid_id
+            WHERE a.enabled = 1
+            AND (r.name LIKE ? OR j.bare_jid LIKE ?)
+            ORDER BY display_name, j.bare_jid
+        """, (query, query))
+
+        # Populate dropdown
+        self.contact_search_dropdown.clear()
+        if rows:
+            for row in rows:
+                # Format: "Contact Name (JID) - account@server"
+                contact_type = "🏠" if row['type'] == 'groupchat' else "👤"
+                display_text = f"{contact_type} {row['display_name']}"
+                if row['jid'] != row['display_name']:
+                    display_text += f" ({row['jid']})"
+                display_text += f" - {row['account_jid']}"
+
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.UserRole, row['account_id'])
+                item.setData(Qt.UserRole + 1, row['jid'])
+                self.contact_search_dropdown.addItem(item)
+
+            # Position dropdown below search box
+            pos = self.search_box.mapToGlobal(self.search_box.rect().bottomLeft())
+            self.contact_search_dropdown.move(pos)
+            self.contact_search_dropdown.show()
+            self.contact_search_dropdown.setCurrentRow(0)
+        else:
+            self.contact_search_dropdown.hide()
+
+    def _on_search_enter(self):
+        """Handle Enter key in search box - select current result."""
+        if self.contact_search_dropdown.isVisible():
+            current_item = self.contact_search_dropdown.currentItem()
+            if current_item:
+                self._on_contact_search_selected(current_item)
+
+    def _on_contact_search_selected(self, item):
+        """Handle contact selection from search - open chat."""
+        account_id = item.data(Qt.UserRole)
+        jid = item.data(Qt.UserRole + 1)
+
+        # Hide dropdown and clear search
+        self.contact_search_dropdown.hide()
+        self.search_box.clear()
+
+        # Open chat via main window callback
+        # Traverse up to find the actual MainWindow (parent is QSplitter)
+        widget = self
+        main_window = None
+        while widget:
+            widget = widget.parent()
+            if widget and hasattr(widget, '_on_contact_selected'):
+                main_window = widget
+                break
+
+        if main_window and hasattr(main_window, '_on_contact_selected'):
+            main_window._on_contact_selected(account_id, jid)
 
     def _on_item_clicked(self, item: QTreeWidgetItem, column: int):
         """Handle contact/room item click."""
@@ -952,3 +1046,44 @@ class ContactListWidget(QWidget):
         data.typing = (state == 'composing')
         self._update_item_from_data(item, data)
         logger.debug(f"Updated typing indicator for {jid}: {state}")
+
+    def eventFilter(self, obj, event):
+        """Handle arrow keys and ESC for search dropdown.
+
+        IMPORTANT: This ensures Enter/ESC go to the search field, not main window.
+        Event filter intercepts events BEFORE they propagate to parent widgets.
+        """
+        if obj == self.search_box and event.type() == QEvent.KeyPress:
+            key = event.key()
+
+            # ESC: clear and hide
+            if key == Qt.Key_Escape:
+                self.contact_search_dropdown.hide()
+                self.search_box.clear()
+                return True  # Event handled, don't propagate to main window
+
+            # Enter: select current result
+            if key == Qt.Key_Return or key == Qt.Key_Enter:
+                if self.contact_search_dropdown.isVisible():
+                    current_item = self.contact_search_dropdown.currentItem()
+                    if current_item:
+                        self._on_contact_search_selected(current_item)
+                    return True  # Event handled, don't propagate
+
+            if self.contact_search_dropdown.isVisible():
+                # Down: next result
+                if key == Qt.Key_Down:
+                    current = self.contact_search_dropdown.currentRow()
+                    if current < self.contact_search_dropdown.count() - 1:
+                        self.contact_search_dropdown.setCurrentRow(current + 1)
+                    return True
+
+                # Up: previous result
+                elif key == Qt.Key_Up:
+                    current = self.contact_search_dropdown.currentRow()
+                    if current > 0:
+                        self.contact_search_dropdown.setCurrentRow(current - 1)
+                    return True
+
+        # Let other events propagate normally
+        return super().eventFilter(obj, event)
