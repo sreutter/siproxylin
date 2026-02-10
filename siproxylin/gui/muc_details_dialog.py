@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QMessageBox, QTextEdit, QComboBox
 )
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QColor, QBrush, QPalette
 
 from ..core import get_account_manager
 from ..utils.avatar import get_avatar_pixmap
@@ -65,7 +65,7 @@ class MUCDetailsDialog(QDialog):
         self.info_tab = self._create_info_tab()
         self.tabs.addTab(self.info_tab, "Info")
 
-        # Participants tab
+        # Participants tab (unified: online, offline, affiliated, banned)
         self.participants_tab = self._create_participants_tab()
         self.tabs.addTab(self.participants_tab, "Participants")
 
@@ -223,28 +223,94 @@ class MUCDetailsDialog(QDialog):
         return tab
 
     def _create_participants_tab(self):
-        """Create the Participants tab showing room members."""
+        """Create the unified Participants tab showing all users (online, offline, affiliated, banned)."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        # Participant count header
+        # Header row with count, filters, and search
+        header_layout = QHBoxLayout()
+
+        # Participant count label
         self.participant_count_label = QLabel()
         self.participant_count_label.setFont(QFont("", 10, QFont.Bold))
-        layout.addWidget(self.participant_count_label)
+        header_layout.addWidget(self.participant_count_label)
 
-        # Sync status notice
+        header_layout.addStretch()
+
+        # Refresh button
+        self.refresh_participants_button = QPushButton("🔄")
+        self.refresh_participants_button.setToolTip("Refresh participant list")
+        self.refresh_participants_button.setMaximumWidth(35)
+        self.refresh_participants_button.clicked.connect(self._load_participants)
+        header_layout.addWidget(self.refresh_participants_button)
+
+        # Search box
+        self.participant_search_input = QLineEdit()
+        self.participant_search_input.setPlaceholderText("Search by nickname or JID...")
+        self.participant_search_input.setMaximumWidth(250)
+        self.participant_search_input.textChanged.connect(self._filter_participants)
+        header_layout.addWidget(self.participant_search_input)
+
+        layout.addLayout(header_layout)
+
+        # Filter checkboxes
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Show:"))
+
+        self.filter_online = QCheckBox("Online")
+        self.filter_online.setChecked(True)
+        self.filter_online.stateChanged.connect(self._filter_participants)
+        filter_layout.addWidget(self.filter_online)
+
+        self.filter_offline = QCheckBox("Offline")
+        self.filter_offline.setChecked(True)
+        self.filter_offline.stateChanged.connect(self._filter_participants)
+        filter_layout.addWidget(self.filter_offline)
+
+        filter_layout.addWidget(QLabel("|"))
+
+        self.filter_owners = QCheckBox("Owners")
+        self.filter_owners.setChecked(True)
+        self.filter_owners.stateChanged.connect(self._filter_participants)
+        filter_layout.addWidget(self.filter_owners)
+
+        self.filter_admins = QCheckBox("Admins")
+        self.filter_admins.setChecked(True)
+        self.filter_admins.stateChanged.connect(self._filter_participants)
+        filter_layout.addWidget(self.filter_admins)
+
+        self.filter_members = QCheckBox("Members")
+        self.filter_members.setChecked(True)
+        self.filter_members.stateChanged.connect(self._filter_participants)
+        filter_layout.addWidget(self.filter_members)
+
+        self.filter_outcasts = QCheckBox("Banned")
+        self.filter_outcasts.setChecked(True)
+        self.filter_outcasts.stateChanged.connect(self._filter_participants)
+        filter_layout.addWidget(self.filter_outcasts)
+
+        self.filter_none = QCheckBox("Others")
+        self.filter_none.setChecked(True)
+        self.filter_none.setToolTip("Users with no affiliation")
+        self.filter_none.stateChanged.connect(self._filter_participants)
+        filter_layout.addWidget(self.filter_none)
+
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+
+        # Sync/info notice
         self.sync_notice_label = QLabel()
         self.sync_notice_label.setStyleSheet("color: #856404; background-color: #fff3cd; padding: 8px; border-radius: 4px;")
         self.sync_notice_label.setWordWrap(True)
-        self.sync_notice_label.setVisible(False)  # Hidden by default
+        self.sync_notice_label.setVisible(False)
         layout.addWidget(self.sync_notice_label)
 
-        # Participants table
+        # Participants table (unified)
         self.participants_table = QTableWidget()
-        self.participants_table.setColumnCount(4)
+        self.participants_table.setColumnCount(5)
         self.participants_table.setHorizontalHeaderLabels([
-            "Nickname", "JID", "Role", "Affiliation"
+            "Nickname", "JID", "Status", "Role", "Affiliation"
         ])
 
         # Configure table
@@ -252,15 +318,21 @@ class MUCDetailsDialog(QDialog):
         self.participants_table.setSelectionMode(QTableWidget.SingleSelection)
         self.participants_table.setAlternatingRowColors(True)
         self.participants_table.verticalHeader().setVisible(False)
+        self.participants_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.participants_table.customContextMenuRequested.connect(self._show_participant_context_menu)
 
         # Column stretching
         header = self.participants_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)  # Nickname
         header.setSectionResizeMode(1, QHeaderView.Stretch)  # JID
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Role
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Affiliation
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Status
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Role
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Affiliation
 
         layout.addWidget(self.participants_table)
+
+        # Store all participants (online + affiliated) for filtering
+        self.all_participants = []
 
         return tab
 
@@ -595,6 +667,7 @@ class MUCDetailsDialog(QDialog):
         # Update refresh button state based on ownership
         # Only owners can query room configuration (XEP-0045 §10)
         is_owner = account.muc.is_room_owner(self.room_jid)
+        is_admin = account.muc.is_room_admin(self.room_jid)
         self.refresh_config_button.setEnabled(is_owner)
 
         if is_owner:
@@ -622,7 +695,8 @@ class MUCDetailsDialog(QDialog):
 
     def _load_participants(self):
         """
-        Load and display room participants using barrel API.
+        Load and display ALL room participants (online + offline with affiliations).
+        Unified view combining live presence and persistent affiliations.
         """
         # Get account
         account = self.account_manager.get_account(self.account_id)
@@ -630,88 +704,107 @@ class MUCDetailsDialog(QDialog):
             self.sync_notice_label.setVisible(False)
             self._show_no_participants("Not connected")
             self.refresh_timer.stop()
+            self.refresh_participants_button.setEnabled(False)
             return
 
-        try:
-            # Check if we've fully joined the room
-            room_joined = self.room_jid in account.client.joined_rooms
+        # Disable refresh button while loading
+        self.refresh_participants_button.setEnabled(False)
 
-            # Use barrel API to get participants
-            participants = account.muc.get_participants(self.room_jid)
+        # Show loading state
+        self.sync_notice_label.setText("Loading participants and affiliations...")
+        self.sync_notice_label.setVisible(True)
 
-            if not participants:
-                # Determine appropriate message based on join state
-                if not room_joined:
-                    message = "⏳ Joining room... Please wait."
-                    self.sync_notice_label.setText(message)
-                else:
-                    message = "⏳ Loading participants... Presence stanzas are being received in the background."
-                    self.sync_notice_label.setText(message)
+        async def fetch_unified_list():
+            try:
+                # 1. Fetch online participants from barrel
+                online_participants = account.muc.get_participants(self.room_jid) or []
 
-                self.sync_notice_label.setVisible(True)
-                self._show_no_participants("Waiting for participant list...")
+                # 2. Fetch all affiliations from server (if admin/owner)
+                our_affiliation = account.muc.get_own_affiliation(self.room_jid) or 'none'
+                affiliated_users = {}  # Map: JID -> affiliation
 
-                # Start auto-refresh timer if not already running
-                if not self.refresh_timer.isActive():
-                    self.refresh_attempts = 0
-                    self.refresh_timer.start(2000)  # Check every 2 seconds
+                if our_affiliation in ('owner', 'admin'):
+                    try:
+                        owners = await account.client.plugin['xep_0045'].get_affiliation_list(self.room_jid, 'owner')
+                        admins = await account.client.plugin['xep_0045'].get_affiliation_list(self.room_jid, 'admin')
+                        members = await account.client.plugin['xep_0045'].get_affiliation_list(self.room_jid, 'member')
+                        outcasts = await account.client.plugin['xep_0045'].get_affiliation_list(self.room_jid, 'outcast')
 
-                return
+                        for jid in owners:
+                            affiliated_users[str(jid).lower()] = 'owner'
+                        for jid in admins:
+                            affiliated_users[str(jid).lower()] = 'admin'
+                        for jid in members:
+                            affiliated_users[str(jid).lower()] = 'member'
+                        for jid in outcasts:
+                            affiliated_users[str(jid).lower()] = 'outcast'
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch affiliations (non-admin?): {e}")
 
-            # Roster loaded successfully - stop auto-refresh timer
-            self.refresh_timer.stop()
-            self.sync_notice_label.setVisible(False)
+                # 3. Build unified participant list
+                unified_list = []
+                online_jids = set()
 
-        except Exception as e:
-            logger.error(f"Failed to load MUC roster: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            self.refresh_timer.stop()
-            self.sync_notice_label.setVisible(False)
-            self._show_no_participants("Error loading participants")
-            return
+                # Add online participants
+                for p in online_participants:
+                    bare_jid = p.jid.split('/')[0] if p.jid and '/' in p.jid else p.jid
+                    if bare_jid:
+                        bare_jid = bare_jid.lower()
+                        online_jids.add(bare_jid)
 
-        # Update count - deduplicate by real JID if available (non-anonymous rooms)
-        # Some users may have multiple nicknames (nickname changes, stale presence)
-        unique_jids = set()
-        anonymous_count = 0
-        for p in participants:
-            if p.jid:
-                unique_jids.add(p.jid)
-            else:
-                # Anonymous room or JID not available
-                anonymous_count += 1
+                    unified_list.append({
+                        'nickname': p.nick,
+                        'jid': bare_jid or '(hidden)',
+                        'status': 'Online',
+                        'role': p.role or 'none',
+                        'affiliation': p.affiliation or 'none',
+                        'is_online': True
+                    })
 
-        # Total unique participants: unique JIDs + anonymous entries
-        unique_count = len(unique_jids) + anonymous_count
-        self.participant_count_label.setText(f"👥 {unique_count} participant{'s' if unique_count != 1 else ''}")
+                # Add offline affiliated users (not currently online)
+                for jid, affiliation in affiliated_users.items():
+                    if jid not in online_jids:
+                        unified_list.append({
+                            'nickname': None,
+                            'jid': jid,
+                            'status': 'Offline',
+                            'role': None,
+                            'affiliation': affiliation,
+                            'is_online': False
+                        })
 
-        # Populate table (shows all nicknames, including duplicates for debugging)
-        self.participants_table.setRowCount(len(participants))
+                # Store for filtering
+                self.all_participants = unified_list
 
-        for row_idx, participant in enumerate(participants):
-            # Nickname
-            nick_item = QTableWidgetItem(participant.nick)
-            nick_item.setFlags(nick_item.flags() & ~Qt.ItemIsEditable)
-            self.participants_table.setItem(row_idx, 0, nick_item)
+                # Update count label
+                total_count = len(unified_list)
+                online_count = len([p for p in unified_list if p['is_online']])
+                self.participant_count_label.setText(
+                    f"👥 {total_count} total ({online_count} online, {total_count - online_count} offline)"
+                )
 
-            # JID (if known - depends on room being non-anonymous)
-            jid_text = participant.jid if participant.jid else "(hidden)"
-            jid_item = QTableWidgetItem(jid_text)
-            jid_item.setFlags(jid_item.flags() & ~Qt.ItemIsEditable)
-            if not participant.jid:
-                jid_item.setForeground(Qt.gray)
-            self.participants_table.setItem(row_idx, 1, jid_item)
+                # Hide loading notice
+                self.sync_notice_label.setVisible(False)
 
-            # Role (from live presence)
-            role_item = QTableWidgetItem(participant.role)
-            role_item.setFlags(role_item.flags() & ~Qt.ItemIsEditable)
-            self.participants_table.setItem(row_idx, 2, role_item)
+                # Stop auto-refresh timer
+                self.refresh_timer.stop()
 
-            # Affiliation (from live presence)
-            affiliation_item = QTableWidgetItem(participant.affiliation)
-            affiliation_item.setFlags(affiliation_item.flags() & ~Qt.ItemIsEditable)
-            self.participants_table.setItem(row_idx, 3, affiliation_item)
+                # Apply current filters
+                self._filter_participants()
+
+                logger.info(f"Loaded {total_count} participants for {self.room_jid} ({online_count} online, {total_count - online_count} offline)")
+
+            except Exception as e:
+                logger.error(f"Failed to load unified participant list: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                self.sync_notice_label.setText(f"⚠️ Error loading: {e}")
+                self.sync_notice_label.setStyleSheet("color: #721c24; background-color: #f8d7da; padding: 8px; border-radius: 4px;")
+                self._show_no_participants("Error loading participants")
+            finally:
+                self.refresh_participants_button.setEnabled(True)
+
+        asyncio.create_task(fetch_unified_list())
 
     def _show_no_participants(self, message: str):
         """
@@ -749,6 +842,558 @@ class MUCDetailsDialog(QDialog):
         # Reload participants
         logger.debug(f"Auto-refreshing participants (attempt {self.refresh_attempts})")
         self._load_participants()
+
+    def _participant_matches_search(self, participant: dict, search_text: str) -> bool:
+        """Check if participant matches search text."""
+        # Search in nickname (if online)
+        if participant.get('nickname') and search_text in participant['nickname'].lower():
+            return True
+        # Search in JID
+        if participant.get('jid') and search_text in participant['jid'].lower():
+            return True
+        return False
+
+    def _participant_matches_filters(self, participant: dict) -> bool:
+        """Check if participant matches checkbox filters."""
+        # Online/Offline filter
+        if participant['is_online'] and not self.filter_online.isChecked():
+            return False
+        if not participant['is_online'] and not self.filter_offline.isChecked():
+            return False
+
+        # Affiliation filters
+        affiliation = participant.get('affiliation', 'none')
+        if affiliation == 'owner' and not self.filter_owners.isChecked():
+            return False
+        if affiliation == 'admin' and not self.filter_admins.isChecked():
+            return False
+        if affiliation == 'member' and not self.filter_members.isChecked():
+            return False
+        if affiliation == 'outcast' and not self.filter_outcasts.isChecked():
+            return False
+        if affiliation == 'none' and not self.filter_none.isChecked():
+            return False
+
+        return True
+
+    def _get_self_highlight_color(self) -> QBrush:
+        """
+        Get theme-aware background color for highlighting own entry in participant list.
+
+        Returns a subtle green tint that adapts to the current theme by blending
+        with the table's base color.
+        """
+        # Get the table's base background color from its palette
+        base_color = self.participants_table.palette().color(QPalette.Base)
+
+        # Create a green tint
+        green_tint = QColor(76, 175, 80)  # Material green-ish (#4CAF50)
+
+        # Blend: 90% base color + 10% green tint (very subtle)
+        result = QColor(
+            int(base_color.red() * 0.90 + green_tint.red() * 0.10),
+            int(base_color.green() * 0.90 + green_tint.green() * 0.10),
+            int(base_color.blue() * 0.90 + green_tint.blue() * 0.10)
+        )
+
+        return QBrush(result)
+
+    def _filter_participants(self, search_text=None):
+        """Filter participants table based on search text and checkbox filters."""
+        # Handle both checkbox state changes (int) and text changes (str)
+        if isinstance(search_text, int) or search_text is None:
+            search_text = self.participant_search_input.text()
+
+        search_text = search_text.strip().lower()
+
+        # Get total count
+        total_count = len(self.all_participants)
+        if total_count == 0:
+            return  # No data yet
+
+        # Filter participants by checkboxes and search
+        filtered_participants = []
+        for p in self.all_participants:
+            # Apply checkbox filters
+            if not self._participant_matches_filters(p):
+                continue
+            # Apply search filter
+            if search_text and not self._participant_matches_search(p, search_text):
+                continue
+            filtered_participants.append(p)
+
+        # Update count label
+        online_count = len([p for p in filtered_participants if p['is_online']])
+        offline_count = len(filtered_participants) - online_count
+
+        if search_text or len(filtered_participants) != total_count:
+            self.participant_count_label.setText(
+                f"👥 {len(filtered_participants)} of {total_count} ({online_count} online, {offline_count} offline)"
+            )
+        else:
+            self.participant_count_label.setText(
+                f"👥 {total_count} total ({online_count} online, {offline_count} offline)"
+            )
+
+        # Get our JID for highlighting own entry
+        account = self.account_manager.get_account(self.account_id)
+        our_bare_jid = None
+        if account and account.client:
+            our_bare_jid = str(account.client.boundjid.bare).lower()
+
+        # Get theme-aware highlight color
+        highlight_brush = self._get_self_highlight_color()
+
+        # Populate 5-column table
+        self.participants_table.setRowCount(len(filtered_participants))
+
+        for row_idx, p in enumerate(filtered_participants):
+            # Check if this is our own entry
+            is_self = our_bare_jid and p.get('jid', '').lower() == our_bare_jid
+
+            # Column 0: Nickname
+            nick_text = p.get('nickname') or ''
+            if is_self and nick_text:
+                nick_text = f"{nick_text} (You)"
+            elif is_self:
+                nick_text = "(You)"
+            nick_item = QTableWidgetItem(nick_text)
+            nick_item.setFlags(nick_item.flags() & ~Qt.ItemIsEditable)
+            # Store participant data for context menu
+            nick_item.setData(Qt.UserRole, p)
+            if is_self:
+                nick_item.setBackground(highlight_brush)
+            if not nick_text:  # Offline user with no nickname
+                nick_item.setForeground(Qt.gray)
+            self.participants_table.setItem(row_idx, 0, nick_item)
+
+            # Column 1: JID
+            jid_text = p.get('jid', '(hidden)')
+            jid_item = QTableWidgetItem(jid_text)
+            jid_item.setFlags(jid_item.flags() & ~Qt.ItemIsEditable)
+            if is_self:
+                jid_item.setBackground(highlight_brush)
+            if jid_text == '(hidden)':
+                jid_item.setForeground(Qt.gray)
+            self.participants_table.setItem(row_idx, 1, jid_item)
+
+            # Column 2: Status
+            status_text = p.get('status', 'Unknown')
+            status_item = QTableWidgetItem(status_text)
+            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
+            if is_self:
+                status_item.setBackground(highlight_brush)
+            # Color code status
+            if status_text == 'Online':
+                status_item.setForeground(Qt.darkGreen)
+            else:
+                status_item.setForeground(Qt.gray)
+            self.participants_table.setItem(row_idx, 2, status_item)
+
+            # Column 3: Role
+            role_text = p.get('role') or 'none'
+            role_item = QTableWidgetItem(role_text)
+            role_item.setFlags(role_item.flags() & ~Qt.ItemIsEditable)
+            if is_self:
+                role_item.setBackground(highlight_brush)
+            if role_text == 'none' or not p['is_online']:
+                role_item.setForeground(Qt.gray)
+            self.participants_table.setItem(row_idx, 3, role_item)
+
+            # Column 4: Affiliation
+            affiliation_text = p.get('affiliation', 'none')
+            affiliation_item = QTableWidgetItem(affiliation_text.capitalize())
+            affiliation_item.setFlags(affiliation_item.flags() & ~Qt.ItemIsEditable)
+            if is_self:
+                affiliation_item.setBackground(highlight_brush)
+            # Color code affiliation
+            if affiliation_text == 'owner':
+                affiliation_item.setForeground(QColor(255, 140, 0))  # Orange
+            elif affiliation_text == 'admin':
+                affiliation_item.setForeground(QColor(70, 130, 180))  # Steel blue
+            elif affiliation_text == 'outcast':
+                affiliation_item.setForeground(Qt.red)
+            elif affiliation_text == 'none':
+                affiliation_item.setForeground(Qt.gray)
+            self.participants_table.setItem(row_idx, 4, affiliation_item)
+
+    def _show_participant_context_menu(self, position):
+        """Show context menu for participant with permission-based actions (adapts to online/offline)."""
+        # Get selected row
+        row = self.participants_table.rowAt(position.y())
+        if row < 0:
+            return
+
+        # Get participant data from first column
+        nick_item = self.participants_table.item(row, 0)
+        if not nick_item:
+            return
+
+        participant = nick_item.data(Qt.UserRole)
+        if not participant:
+            return
+
+        # Get our permissions
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            return
+
+        our_affiliation = account.muc.get_own_affiliation(self.room_jid) or 'none'
+        our_role = account.muc.get_own_role(self.room_jid) or 'none'
+
+        # Don't allow changing own permissions
+        our_bare_jid = str(account.client.boundjid.bare).lower() if account.client else None
+        participant_jid = participant.get('jid', '').lower()
+        if our_bare_jid and participant_jid == our_bare_jid:
+            return  # This is us - don't show context menu
+
+        # Permission checks
+        can_manage_roles = our_role in ('moderator',) and participant['is_online']
+        can_manage_affiliations = our_affiliation in ('owner', 'admin')
+        is_owner = our_affiliation == 'owner'
+
+        # Don't show menu if we have no permissions
+        if not (can_manage_roles or can_manage_affiliations):
+            return
+
+        # Import QMenu
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+
+        # ONLINE ONLY: Role management (moderators and above)
+        if can_manage_roles and participant['is_online']:
+            role_menu = menu.addMenu("Change Role")
+            current_role = participant.get('role', 'none')
+
+            for role in ['moderator', 'participant', 'visitor', 'none']:
+                if role != current_role:
+                    action = role_menu.addAction(role.capitalize())
+                    action.triggered.connect(lambda checked=False, r=role: self._change_participant_role(participant, r))
+
+        # Affiliation management (admins and owners - works for online AND offline)
+        if can_manage_affiliations:
+            affiliation_menu = menu.addMenu("Change Affiliation")
+            current_affiliation = participant.get('affiliation', 'none')
+
+            # Owners can set any affiliation, admins cannot make owners
+            available_affiliations = ['owner', 'admin', 'member', 'none'] if is_owner else ['admin', 'member', 'none']
+
+            for affiliation in available_affiliations:
+                if affiliation != current_affiliation:
+                    action = affiliation_menu.addAction(affiliation.capitalize())
+                    action.triggered.connect(lambda checked=False, a=affiliation: self._change_participant_affiliation(participant, a))
+
+        # Separator
+        if (can_manage_roles and participant['is_online']) or can_manage_affiliations:
+            menu.addSeparator()
+
+        # ONLINE ONLY: Kick action (moderators and above)
+        if can_manage_roles and participant['is_online']:
+            kick_action = menu.addAction("Kick from Room")
+            kick_action.triggered.connect(lambda: self._kick_participant(participant))
+
+        # Ban/Unban actions (admins and owners - works for online AND offline)
+        if can_manage_affiliations:
+            if participant.get('affiliation') == 'outcast':
+                unban_action = menu.addAction("Unban")
+                unban_action.triggered.connect(lambda: self._change_participant_affiliation(participant, 'none'))
+            else:
+                ban_action = menu.addAction("Ban from Room")
+                ban_action.triggered.connect(lambda: self._ban_participant(participant))
+
+        # Show menu at cursor position
+        menu.exec(self.participants_table.viewport().mapToGlobal(position))
+
+    def _change_participant_role(self, participant: dict, new_role: str):
+        """Change participant's role with optional reason (ONLINE ONLY)."""
+        from PySide6.QtWidgets import QInputDialog
+
+        nickname = participant.get('nickname') or participant.get('jid', 'Unknown')
+
+        # Ask for reason (optional)
+        reason, ok = QInputDialog.getText(
+            self,
+            "Change Role",
+            f"Change {nickname}'s role to {new_role}.\nReason (optional):",
+            QLineEdit.Normal,
+            ""
+        )
+
+        if not ok:
+            return  # User canceled
+
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Error")
+            msg.setText("Account not found")
+            msg.show()
+            return
+
+        # Role changes require nickname (online users only)
+        if not participant.get('nickname'):
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Cannot Change Role")
+            msg.setText("Cannot change role for offline users.")
+            msg.show()
+            return
+
+        async def do_change():
+            try:
+                # Use slixmpp's set_role directly (requires nickname)
+                await account.client.plugin['xep_0045'].set_role(
+                    self.room_jid,
+                    participant['nickname'],
+                    new_role,
+                    reason=reason
+                )
+
+                logger.info(f"Changed role of {participant['nickname']} to {new_role} in {self.room_jid}")
+
+                # Reload participants to show updated role
+                self._load_participants()
+
+                # Non-blocking success message
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Information)
+                msg.setWindowTitle("Role Changed")
+                msg.setText(f"Successfully changed {nickname}'s role to {new_role}.")
+                msg.show()
+
+            except Exception as e:
+                logger.error(f"Failed to change role: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Non-blocking error
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Error")
+                msg.setText(f"Failed to change role:\n{e}")
+                msg.show()
+
+        asyncio.create_task(do_change())
+
+    def _change_participant_affiliation(self, participant: dict, new_affiliation: str):
+        """Change participant's affiliation with optional reason (works for online AND offline)."""
+        from PySide6.QtWidgets import QInputDialog
+
+        display_name = participant.get('nickname') or participant.get('jid', 'Unknown')
+
+        # Ask for reason (optional)
+        reason, ok = QInputDialog.getText(
+            self,
+            "Change Affiliation",
+            f"Change {display_name}'s affiliation to {new_affiliation}.\nReason (optional):",
+            QLineEdit.Normal,
+            ""
+        )
+
+        if not ok:
+            return  # User canceled
+
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Error")
+            msg.setText("Account not found")
+            msg.show()
+            return
+
+        # Affiliation changes require JID
+        jid = participant.get('jid')
+        if not jid or jid == '(hidden)':
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Cannot Change Affiliation")
+            msg.setText("This room is anonymous. Real JIDs are not visible, so affiliation changes are not possible.")
+            msg.show()
+            return
+
+        async def do_change():
+            try:
+                # Use slixmpp's set_affiliation
+                await account.client.plugin['xep_0045'].set_affiliation(
+                    self.room_jid,
+                    new_affiliation,
+                    jid=jid,
+                    reason=reason
+                )
+
+                logger.info(f"Changed affiliation of {jid} to {new_affiliation} in {self.room_jid}")
+
+                # Reload participants to show updated affiliation
+                self._load_participants()
+
+                # Non-blocking success message
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Information)
+                msg.setWindowTitle("Affiliation Changed")
+                msg.setText(f"Successfully changed {display_name}'s affiliation to {new_affiliation}.")
+                msg.show()
+
+            except Exception as e:
+                logger.error(f"Failed to change affiliation: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Non-blocking error
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Error")
+                msg.setText(f"Failed to change affiliation:\n{e}")
+                msg.show()
+
+        asyncio.create_task(do_change())
+
+    def _kick_participant(self, participant: dict):
+        """Kick participant from room with optional reason (ONLINE ONLY)."""
+        from PySide6.QtWidgets import QInputDialog
+
+        nickname = participant.get('nickname') or participant.get('jid', 'Unknown')
+
+        # Ask for reason (optional)
+        reason, ok = QInputDialog.getText(
+            self,
+            "Kick Participant",
+            f"Kick {nickname} from the room.\nReason (optional):",
+            QLineEdit.Normal,
+            ""
+        )
+
+        if not ok:
+            return  # User canceled
+
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Error")
+            msg.setText("Account not found")
+            msg.show()
+            return
+
+        # Kick requires nickname (online only)
+        if not participant.get('nickname'):
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Cannot Kick")
+            msg.setText("Cannot kick offline users.")
+            msg.show()
+            return
+
+        async def do_kick():
+            try:
+                # Kick = set role to 'none'
+                await account.client.plugin['xep_0045'].set_role(
+                    self.room_jid,
+                    participant['nickname'],
+                    'none',
+                    reason=reason
+                )
+
+                logger.info(f"Kicked {participant['nickname']} from {self.room_jid}")
+
+                # Reload participants to remove kicked user
+                self._load_participants()
+
+                # Non-blocking success message
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Information)
+                msg.setWindowTitle("Participant Kicked")
+                msg.setText(f"Successfully kicked {nickname} from the room.")
+                msg.show()
+
+            except Exception as e:
+                logger.error(f"Failed to kick participant: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Non-blocking error
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Error")
+                msg.setText(f"Failed to kick participant:\n{e}")
+                msg.show()
+
+        asyncio.create_task(do_kick())
+
+    def _ban_participant(self, participant: dict):
+        """Ban participant from room (set affiliation to outcast) with optional reason."""
+        from PySide6.QtWidgets import QInputDialog
+
+        display_name = participant.get('nickname') or participant.get('jid', 'Unknown')
+
+        # Ask for reason (optional)
+        reason, ok = QInputDialog.getText(
+            self,
+            "Ban Participant",
+            f"Ban {display_name} from the room.\nThis will prevent them from rejoining.\nReason (optional):",
+            QLineEdit.Normal,
+            ""
+        )
+
+        if not ok:
+            return  # User canceled
+
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Error")
+            msg.setText("Account not found")
+            msg.show()
+            return
+
+        # Ban requires JID
+        jid = participant.get('jid')
+        if not jid or jid == '(hidden)':
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Cannot Ban")
+            msg.setText("This room is anonymous. Real JIDs are not visible, so banning is not possible.")
+            msg.show()
+            return
+
+        async def do_ban():
+            try:
+                # Ban = set affiliation to 'outcast'
+                await account.client.plugin['xep_0045'].set_affiliation(
+                    self.room_jid,
+                    'outcast',
+                    jid=jid,
+                    reason=reason
+                )
+
+                logger.info(f"Banned {jid} from {self.room_jid}")
+
+                # Reload participants to remove banned user
+                self._load_participants()
+
+                # Non-blocking success message
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Information)
+                msg.setWindowTitle("Participant Banned")
+                msg.setText(f"Successfully banned {display_name} from the room.")
+                msg.show()
+
+            except Exception as e:
+                logger.error(f"Failed to ban participant: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Non-blocking error
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Error")
+                msg.setText(f"Failed to ban participant:\n{e}")
+                msg.show()
+
+        asyncio.create_task(do_ban())
 
     def _load_settings(self):
         """Load local settings using barrel API."""
