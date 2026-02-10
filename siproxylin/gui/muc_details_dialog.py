@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QWidget, QFormLayout, QCheckBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
-    QSpinBox, QMessageBox, QTextEdit
+    QSpinBox, QMessageBox, QTextEdit, QComboBox
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
@@ -146,10 +146,22 @@ class MUCDetailsDialog(QDialog):
 
         # Subject/Description
         subject_group = QGroupBox("Room Subject")
-        subject_layout = QVBoxLayout(subject_group)
+        subject_main_layout = QVBoxLayout(subject_group)
+
+        # Subject text
         self.subject_label = QLabel("No subject set")
         self.subject_label.setWordWrap(True)
-        subject_layout.addWidget(self.subject_label)
+        subject_main_layout.addWidget(self.subject_label)
+
+        # Edit Subject button (conditional - shown only if allowed)
+        subject_button_layout = QHBoxLayout()
+        subject_button_layout.addStretch()
+        self.edit_subject_button = QPushButton("✏️ Edit Subject")
+        self.edit_subject_button.setVisible(False)  # Hidden by default
+        self.edit_subject_button.clicked.connect(self._on_edit_subject)
+        subject_button_layout.addWidget(self.edit_subject_button)
+        subject_main_layout.addLayout(subject_button_layout)
+
         layout.addWidget(subject_group)
 
         # Room Features (with Refresh button)
@@ -372,6 +384,30 @@ class MUCDetailsDialog(QDialog):
         self.config_mam_checkbox = QCheckBox("Server archives messages for history (XEP-0313, MAM)")
         config_layout.addRow("Enable message history:", self.config_mam_checkbox)
 
+        # Tier 2 settings (advanced)
+        # 10. Allow invites
+        self.config_allow_invites_checkbox = QCheckBox("Participants can invite others to the room")
+        config_layout.addRow("Allow invites:", self.config_allow_invites_checkbox)
+
+        # 11. Allow subject change
+        self.config_allow_subject_change_checkbox = QCheckBox("Occupants can change the room subject/topic")
+        config_layout.addRow("Allow subject change:", self.config_allow_subject_change_checkbox)
+
+        # 12. Who can see real JIDs (whois)
+        whois_layout = QVBoxLayout()
+        self.config_whois_combo = QComboBox()
+        self.config_whois_combo.addItem("Moderators only", "moderators")  # Default
+        self.config_whois_combo.addItem("Anyone (non-anonymous)", "anyone")
+        whois_layout.addWidget(self.config_whois_combo)
+
+        # Add OMEMO note
+        whois_note = QLabel("⚠️ OMEMO encryption requires 'Anyone' (non-anonymous room)")
+        whois_note.setStyleSheet("color: #856404; font-size: 9pt;")
+        whois_note.setWordWrap(True)
+        whois_layout.addWidget(whois_note)
+
+        config_layout.addRow("Who can see real JIDs:", whois_layout)
+
         layout.addWidget(config_group)
 
         # Save button for config (separate from local settings)
@@ -392,6 +428,45 @@ class MUCDetailsDialog(QDialog):
         account = self.account_manager.get_account(self.account_id)
         if not account:
             logger.warning(f"Account {self.account_id} not found")
+            return
+
+        # Fetch fresh disco#info to ensure we have latest room features
+        # (e.g., allow_subject_change can be changed by room owner)
+        if account.client:
+            async def fetch_fresh_disco():
+                try:
+                    logger.info(f"Fetching fresh disco#info for {self.room_jid}")
+                    disco_info = await account.client.get_room_features(self.room_jid)
+
+                    # Update disco cache with fresh data
+                    if not hasattr(account.client, 'disco_cache'):
+                        account.client.disco_cache = {}
+                    account.client.disco_cache[self.room_jid] = disco_info
+
+                    logger.info(f"Fresh disco#info cached for {self.room_jid}")
+
+                    # Reload room info now that we have fresh disco data
+                    self._load_room_info_sync()
+
+                except Exception as e:
+                    logger.error(f"Failed to fetch fresh disco#info for {self.room_jid}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # Fall back to cached data
+                    self._load_room_info_sync()
+
+            # Start async fetch
+            asyncio.create_task(fetch_fresh_disco())
+            return
+
+        # No client, proceed with cached data
+        self._load_room_info_sync()
+
+    def _load_room_info_sync(self):
+        """Load and display room info synchronously from cache."""
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
             return
 
         # Use barrel API to get room info (shared with Config tab)
@@ -446,8 +521,10 @@ class MUCDetailsDialog(QDialog):
             # Display subject/description
             if room_info.subject:
                 self.subject_label.setText(room_info.subject)
+                self.subject_label.setProperty("has_subject", True)
             else:
-                self.subject_label.setText("(Subject not yet available)")
+                self.subject_label.setText("(No subject set)")
+                self.subject_label.setProperty("has_subject", False)
 
         else:
             # No room info found - show defaults
@@ -461,7 +538,8 @@ class MUCDetailsDialog(QDialog):
             self.nonanonymous_label.setText("❓ Unknown")
             self.omemo_compatible_label.setText("❓ Room features not yet discovered")
             self.omemo_compatible_label.setStyleSheet("color: gray;")
-            self.subject_label.setText("(Subject not yet available)")
+            self.subject_label.setText("(No subject set)")
+            self.subject_label.setProperty("has_subject", False)
 
         # Display our affiliation and role in the room
         affiliation = account.muc.get_own_affiliation(self.room_jid)
@@ -495,6 +573,24 @@ class MUCDetailsDialog(QDialog):
             )
         else:
             self.our_status_label.setText("⏳ Status not yet available")
+
+        # Show/hide Edit Subject button based on role and room config
+        # XEP-0045 §8.1 permission model:
+        #   - Moderators: can ALWAYS change subject
+        #   - Participants: can change IF room config allows (muc#roomconfig_changesubject)
+        #   - Visitors: cannot change subject
+        can_edit_subject = False
+
+        if role == 'moderator':
+            # Moderators can always change subject
+            can_edit_subject = True
+        elif role == 'participant' and self.room_info:
+            # Participants can change if room allows (check config OR disco#info)
+            # Note: allow_subject_change comes from disco#info (XEP-0128 extended room info)
+            # which is available to all participants, not just owners
+            can_edit_subject = self.room_info.allow_subject_change
+
+        self.edit_subject_button.setVisible(can_edit_subject)
 
         # Update refresh button state based on ownership
         # Only owners can query room configuration (XEP-0045 §10)
@@ -684,29 +780,50 @@ class MUCDetailsDialog(QDialog):
         room_info = self.room_info
 
         if not is_owner:
-            # Non-owner: disable Config tab and show info message
-            self.tabs.setTabEnabled(self.config_tab_index, False)
-            affiliation = account.muc.get_own_affiliation(self.room_jid)
-            affiliation_display = affiliation.capitalize() if affiliation else "Unknown"
-            self.config_info_label.setText(
-                f"⚠️ Only room owners can edit configuration. Your affiliation: {affiliation_display}"
-            )
-            # Disable all config fields
-            self.config_name_input.setEnabled(False)
-            self.config_description_input.setEnabled(False)
-            self.config_members_only_checkbox.setEnabled(False)
-            self.config_moderated_checkbox.setEnabled(False)
-            self.config_password_checkbox.setEnabled(False)
-            self.config_password_input.setEnabled(False)
-            self.config_max_users_input.setEnabled(False)
-            self.config_persistent_checkbox.setEnabled(False)
-            self.config_public_checkbox.setEnabled(False)
-            self.config_mam_checkbox.setEnabled(False)
-            self.save_config_button.setEnabled(False)
+            # Non-owner: hide Config tab completely
+            self.tabs.setTabVisible(self.config_tab_index, False)
             return
 
-        # Owner: enable tab and load config
-        self.tabs.setTabEnabled(self.config_tab_index, True)
+        # Owner: show tab and load config
+        self.tabs.setTabVisible(self.config_tab_index, True)
+
+        # Fetch fresh config if not cached or if owner (to ensure fresh data)
+        if not room_info or room_info.config_fetched is None:
+            # Config not cached - fetch it now
+            if account.client:
+                async def fetch_fresh_config():
+                    try:
+                        logger.info(f"Fetching fresh room config for {self.room_jid}")
+                        await account.muc.fetch_and_store_room_config(self.room_jid)
+                        logger.info(f"Fresh room config fetched for {self.room_jid}")
+
+                        # Reload config tab now that we have fresh data
+                        self._load_config_sync()
+
+                    except Exception as e:
+                        logger.error(f"Failed to fetch fresh room config for {self.room_jid}: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        # Show error in UI
+                        self._load_config_sync()
+
+                # Start async fetch
+                asyncio.create_task(fetch_fresh_config())
+                return
+
+        # Config already cached, load it synchronously
+        self._load_config_sync()
+
+    def _load_config_sync(self):
+        """Load room configuration synchronously from cache."""
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            return
+
+        # Reload room_info to get fresh data from barrel
+        self.room_info = account.muc.get_room_info(self.room_jid)
+        room_info = self.room_info
 
         if not room_info or room_info.config_fetched is None:
             # Config not yet cached
@@ -724,6 +841,9 @@ class MUCDetailsDialog(QDialog):
             self.config_persistent_checkbox.setEnabled(False)
             self.config_public_checkbox.setEnabled(False)
             self.config_mam_checkbox.setEnabled(False)
+            self.config_allow_invites_checkbox.setEnabled(False)
+            self.config_allow_subject_change_checkbox.setEnabled(False)
+            self.config_whois_combo.setEnabled(False)
             self.save_config_button.setEnabled(False)
             return
 
@@ -753,6 +873,16 @@ class MUCDetailsDialog(QDialog):
         self.config_public_checkbox.setChecked(room_info.public or False)
         self.config_mam_checkbox.setChecked(room_info.enable_logging or False)
 
+        # Tier 2 settings
+        self.config_allow_invites_checkbox.setChecked(room_info.allow_invites)
+        self.config_allow_subject_change_checkbox.setChecked(room_info.allow_subject_change)
+
+        # Whois dropdown
+        whois_value = room_info.whois or 'moderators'
+        whois_index = self.config_whois_combo.findData(whois_value)
+        if whois_index >= 0:
+            self.config_whois_combo.setCurrentIndex(whois_index)
+
         # Enable all fields
         self.config_name_input.setEnabled(True)
         self.config_description_input.setEnabled(True)
@@ -763,6 +893,9 @@ class MUCDetailsDialog(QDialog):
         self.config_persistent_checkbox.setEnabled(True)
         self.config_public_checkbox.setEnabled(True)
         self.config_mam_checkbox.setEnabled(True)
+        self.config_allow_invites_checkbox.setEnabled(True)
+        self.config_allow_subject_change_checkbox.setEnabled(True)
+        self.config_whois_combo.setEnabled(True)
         self.save_config_button.setEnabled(True)
 
     def _save_settings(self):
@@ -849,6 +982,9 @@ class MUCDetailsDialog(QDialog):
             'persistentroom': self.config_persistent_checkbox.isChecked(),
             'publicroom': self.config_public_checkbox.isChecked(),
             'enablelogging': self.config_mam_checkbox.isChecked(),
+            'allowinvites': self.config_allow_invites_checkbox.isChecked(),
+            'changesubject': self.config_allow_subject_change_checkbox.isChecked(),
+            'whois': self.config_whois_combo.currentData(),
         }
 
         # Disable button during save
@@ -986,6 +1122,88 @@ class MUCDetailsDialog(QDialog):
 
         # Run async task
         asyncio.create_task(do_refresh())
+
+    def _on_edit_subject(self):
+        """Show dialog to edit room subject."""
+        from PySide6.QtWidgets import QInputDialog
+
+        # Get current subject
+        has_subject = self.subject_label.property("has_subject")
+        if has_subject:
+            current_subject = self.subject_label.text()
+        else:
+            current_subject = ""
+
+        # Show input dialog
+        new_subject, ok = QInputDialog.getText(
+            self,
+            "Edit Room Subject",
+            "Enter new room subject/topic:",
+            QLineEdit.Normal,
+            current_subject
+        )
+
+        if not ok:
+            return  # User canceled
+
+        # Get account
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            QMessageBox.warning(self, "Error", "Account not found")
+            return
+
+        # Disable button during update
+        self.edit_subject_button.setEnabled(False)
+        self.edit_subject_button.setText("Updating...")
+
+        async def do_update():
+            try:
+                # Send subject change via DrunkXMPP
+                success = await account.client.change_room_subject(self.room_jid, new_subject)
+
+                if success:
+                    # Update display immediately
+                    if new_subject:
+                        self.subject_label.setText(new_subject)
+                        self.subject_label.setProperty("has_subject", True)
+                    else:
+                        self.subject_label.setText("(No subject set)")
+                        self.subject_label.setProperty("has_subject", False)
+
+                    # Non-blocking success message
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Information)
+                    msg.setWindowTitle("Subject Updated")
+                    msg.setText("Room subject has been changed successfully.")
+                    msg.show()
+
+                    logger.info(f"Changed subject for {self.room_jid}")
+                else:
+                    # Non-blocking warning
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Warning)
+                    msg.setWindowTitle("Update Failed")
+                    msg.setText("Could not change room subject. You may not have permission.")
+                    msg.show()
+
+            except Exception as e:
+                logger.error(f"Failed to change subject: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Non-blocking error
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Error")
+                msg.setText(f"Failed to change subject:\n{e}")
+                msg.show()
+
+            finally:
+                # Re-enable button
+                self.edit_subject_button.setEnabled(True)
+                self.edit_subject_button.setText("✏️ Edit Subject")
+
+        # Run async task
+        asyncio.create_task(do_update())
 
     def _on_leave_room(self):
         """Handle Leave Room button click - emit signal for main_window to handle."""

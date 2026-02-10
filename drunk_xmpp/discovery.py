@@ -117,6 +117,45 @@ class DiscoveryMixin:
                 'muc_unmoderated': 'muc_unmoderated' in features,
             }
 
+            # Parse extended disco#info (XEP-0128) for additional room info
+            # This contains muc#roomconfig_changesubject and other settings
+            try:
+                # Get the data form from disco#info via XEP-0128 (Extended Service Discovery)
+                # XEP-0128 registers Form as a stanza plugin to DiscoInfo with iterable=True
+                disco_stanza = info['disco_info']
+
+                # Forms are iterable, so we need to find the right one
+                form_found = False
+                for form in disco_stanza['substanzas']:
+                    # Check if this is a Form stanza (plugin_attrib='form')
+                    if hasattr(form, 'plugin_attrib') and form.plugin_attrib == 'form':
+                        values = form.get_values()
+
+                        # Check if this is a MUC roominfo form
+                        # FORM_TYPE may be a list or a string depending on slixmpp version
+                        form_type = values.get('FORM_TYPE')
+                        if isinstance(form_type, list):
+                            form_type = form_type[0] if form_type else None
+
+                        if form_type == 'http://jabber.org/protocol/muc#roominfo':
+                            form_found = True
+                            # Parse changesubject setting (allows participants to change subject)
+                            # Value may already be a boolean or could be a string '0'/'1'
+                            changesubject_val = values.get('muc#roomconfig_changesubject', False)
+
+                            # Handle boolean, string, or other types
+                            if isinstance(changesubject_val, bool):
+                                result['allow_subject_change'] = changesubject_val
+                            else:
+                                result['allow_subject_change'] = str(changesubject_val).lower() in ('1', 'true')
+                            break
+
+                if not form_found:
+                    result['allow_subject_change'] = False
+            except Exception as e:
+                self.logger.debug(f"No extended room info form in disco#info for {room_jid}: {e}")
+                result['allow_subject_change'] = False
+
             # XEP-0384: OMEMO requires non-anonymous, recommends members-only
             result['supports_omemo'] = (
                 result['muc_nonanonymous'] and

@@ -43,6 +43,7 @@ class RoomInfo:
     allow_invites: bool = True
     allow_subject_change: bool = False
     enable_logging: bool = False
+    whois: str = 'moderators'  # 'anyone' or 'moderators' - who can see real JIDs
     # Additional info
     omemo_compatible: bool = False
     participant_count: int = 0
@@ -250,6 +251,7 @@ class MucBarrel:
                 'persistent': config.get('persistent', False),
                 'public': config.get('public', False),
                 'moderated': config.get('moderated', False),
+                'membersonly': config.get('membersonly', False),
                 'password_protected': config.get('password_protected', False),
                 'description': config.get('roomdesc'),
                 'subject': config.get('roomname'),
@@ -257,6 +259,7 @@ class MucBarrel:
                 'allow_invites': config.get('allow_invites', True),
                 'allow_subject_change': config.get('allow_subject_change', False),
                 'enable_logging': config.get('enable_logging', False),
+                'whois': config.get('whois', 'moderators'),
             }
 
             if self.logger:
@@ -385,6 +388,11 @@ class MucBarrel:
             # Query room features (disco#info) for OMEMO compatibility
             room_features = await self.client.get_room_features(room_jid)
             await self._update_room_features_from_dict(room_jid, room_features)
+
+            # Cache disco#info in client for use by dialog (includes allow_subject_change)
+            if not hasattr(self.client, 'disco_cache'):
+                self.client.disco_cache = {}
+            self.client.disco_cache[room_jid] = room_features
 
             # Update bookmark name if available
             room_name = room_features.get('name')
@@ -906,11 +914,30 @@ class MucBarrel:
             moderated = config.get('moderated', False)
             password_protected = config.get('password_protected', False)
             description = config.get('description')
-            subject = config.get('subject')
             max_users = config.get('max_users')
             allow_invites = config.get('allow_invites', True)
-            allow_subject_change = config.get('allow_subject_change', False)
             enable_logging = config.get('enable_logging', False)
+            whois = config.get('whois', 'moderators')
+
+            # Get allow_subject_change from config if available (owner-only query)
+            # Otherwise fall back to disco#info (available to all participants)
+            allow_subject_change = config.get('allow_subject_change', None)
+            if allow_subject_change is None and self.client:
+                # Config not available - try disco#info
+                if hasattr(self.client, 'disco_cache'):
+                    disco_info = self.client.disco_cache.get(room_jid, {})
+                    allow_subject_change = disco_info.get('allow_subject_change', False)
+                else:
+                    allow_subject_change = False
+
+            # Get subject from live tracking (not from config - subject is dynamic)
+            subject = None
+            if self.client and hasattr(self.client, 'room_subjects'):
+                subject = self.client.room_subjects.get(room_jid)
+
+            # Override membersonly from config if available (config is source of truth)
+            if has_config and 'membersonly' in config:
+                membersonly = config['membersonly']
 
             # Get participant count from live roster
             participant_count = 0
@@ -939,6 +966,7 @@ class MucBarrel:
                 allow_invites=allow_invites,
                 allow_subject_change=allow_subject_change,
                 enable_logging=enable_logging,
+                whois=whois,
                 omemo_compatible=(nonanonymous and membersonly),
                 participant_count=participant_count,
                 config_fetched=1 if has_config else None  # Simplified: 1 if cached, None if not

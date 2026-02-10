@@ -456,6 +456,10 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.own_affiliations = {}
         self.own_roles = {}
 
+        # Track room subjects (XEP-0045 §8.1)
+        # Key: room_jid (bare), Value: subject string
+        self.room_subjects: Dict[str, str] = {}
+
         # Track user-initiated disconnect (don't auto-reconnect if True)
         self.user_disconnected = False
 
@@ -566,6 +570,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.add_event_handler("disconnected", self._on_disconnected)
         self.add_event_handler("failed_auth", self._on_failed_auth)
         self.add_event_handler("groupchat_message", self._on_groupchat_message)
+        self.add_event_handler("groupchat_subject", self._on_groupchat_subject)
         self.add_event_handler("message", self._on_private_message)
         self.add_event_handler("message_error", self._on_message_error)
         self.add_event_handler("reactions", self._on_reactions)
@@ -1181,6 +1186,24 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             self.logger.error(f"Unexpected error handling room config change for {room_jid}: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
+
+    def _on_groupchat_subject(self, msg):
+        """
+        Handler for room subject changes (XEP-0045 §8.1).
+
+        Slixmpp fires this event separately from groupchat_message for messages
+        that contain ONLY a subject element (no body/thread).
+        """
+        room = msg['from'].bare
+        subject = msg['subject'] or ''  # Empty string if cleared
+
+        if subject:
+            self.logger.info(f"Room subject changed for {room}: {subject[:100]}")
+        else:
+            self.logger.info(f"Room subject cleared for {room}")
+
+        # Store subject for this room
+        self.room_subjects[room] = subject
 
     async def _on_groupchat_message(self, msg):
         """
@@ -2423,6 +2446,43 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         # Remove from rooms dict so we don't auto-rejoin
         if room_jid in self.rooms:
             del self.rooms[room_jid]
+
+    async def change_room_subject(self, room_jid: str, subject: str) -> bool:
+        """
+        Change the subject/topic of a MUC room (XEP-0045 §8.1).
+
+        Sends a groupchat message with a <subject> element to change the
+        room's current topic. Only works if the user has permission to
+        change the subject (room owners/admins can always change it, others
+        depend on room configuration).
+
+        Args:
+            room_jid: Room JID
+            subject: New subject text (can be empty string to clear)
+
+        Returns:
+            True if message was sent successfully, False otherwise
+        """
+        if room_jid not in self.joined_rooms:
+            self.logger.warning(f"Cannot change subject: not in room {room_jid}")
+            return False
+
+        self.logger.info(f"Changing subject for {room_jid}: {subject[:50]}...")
+
+        try:
+            # Send groupchat message with <subject> element (XEP-0045 §8.1)
+            msg = self.make_message(mto=room_jid, mtype='groupchat')
+            msg['subject'] = subject
+            msg.send()
+
+            self.logger.info(f"Subject change sent for {room_jid}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to change subject for {room_jid}: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return False
 
     def connect(self, address=None, **kwargs):
         """
