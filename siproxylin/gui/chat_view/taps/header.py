@@ -1206,7 +1206,7 @@ class ChatHeaderWidget(QFrame):
             logger.warning(f"Failed to get default nickname: {e}")
             default_nick = account.client.boundjid.user if account.client else "user"
 
-        # Create custom dialog for nickname and reason
+        # Create custom dialog for nickname and reason (non-blocking)
         dialog = QDialog(self)
         dialog.setWindowTitle("Request Membership")
         dialog.setModal(True)
@@ -1227,91 +1227,96 @@ class ChatHeaderWidget(QFrame):
 
         # Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
         layout.addWidget(button_box)
 
         dialog.setLayout(layout)
 
-        if dialog.exec() != QDialog.Accepted:
-            # User cancelled
-            return
+        # Non-blocking: connect accepted signal to handler
+        def on_accepted():
+            nickname = nick_input.text().strip()
+            reason = reason_input.text().strip()
 
-        nickname = nick_input.text().strip()
-        reason = reason_input.text().strip()
+            if not nickname:
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Warning)
+                msg.setWindowTitle("Invalid Input")
+                msg.setText("Nickname cannot be empty")
+                msg.show()
+                return
 
-        if not nickname:
-            QMessageBox.warning(self, "Invalid Input", "Nickname cannot be empty")
-            return
+            # Perform the request
+            async def do_request():
+                try:
+                    # Call the API with nickname
+                    result = await account.muc.request_membership(room_jid, nickname, reason)
 
-        # Perform the request
-        async def do_request():
-            try:
-                # Call the API with nickname
-                result = await account.muc.request_membership(room_jid, nickname, reason)
+                    if result['success']:
+                        # Success! Save the nickname to the bookmark so we use it when joining
+                        try:
+                            bookmark = account.muc.get_bookmark(room_jid)
+                            if bookmark:
+                                # Update existing bookmark with the new nickname
+                                await account.muc.create_or_update_bookmark(
+                                    room_jid=room_jid,
+                                    name=bookmark.name,
+                                    nick=nickname,  # Use the nickname from registration
+                                    password=bookmark.password,
+                                    autojoin=bookmark.autojoin
+                                )
+                                logger.info(f"Updated bookmark nickname to '{nickname}' for {room_jid}")
+                            else:
+                                # Create new bookmark with the chosen nickname
+                                await account.muc.create_or_update_bookmark(
+                                    room_jid=room_jid,
+                                    name=None,  # Will be fetched on join
+                                    nick=nickname,
+                                    password=None,
+                                    autojoin=False
+                                )
+                                logger.info(f"Created bookmark with nickname '{nickname}' for {room_jid}")
+                        except Exception as e:
+                            logger.warning(f"Failed to save nickname to bookmark: {e}")
+                            # Don't fail the whole operation, just log it
 
-                if result['success']:
-                    # Success! Save the nickname to the bookmark so we use it when joining
-                    try:
-                        bookmark = account.muc.get_bookmark(room_jid)
-                        if bookmark:
-                            # Update existing bookmark with the new nickname
-                            await account.muc.create_or_update_bookmark(
-                                room_jid=room_jid,
-                                name=bookmark.name,
-                                nick=nickname,  # Use the nickname from registration
-                                password=bookmark.password,
-                                autojoin=bookmark.autojoin
-                            )
-                            logger.info(f"Updated bookmark nickname to '{nickname}' for {room_jid}")
-                        else:
-                            # Create new bookmark with the chosen nickname
-                            await account.muc.create_or_update_bookmark(
-                                room_jid=room_jid,
-                                name=None,  # Will be fetched on join
-                                nick=nickname,
-                                password=None,
-                                autojoin=False
-                            )
-                            logger.info(f"Created bookmark with nickname '{nickname}' for {room_jid}")
-                    except Exception as e:
-                        logger.warning(f"Failed to save nickname to bookmark: {e}")
-                        # Don't fail the whole operation, just log it
+                        # Show success message (non-blocking)
+                        msg = QMessageBox(self)
+                        msg.setIcon(QMessageBox.Information)
+                        msg.setWindowTitle("Request Sent")
+                        msg.setText(
+                            "Membership request sent successfully.\n\n"
+                            "Room administrators will review your request. "
+                            "Try joining again once your membership is approved."
+                        )
+                        msg.show()
+                        logger.info(f"Membership request sent successfully for {room_jid}")
+                    else:
+                        # Failed (non-blocking)
+                        error = result.get('error', 'Unknown error')
+                        msg = QMessageBox(self)
+                        msg.setIcon(QMessageBox.Critical)
+                        msg.setWindowTitle("Request Failed")
+                        msg.setText(f"Failed to request membership:\n\n{error}")
+                        msg.show()
+                        logger.error(f"Membership request failed for {room_jid}: {error}")
 
-                    # Show success message (non-blocking)
-                    msg = QMessageBox(self)
-                    msg.setIcon(QMessageBox.Information)
-                    msg.setWindowTitle("Request Sent")
-                    msg.setText(
-                        "Membership request sent successfully.\n\n"
-                        "Room administrators will review your request. "
-                        "Try joining again once your membership is approved."
-                    )
-                    msg.show()
-                    logger.info(f"Membership request sent successfully for {room_jid}")
-                else:
-                    # Failed (non-blocking)
-                    error = result.get('error', 'Unknown error')
+                except Exception as e:
+                    logger.error(f"Error requesting membership for {room_jid}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # Non-blocking error dialog
                     msg = QMessageBox(self)
                     msg.setIcon(QMessageBox.Critical)
-                    msg.setWindowTitle("Request Failed")
-                    msg.setText(f"Failed to request membership:\n\n{error}")
+                    msg.setWindowTitle("Error")
+                    msg.setText(f"An unexpected error occurred:\n\n{str(e)}")
                     msg.show()
-                    logger.error(f"Membership request failed for {room_jid}: {error}")
 
-            except Exception as e:
-                logger.error(f"Error requesting membership for {room_jid}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                # Non-blocking error dialog
-                msg = QMessageBox(self)
-                msg.setIcon(QMessageBox.Critical)
-                msg.setWindowTitle("Error")
-                msg.setText(f"An unexpected error occurred:\n\n{str(e)}")
-                msg.show()
+            # Schedule the async task
+            asyncio.create_task(do_request())
 
-        # Schedule the async task
-        QTimer.singleShot(0, lambda: asyncio.create_task(do_request()))
+        # Connect signals and show dialog (non-blocking)
+        button_box.accepted.connect(on_accepted)
+        button_box.rejected.connect(dialog.reject)
+        dialog.show()
 
     def _on_spell_check_button_clicked(self):
         """Show spell check menu when button is clicked."""
@@ -1632,8 +1637,8 @@ class ChatHeaderWidget(QFrame):
         # Hide dropdown when modal opens
         self.search_dropdown.hide()
 
-        # Show modal
-        modal.exec()
+        # Show modal (non-blocking)
+        modal.show()
 
     def _on_modal_result_clicked(self, message_id, content_item_id):
         """Handle result click from modal - same as dropdown clicks."""

@@ -521,8 +521,8 @@ class MainWindow(QMainWindow):
 
         dialog = ContactDialog(account_id=account_id, parent=self)
         dialog.contact_saved.connect(self._on_contact_saved)
-        if dialog.exec() == QDialog.Accepted:
-            logger.debug("Contact saved successfully")
+        dialog.accepted.connect(lambda: logger.debug("Contact saved successfully"))
+        dialog.show()
 
     def _on_new_group(self):
         """Handle File -> New Group (Join MUC room)."""
@@ -550,7 +550,8 @@ class MainWindow(QMainWindow):
             return
 
         dialog = JoinRoomDialog(account_id=account_id, parent=self)
-        if dialog.exec() == QDialog.Accepted:
+
+        def on_accepted():
             # Get joined room info
             room_jid = dialog.room_jid
             nick = dialog.nick
@@ -568,6 +569,10 @@ class MainWindow(QMainWindow):
                 self.contact_list.load_roster()
             else:
                 QMessageBox.warning(self, "Error", "Account not connected.")
+
+        # Connect and show (non-blocking)
+        dialog.accepted.connect(on_accepted)
+        dialog.show()
 
     def _on_settings(self):
         """Delegate to DialogManager."""
@@ -892,59 +897,72 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Confirm deletion
-        reply = QMessageBox.warning(
-            self,
-            "Delete Contact",
+        # Confirm deletion (non-blocking)
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setWindowTitle("Delete Contact")
+        dialog.setText(
             f"Are you sure you want to delete '{jid}'?\n\n"
             f"This will:\n"
             f"- Remove contact from your roster\n"
             f"- Revoke presence subscriptions\n"
             f"- DELETE ALL MESSAGE HISTORY (local)\n\n"
-            f"This action cannot be undone!",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            f"This action cannot be undone!"
         )
+        dialog.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        dialog.setDefaultButton(QMessageBox.No)
 
-        if reply != QMessageBox.Yes:
-            return
+        def on_reply(button):
+            if dialog.standardButton(button) != QMessageBox.Yes:
+                return
 
-        try:
-            # Get JID ID for message deletion
-            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (jid,))
-            jid_id = jid_row['id'] if jid_row else None
+            try:
+                # Get JID ID for message deletion
+                jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (jid,))
+                jid_id = jid_row['id'] if jid_row else None
 
-            # Send roster removal IQ to server
-            asyncio.create_task(account.client.remove_roster_item(jid))
-            logger.debug(f"Sent roster removal IQ for {jid}")
+                # Send roster removal IQ to server
+                asyncio.create_task(account.client.remove_roster_item(jid))
+                logger.debug(f"Sent roster removal IQ for {jid}")
 
-            # Delete message history (local)
-            if jid_id:
-                deleted_msgs = self.db.execute(
-                    "DELETE FROM message WHERE account_id = ? AND counterpart_id = ?",
-                    (account_id, jid_id)
-                ).rowcount
-                deleted_files = self.db.execute(
-                    "DELETE FROM file_transfer WHERE account_id = ? AND counterpart_id = ?",
-                    (account_id, jid_id)
-                ).rowcount
-                logger.debug(f"Deleted {deleted_msgs} messages and {deleted_files} file transfers for {jid}")
+                # Delete message history (local)
+                if jid_id:
+                    deleted_msgs = self.db.execute(
+                        "DELETE FROM message WHERE account_id = ? AND counterpart_id = ?",
+                        (account_id, jid_id)
+                    ).rowcount
+                    deleted_files = self.db.execute(
+                        "DELETE FROM file_transfer WHERE account_id = ? AND counterpart_id = ?",
+                        (account_id, jid_id)
+                    ).rowcount
+                    logger.debug(f"Deleted {deleted_msgs} messages and {deleted_files} file transfers for {jid}")
 
-            # Delete from roster
-            self.db.execute("DELETE FROM roster WHERE id = ?", (roster_id,))
-            self.db.commit()
+                # Delete from roster
+                self.db.execute("DELETE FROM roster WHERE id = ?", (roster_id,))
+                self.db.commit()
 
-            # Close chat window if open
-            if hasattr(self, 'chat_view') and self.chat_view.current_account_id == account_id and self.chat_view.current_jid == jid:
-                self.chat_view.clear()
+                # Close chat window if open
+                if hasattr(self, 'chat_view') and self.chat_view.current_account_id == account_id and self.chat_view.current_jid == jid:
+                    self.chat_view.clear()
 
-            self.contact_list.refresh()
-            QMessageBox.information(self, "Success", f"Contact '{jid}' and all message history deleted")
-            logger.info(f"Contact {jid} removed from roster (history deleted)")
+                self.contact_list.refresh()
 
-        except Exception as e:
-            logger.error(f"Failed to remove contact: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to remove contact:\n{e}")
+                # Success message (non-blocking)
+                success_msg = QMessageBox(self)
+                success_msg.setIcon(QMessageBox.Information)
+                success_msg.setWindowTitle("Success")
+                success_msg.setText(f"Contact '{jid}' and all message history deleted")
+                success_msg.show()
+
+                logger.info(f"Contact {jid} removed from roster (history deleted)")
+
+            except Exception as e:
+                logger.error(f"Failed to remove contact: {e}")
+                QMessageBox.critical(self, "Error", f"Failed to remove contact:\n{e}")
+
+        # Connect and show (non-blocking)
+        dialog.buttonClicked.connect(on_reply)
+        dialog.show()
 
     def _on_delete_and_block(self, account_id: int, jid: str, roster_id: int):
         """
@@ -1111,8 +1129,8 @@ class MainWindow(QMainWindow):
         # Open contact dialog with pre-selected account
         dialog = ContactDialog(account_id=account_id, parent=self)
         dialog.contact_saved.connect(self._on_contact_saved)
-        if dialog.exec() == QDialog.Accepted:
-            logger.debug("Contact saved successfully")
+        dialog.accepted.connect(lambda: logger.debug("Contact saved successfully"))
+        dialog.show()
 
     def _on_join_room_for_account(self, account_id: int):
         """Handle Add Group for specific account from context menu."""

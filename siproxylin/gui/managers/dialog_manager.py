@@ -93,8 +93,8 @@ class DialogManager:
 
         dialog = ContactDialog(account_id=account_id, parent=self.main_window)
         dialog.contact_saved.connect(self.main_window._on_contact_saved)
-        if dialog.exec() == QDialog.Accepted:
-            logger.debug("Contact saved successfully")
+        dialog.accepted.connect(lambda: logger.debug("Contact saved successfully"))
+        dialog.show()
 
     def show_edit_contact_dialog(self, account_id: int, jid: str, roster_id: int):
         """
@@ -111,7 +111,7 @@ class DialogManager:
 
         dialog = ContactDialog(account_id=account_id, jid=jid, parent=self.main_window)
         dialog.contact_saved.connect(self.main_window._on_contact_saved)
-        dialog.exec()
+        dialog.show()
 
     def show_join_room_dialog(self, account_id: int):
         """
@@ -126,7 +126,8 @@ class DialogManager:
         import asyncio
 
         dialog = JoinRoomDialog(account_id=account_id, parent=self.main_window)
-        if dialog.exec() == QDialog.Accepted:
+
+        def on_accepted():
             # Get joined room info
             room_jid = dialog.room_jid
             nick = dialog.nick
@@ -145,6 +146,10 @@ class DialogManager:
             else:
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self.main_window, "Error", "Account not connected.")
+
+        # Connect and show (non-blocking)
+        dialog.accepted.connect(on_accepted)
+        dialog.show()
 
     def show_settings_dialog(self):
         """Show application settings dialog."""

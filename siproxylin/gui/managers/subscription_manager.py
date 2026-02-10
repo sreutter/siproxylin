@@ -215,11 +215,10 @@ class SubscriptionManager:
             # Import here to avoid circular dependency
             from ..dialogs.subscription_request_dialog import SubscriptionRequestDialog
 
-            # Show approval dialog
+            # Show approval dialog (non-blocking)
             dialog = SubscriptionRequestDialog(from_jid, parent=self.main_window)
-            result = dialog.exec()
 
-            if result == QDialog.Accepted:
+            def on_accepted():
                 # User approved
                 also_request = dialog.also_request
 
@@ -246,7 +245,8 @@ class SubscriptionManager:
 
                 except Exception as e:
                     logger.error(f"Failed to handle subscription request: {e}")
-            else:
+
+            def on_rejected():
                 # User denied
                 logger.debug(f"User denied subscription request from {from_jid}")
 
@@ -258,6 +258,11 @@ class SubscriptionManager:
                         logger.debug(f"Sent denial to {from_jid}")
                     except Exception as e:
                         logger.error(f"Failed to deny subscription: {e}")
+
+            # Connect signals and show dialog (non-blocking)
+            dialog.accepted.connect(on_accepted)
+            dialog.rejected.connect(on_rejected)
+            dialog.show()
 
         # Defer to next event loop iteration
         QTimer.singleShot(0, show_dialog)

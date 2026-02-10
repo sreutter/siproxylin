@@ -615,37 +615,40 @@ class AccountDialog(QDialog):
         dialog.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         dialog.setDefaultButton(QMessageBox.No)
 
-        reply = dialog.exec()
+        def on_reply(button):
+            if dialog.standardButton(button) != QMessageBox.Yes:
+                return
 
-        if reply != QMessageBox.Yes:
-            return
+            delete_from_server = delete_from_server_checkbox.isChecked()
 
-        delete_from_server = delete_from_server_checkbox.isChecked()
+            # Validate prerequisites for server deletion
+            if delete_from_server and not password:
+                QMessageBox.warning(
+                    self,
+                    "Password Required",
+                    "Cannot delete account from server: password not available.\n\n"
+                    "The account will only be deleted locally."
+                )
+                delete_from_server = False
 
-        # Validate prerequisites for server deletion
-        if delete_from_server and not password:
-            QMessageBox.warning(
-                self,
-                "Password Required",
-                "Cannot delete account from server: password not available.\n\n"
-                "The account will only be deleted locally."
-            )
-            delete_from_server = False
+            # Show progress dialog
+            from .dialogs.deletion_progress_dialog import DeletionProgressDialog
+            progress_dialog = DeletionProgressDialog(jid, delete_from_server, self)
 
-        # Show progress dialog
-        from .dialogs.deletion_progress_dialog import DeletionProgressDialog
-        progress_dialog = DeletionProgressDialog(jid, delete_from_server, self)
+            # When progress dialog closes, close account dialog too
+            progress_dialog.finished.connect(lambda: self.accept())
 
-        # When progress dialog closes, close account dialog too
-        progress_dialog.finished.connect(lambda: self.accept())
+            progress_dialog.show()
 
-        progress_dialog.show()
+            # Start async deletion task (store reference to avoid "task destroyed" warnings)
+            import asyncio
+            self._deletion_task = asyncio.create_task(self._perform_account_deletion(
+                jid, password, delete_from_server, progress_dialog
+            ))
 
-        # Start async deletion task (store reference to avoid "task destroyed" warnings)
-        import asyncio
-        self._deletion_task = asyncio.create_task(self._perform_account_deletion(
-            jid, password, delete_from_server, progress_dialog
-        ))
+        # Connect and show (non-blocking)
+        dialog.buttonClicked.connect(on_reply)
+        dialog.show()
 
     async def _perform_account_deletion(self, jid: str, password: str,
                                        delete_from_server: bool, progress_dialog):

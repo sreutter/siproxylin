@@ -336,9 +336,13 @@ class ContactsManagerDialog(QDialog):
             return
 
         dialog = ContactDialog(account_id, parent=self)
-        if dialog.exec() == QDialog.Accepted:
+
+        def on_accepted():
             self._load_contacts()
             self.contact_modified.emit()
+
+        dialog.accepted.connect(on_accepted)
+        dialog.show()
 
     def _on_edit_contact(self):
         """Open edit contact dialog."""
