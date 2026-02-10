@@ -78,8 +78,8 @@ export QT_QPA_PLATFORM_PLUGIN_PATH="$APPDIR/usr/lib/x86_64-linux-gnu/qt6/plugins
 export XDG_DATA_DIRS="$APPDIR/usr/share"
 
 # Launch the application
-# Use the bundled dynamic linker explicitly to ensure LD_LIBRARY_PATH is honored
-exec "$APPDIR/lib64/ld-linux-x86-64.so.2" --library-path "$LD_LIBRARY_PATH" "$APPDIR/usr/bin/python3" "$APPDIR/usr/share/com.siproxylin/main.py" --dot-data-dir "$@"
+# Use system's python3 with our bundled libraries
+exec python3 "$APPDIR/usr/share/com.siproxylin/main.py" --dot-data-dir "$@"
 APPRUN_EOF
 
     chmod +x "$appdir/AppRun"
@@ -359,7 +359,7 @@ main() {
     log_step "9/11" "Creating AppImage-specific files..."
     create_apprun_script "$APPDIR"
     setup_appdir_root "$APPDIR"
-    copy_dynamic_linker "$APPDIR"
+    # copy_dynamic_linker "$APPDIR")  # Disabled: Using system glibc for forward compatibility
     print_separator
 
     # Step 10: Cleanup & Optimization

@@ -451,20 +451,25 @@ install_python_deps() {
     log_info "Installing to $site_packages"
     log_info "This may take a few minutes..."
 
-    # Use system pip3 to install (don't use bundled Python yet)
-    if ! command -v pip3 &> /dev/null; then
-        log_error "pip3 not found on system"
-        log_info "Install with: sudo apt install python3-pip"
+    # Use explicit /usr/bin/python3 to prevent venv pollution in shebangs
+    if ! command -v /usr/bin/python3 &> /dev/null; then
+        log_error "/usr/bin/python3 not found on system"
+        log_info "Install with: sudo apt install python3"
         return 1
     fi
 
-    pip3 install --ignore-installed \
+    /usr/bin/python3 -m pip install --ignore-installed \
         --target="$full_target" \
         -r requirements.txt \
         --no-warn-script-location \
         --quiet
 
     if [ $? -eq 0 ]; then
+        # Fix shebangs in entry point scripts (remove any venv references)
+        if [ -d "$full_target/bin" ]; then
+            find "$full_target/bin" -type f -exec sed -i '1s|^#!.*python.*|#!/usr/bin/env python3|' {} \; 2>/dev/null || true
+            log_success "Fixed shebangs in entry point scripts"
+        fi
         log_success "Python dependencies installed"
         return 0
     else

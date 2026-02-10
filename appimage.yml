@@ -6,10 +6,10 @@ AppDir:
   app_info:
     id: com.siproxylin
     name: Siproxylin
-    icon: siproxylin
+    icon: com.siproxylin
     version: dev
     exec: usr/bin/python3
-    exec_args: "$APPDIR/usr/share/siproxylin/main.py --xdg $@"
+    exec_args: "$APPDIR/usr/share/com.siproxylin/main.py --dot-data-dir $@"
 
   apt:
     arch: amd64
@@ -48,6 +48,9 @@ AppDir:
     exclude:
       - adwaita-icon-theme
       - humanity-icon-theme
+      - libc6
+      - libc6-dev
+      - libc-bin
 
   files:
     include:
@@ -72,25 +75,14 @@ AppDir:
       PULSE_SYSTEM: "0"
 
   after_bundle:
-    # Install Python dependencies
+    # Note: appimage-builder runs this BEFORE build-appimage.sh steps 7-8
+    # We only ensure directory structure exists here
+    # Actual file copying and pip install happen in build-appimage.sh (steps 7-8)
     - mkdir -p AppDir/usr/lib/python3.11/site-packages
-    - pip3 install --ignore-installed --target=AppDir/usr/lib/python3.11/site-packages -r requirements.txt
-    # Copy application files
-    - mkdir -p AppDir/usr/share/siproxylin
-    - cp -r siproxylin AppDir/usr/share/siproxylin/
-    - cp -r drunk_xmpp AppDir/usr/share/siproxylin/
-    - cp -r drunk_call_hook AppDir/usr/share/siproxylin/
-    - cp main.py AppDir/usr/share/siproxylin/
-    - cp version.sh AppDir/usr/share/siproxylin/
-    # Copy Go call service binary
+    - mkdir -p AppDir/usr/share/com.siproxylin
     - mkdir -p AppDir/usr/local/bin
-    - cp drunk_call_service/bin/drunk-call-service-linux AppDir/usr/local/bin/
-    - chmod +x AppDir/usr/local/bin/drunk-call-service-linux
-    # Copy icon and desktop file
     - mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
-    - cp siproxylin/resources/icons/siproxylin.svg AppDir/usr/share/icons/hicolor/scalable/apps/
     - mkdir -p AppDir/usr/share/applications
-    - cp siproxylin.desktop AppDir/usr/share/applications/
 
 AppImage:
   arch: x86_64
