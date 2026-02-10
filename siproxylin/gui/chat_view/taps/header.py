@@ -1278,34 +1278,37 @@ class ChatHeaderWidget(QFrame):
                         logger.warning(f"Failed to save nickname to bookmark: {e}")
                         # Don't fail the whole operation, just log it
 
-                    # Show success message
-                    QMessageBox.information(
-                        self,
-                        "Request Sent",
+                    # Show success message (non-blocking)
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Information)
+                    msg.setWindowTitle("Request Sent")
+                    msg.setText(
                         "Membership request sent successfully.\n\n"
                         "Room administrators will review your request. "
                         "Try joining again once your membership is approved."
                     )
+                    msg.show()
                     logger.info(f"Membership request sent successfully for {room_jid}")
                 else:
-                    # Failed
+                    # Failed (non-blocking)
                     error = result.get('error', 'Unknown error')
-                    QMessageBox.critical(
-                        self,
-                        "Request Failed",
-                        f"Failed to request membership:\n\n{error}"
-                    )
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Critical)
+                    msg.setWindowTitle("Request Failed")
+                    msg.setText(f"Failed to request membership:\n\n{error}")
+                    msg.show()
                     logger.error(f"Membership request failed for {room_jid}: {error}")
 
             except Exception as e:
                 logger.error(f"Error requesting membership for {room_jid}: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-                QMessageBox.critical(
-                    self,
-                    "Error",
-                    f"An unexpected error occurred:\n\n{str(e)}"
-                )
+                # Non-blocking error dialog
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Error")
+                msg.setText(f"An unexpected error occurred:\n\n{str(e)}")
+                msg.show()
 
         # Schedule the async task
         QTimer.singleShot(0, lambda: asyncio.create_task(do_request()))

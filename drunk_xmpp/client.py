@@ -42,11 +42,13 @@ from dataclasses import dataclass, field
 from drunk_xmpp.slixmpp_patches import (
     apply_xep0199_patch,
     apply_xep0280_reactions_patch,
-    apply_xep0353_finish_patch
+    apply_xep0353_finish_patch,
+    apply_xep0045_membership_patch
 )
 apply_xep0199_patch()
 apply_xep0280_reactions_patch()
 apply_xep0353_finish_patch()
+apply_xep0045_membership_patch()
 
 # import aiohttp  # Not currently used
 from slixmpp import ClientXMPP
@@ -502,6 +504,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.logger.debug("Registered custom XEP-0198 ACK handler")
 
         self.register_plugin('xep_0030')  # Service Discovery (required by many XEPs)
+        self.register_plugin('xep_0077')  # In-Band Registration (required for room membership requests)
         self.register_plugin('xep_0092')  # Software Version
         self.register_plugin('xep_0115')  # Entity Capabilities (advertise features to other clients)
         self.register_plugin('xep_0128')  # Service Discovery Extensions (required by xep_0363)
@@ -2483,6 +2486,47 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             import traceback
             self.logger.error(traceback.format_exc())
             return False
+
+    async def request_room_membership(self, room_jid: str, nickname: str, reason: str = ""):
+        """
+        Request membership in a members-only room (XEP-0045 §7.10).
+
+        Uses XEP-0077 in-band registration to request membership. The room
+        server may auto-approve or queue the request for admin approval.
+
+        Args:
+            room_jid: Room JID to request membership from
+            nickname: Desired nickname for the room
+            reason: Optional reason/message for room admin
+
+        Returns:
+            Dict with 'success' (bool) and 'error' (str or None)
+        """
+        self.logger.info(f"Requesting membership for {room_jid} with nickname '{nickname}'")
+
+        try:
+            # Call the patched XEP-0045 method (added by slixmpp_patches/xep_0045_membership.py)
+            result = await self.plugin['xep_0045'].request_room_membership(
+                room_jid,
+                nickname,
+                reason
+            )
+
+            if result['success']:
+                self.logger.info(f"Membership request sent successfully to {room_jid}")
+            else:
+                self.logger.warning(f"Membership request failed for {room_jid}: {result.get('error')}")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error requesting membership for {room_jid}: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return {
+                'success': False,
+                'error': f"Unexpected error: {str(e)}"
+            }
 
     def connect(self, address=None, **kwargs):
         """
