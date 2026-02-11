@@ -104,7 +104,7 @@ So definitely **use it with caution**, and please don't be shy about reporting i
 - **Unclear process of MUC membership:** There is lack of information on how members-only MUC are handled, currently it relies on the mercy of auto-approve by server
 - **MUC dialog lacks real-time:** Some changes do not update dialog GUI on the fly
 
-Report bugs: [GitHub Issues](https://github.com/yourusername/siproxylin/issues)
+Report bugs: [GitHub Issues](https://github.com/confund0/siproxylin/issues)
 
 ---
 
@@ -184,7 +184,7 @@ Siproxylin **forces calls to be relayed** to avoid IP leaks. The call window sho
 
 ### AppImage
 
-Download the latest AppImage from [Releases](https://github.com/yourusername/siproxylin/releases):
+Download the latest AppImage from [Releases](https://github.com/confund0/siproxylin/releases):
 
 ```bash
 chmod +x Siproxylin-*.AppImage
@@ -223,7 +223,7 @@ Contributions are welcome! By contributing, you agree that your contributions wi
 
 **Note:** This is a solo project built with AI assistance. Progress may be sporadic, but issues are tracked and appreciated.
 
-Found a bug? Have a feature request? [Open an issue](https://github.com/yourusername/siproxylin/issues)
+Found a bug? Have a feature request? [Open an issue](https://github.com/confund0/siproxylin/issues)
 
 ---
 
