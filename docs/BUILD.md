@@ -14,7 +14,7 @@
 
 **Steps:**
 ```bash
-cd drunk_call_service && ./build.sh && cd ..
+cd drunk_call_service && ./install-tools.sh && ./build.sh && cd ..
 pip install -r requirements.txt
 python main.py
 ```

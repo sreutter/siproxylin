@@ -251,24 +251,19 @@ class ContactListWidget(QWidget):
                 ORDER BY name, j.bare_jid
             """, (account_id, account_id))
 
-            # Get 1-to-1 chats (only show conversations with messages - chat list, not contact list)
+            # Get 1-to-1 contacts from roster (all roster entries, even without messages)
             muc_jids = {room['bare_jid'] for room in rooms}
             contacts = self.db.fetchall("""
                 SELECT DISTINCT
                     r.id,
-                    c.account_id,
+                    r.account_id,
                     j.bare_jid,
                     r.name,
                     r.subscription,
                     r.blocked
-                FROM conversation c
-                JOIN jid j ON c.jid_id = j.id
-                LEFT JOIN roster r ON r.jid_id = j.id AND r.account_id = c.account_id
-                WHERE c.account_id = ? AND c.type = 0
-                  AND EXISTS (  -- Only show conversations with messages
-                    SELECT 1 FROM content_item ci
-                    WHERE ci.conversation_id = c.id
-                  )
+                FROM roster r
+                JOIN jid j ON r.jid_id = j.id
+                WHERE r.account_id = ?
                 ORDER BY COALESCE(r.name, j.bare_jid), j.bare_jid
             """, (account_id,))
 

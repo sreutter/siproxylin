@@ -166,12 +166,13 @@ Siproxylin supports **proxies per account**. Even the **registration wizard** as
 3. **Corporate network** - Only way out is via Squid proxy? Route your account through the HTTP proxy and enjoy texts and calls.
 
 **Leak testing:** I tested with tcpdump and found **zero IP leaks** — it seems to be solid.
+That includes the calls, proxy settings are passed via gRPC and applied in the Go code.
 
 ---
 
 ## Calls
 
-Siproxylin supports **audio calls** with most XMPP clients. Works perfectly with Dino in both directions. **Outgoing calls to Conversations.im work fine**, but incoming calls from Conversations won't connect due to an ICE nomination issue in their WebRTC stack (still investigating). Conversations won't nominate a successful ICE pair even with their own TURN server is advertised on both ends of the call.
+Siproxylin supports **audio calls** with most XMPP clients. Works perfectly between two Siproxylin's, works with Dino in both directions. **Outgoing calls to Conversations.im work fine**, but incoming calls from Conversations won't connect due to an ICE nomination issue in their WebRTC stack (still investigating). Conversations won't nominate a successful ICE pair even with their own TURN server is advertised on both ends of the call.
 
 ### Call Privacy
 
