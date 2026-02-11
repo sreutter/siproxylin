@@ -61,6 +61,35 @@ chmod +x Siproxylin-*.AppImage
 
 ---
 
+## Screenshots
+
+<p float="left">
+  <img src=".github/screenshots/Siproxylin-start.png" alt="Main Window" width="48%" />
+  <img src=".github/screenshots/Siproxylin-view.png" alt="Chat View" width="48%" />
+</p>
+
+<p float="left">
+  <img src=".github/screenshots/Siproxylin-test-msg.png" alt="Messaging" width="48%" />
+  <img src=".github/screenshots/call-window-ok.png" alt="Audio Call" width="48%" />
+</p>
+
+<details>
+<summary>More Screenshots (Account Management, MUC)</summary>
+
+<p float="left">
+  <img src=".github/screenshots/Siproxylin-add-acc.png" alt="Add Account" width="48%" />
+  <img src=".github/screenshots/Siproxylin-create-acc.png" alt="Register Account" width="48%" />
+</p>
+
+<p float="left">
+  <img src=".github/screenshots/Siproxylin-edit-acc.png" alt="Edit Account" width="48%" />
+  <img src=".github/screenshots/Siproxylin-MUC-dialog.png" alt="Group Chat (MUC)" width="48%" />
+</p>
+
+</details>
+
+---
+
 ## The Idea
 
 Yes, it's another XMPP client. But hear me out.
