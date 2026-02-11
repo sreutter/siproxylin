@@ -314,17 +314,12 @@ class MainWindow(QMainWindow):
                     from ..core import XMPPAccount
                     account = XMPPAccount(account_id, dict(account_data))
 
-                    # Connect signals
-                    account.roster_updated.connect(self._on_roster_updated)
-                    account.message_received.connect(self._on_message_received)
-                    account.chat_state_changed.connect(self._on_chat_state_changed)
-                    account.muc_invite_received.connect(self._on_muc_invite_received)
-                    account.muc_role_changed.connect(self._on_muc_role_changed)
-                    account.avatar_updated.connect(self._on_avatar_updated)
-                    account.subscription_request_received.connect(self._on_subscription_request_received)
-                    account.subscription_changed.connect(self._on_subscription_changed)
-
-                    # Connect call signals via CallManager
+                    # Connect signals via managers (same as setup_accounts())
+                    account.connection_state_changed.connect(self._on_connection_state_changed)
+                    account.connection_error.connect(self._on_connection_error)
+                    self.roster_manager.connect_account_signals(account)
+                    self.subscription_manager.connect_account_signals(account)
+                    self.muc_manager.connect_account_signals(account)
                     self.call_manager.connect_account_signals(account)
 
                     self.account_manager.accounts[account_id] = account
