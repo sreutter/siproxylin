@@ -63,7 +63,7 @@ fi
 # Set environment variables
 export APPDIR
 export PYTHONHOME="$APPDIR/usr"
-export PYTHONPATH="$APPDIR/usr/lib/python3.11/site-packages"
+export PYTHONPATH="$APPDIR/usr/lib/python3.11:$APPDIR/usr/lib/python3.11/site-packages"
 export LD_LIBRARY_PATH="$APPDIR/usr/lib/x86_64-linux-gnu:$APPDIR/usr/lib:$APPDIR/lib/x86_64-linux-gnu"
 export GST_PLUGIN_PATH="$APPDIR/usr/lib/x86_64-linux-gnu/gstreamer-1.0"
 export GST_PLUGIN_SYSTEM_PATH="$APPDIR/usr/lib/x86_64-linux-gnu/gstreamer-1.0"
@@ -78,8 +78,8 @@ export QT_QPA_PLATFORM_PLUGIN_PATH="$APPDIR/usr/lib/x86_64-linux-gnu/qt6/plugins
 export XDG_DATA_DIRS="$APPDIR/usr/share"
 
 # Launch the application
-# Use system's python3 with our bundled libraries
-exec python3 "$APPDIR/usr/share/com.siproxylin/main.py" --dot-data-dir "$@"
+# Use bundled python3 with our bundled libraries
+exec "$APPDIR/usr/bin/python3" "$APPDIR/usr/share/com.siproxylin/main.py" --dot-data-dir "$@"
 APPRUN_EOF
 
     chmod +x "$appdir/AppRun"
