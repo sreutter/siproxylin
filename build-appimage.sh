@@ -245,6 +245,34 @@ bundle_system_libraries() {
     log_success "System libraries bundled"
 }
 
+patch_python_for_system_glibc() {
+    local appdir="$1"
+
+    log_step "PATCH" "Patching Python interpreter for system glibc..."
+
+    local python_binary="$appdir/usr/bin/python3.11"
+
+    if [ ! -f "$python_binary" ]; then
+        log_error "Python binary not found: $python_binary"
+        return 1
+    fi
+
+    # Check current interpreter
+    local current_interp=$(patchelf --print-interpreter "$python_binary" 2>/dev/null || echo "unknown")
+    log_info "Current interpreter: $current_interp"
+
+    # Patch to use absolute system path (forward compatibility with Debian 13+)
+    log_info "Patching to use system dynamic linker: /lib64/ld-linux-x86-64.so.2"
+    if patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 "$python_binary"; then
+        local new_interp=$(patchelf --print-interpreter "$python_binary")
+        log_success "Python interpreter patched: $new_interp"
+        return 0
+    else
+        log_error "Failed to patch Python interpreter"
+        return 1
+    fi
+}
+
 package_appimage() {
     local appdir="$1"
     local output="$2"
@@ -328,21 +356,28 @@ main() {
     print_separator
 
     # Step 6: Bundle system libraries (one-time with appimage-builder)
-    log_step "6/11" "Bundling system libraries..."
+    log_step "6/11.5" "Bundling system libraries..."
     if ! bundle_system_libraries "$APPDIR"; then
         exit 1
     fi
     print_separator
 
+    # Step 6.5: Patch Python interpreter for system glibc
+    log_step "6.5/11.5" "Patching Python interpreter..."
+    if ! patch_python_for_system_glibc "$APPDIR"; then
+        exit 1
+    fi
+    print_separator
+
     # Step 7: Install Python dependencies
-    log_step "7/11" "Installing Python dependencies..."
+    log_step "7/11.5" "Installing Python dependencies..."
     if ! install_python_deps "$APPDIR"; then
         exit 1
     fi
     print_separator
 
     # Step 8: Copy application files
-    log_step "8/11" "Copying application files..."
+    log_step "8/11.5" "Copying application files..."
 
     # Verify version.sh exists (will be copied by copy_python_code)
     if [ ! -f "version.sh" ]; then
@@ -356,14 +391,14 @@ main() {
     print_separator
 
     # Step 9: Create AppImage-specific files
-    log_step "9/11" "Creating AppImage-specific files..."
+    log_step "9/11.5" "Creating AppImage-specific files..."
     create_apprun_script "$APPDIR"
     setup_appdir_root "$APPDIR"
     # copy_dynamic_linker "$APPDIR")  # Disabled: Using system glibc for forward compatibility
     print_separator
 
     # Step 10: Cleanup & Optimization
-    log_step "10/11" "Cleaning up and optimizing size..."
+    log_step "10/11.5" "Cleaning up and optimizing size..."
     cleanup_python_cache "$APPDIR"
     cleanup_development_files "$APPDIR"
     remove_documentation "$APPDIR"
@@ -376,7 +411,7 @@ main() {
     print_separator
 
     # Step 11: Package
-    log_step "11/11" "Packaging AppImage..."
+    log_step "11/11.5" "Packaging AppImage..."
     if ! package_appimage "$APPDIR" "$APPIMAGE_OUTPUT"; then
         exit 1
     fi
