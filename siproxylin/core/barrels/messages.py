@@ -12,6 +12,7 @@ Responsibilities:
 
 import logging
 from typing import Optional
+from .message_reactions import MessageReactions
 
 
 class MessageBarrel:
@@ -38,6 +39,9 @@ class MessageBarrel:
         self.receipt_handler = receipt_handler
         self.files_barrel = files_barrel
 
+        # Reactions handler (XEP-0444) - passes self to access dynamic client reference
+        self.reactions = MessageReactions(self)
+
     async def send_message(self, to_jid: str, message: str, encrypted: bool = False):
         """
         Send a message.
@@ -58,6 +62,27 @@ class MessageBarrel:
             return await self.client.send_encrypted_private_message(to_jid, message)
         else:
             return await self.client.send_private_message(to_jid, message)
+
+    def send_reaction(self, to_jid: str, message_id: str, emoji: str):
+        """
+        Send a reaction to a message.
+
+        Args:
+            to_jid: Recipient JID
+            message_id: Message ID to react to
+            emoji: Emoji reaction
+        """
+        self.reactions.send_reaction(to_jid, message_id, emoji)
+
+    def remove_reaction(self, to_jid: str, message_id: str):
+        """
+        Remove all reactions from a message.
+
+        Args:
+            to_jid: Recipient JID
+            message_id: Message ID
+        """
+        self.reactions.remove_reaction(to_jid, message_id)
 
     def _is_message_from_us(self, metadata, counterpart_jid: str) -> bool:
         """
@@ -735,10 +760,7 @@ class MessageBarrel:
     def _on_reaction(self, metadata, message_id: str, emojis: list):
         """
         Handle incoming reaction (XEP-0444).
-        Stores reaction in database in the database.
-
-        For MUC: Uses occupant_id table to track nickname → occupant_id mapping
-        For 1-1: Uses jid_id as before
+        Delegates to MessageReactions handler.
 
         Args:
             metadata: MessageMetadata with reaction sender info
@@ -747,141 +769,16 @@ class MessageBarrel:
         """
         from slixmpp.jid import JID
 
-        # Determine display name for logging
-        if metadata.message_type == 'groupchat':
-            display_from = metadata.muc_nick or metadata.from_jid
-        else:
-            display_from = JID(metadata.from_jid).bare
+        # Delegate to reactions handler
+        self.reactions.handle_incoming_reaction(metadata, message_id, emojis)
 
-        if self.logger:
-            if emojis:
-                self.logger.info(f"Reaction from {display_from} to {message_id}: {', '.join(emojis)}")
-            else:
-                self.logger.info(f"Reactions removed from {display_from} on {message_id}")
-
+        # Emit signal to refresh UI
         try:
-            import time
-
-            # Find the content_item by message_id
-            # Try origin_id first, then stanza_id, then message_id
-            # Search both message table (content_type=0) and file_transfer table (content_type=2)
-            content_item = self.db.fetchone("""
-                SELECT ci.id, ci.conversation_id, c.type as conv_type, c.jid_id as conv_jid_id, ci.time
-                FROM content_item ci
-                JOIN message m ON ci.foreign_id = m.id AND ci.content_type = 0
-                JOIN conversation c ON ci.conversation_id = c.id
-                WHERE m.account_id = ?
-                  AND (m.origin_id = ? OR m.stanza_id = ? OR m.message_id = ?)
-
-                UNION
-
-                SELECT ci.id, ci.conversation_id, c.type as conv_type, c.jid_id as conv_jid_id, ci.time
-                FROM content_item ci
-                JOIN file_transfer ft ON ci.foreign_id = ft.id AND ci.content_type = 2
-                JOIN conversation c ON ci.conversation_id = c.id
-                WHERE ft.account_id = ?
-                  AND (ft.origin_id = ? OR ft.stanza_id = ? OR ft.message_id = ?)
-
-                ORDER BY ci.time DESC
-                LIMIT 1
-            """, (self.account_id, message_id, message_id, message_id,
-                  self.account_id, message_id, message_id, message_id))
-
-            if not content_item:
-                if self.logger:
-                    self.logger.warning(f"Reaction: Message {message_id} not found")
-                return
-
-            content_item_id = content_item['id']
-            conv_type = content_item['conv_type']  # 0=chat, 1=groupchat
-            reaction_time = int(time.time() * 1000)  # milliseconds
-            emojis_str = ','.join(emojis) if emojis else None
-
-            # Handle MUC vs 1-1 reactions differently
-            if conv_type == 1:  # MUC
-                # Get or create occupant entry
-                room_jid_id = content_item['conv_jid_id']
-                nickname = metadata.muc_nick
-                occupant_id_str = metadata.occupant_id
-
-                if not nickname:
-                    if self.logger:
-                        self.logger.warning(f"MUC reaction without nickname")
-                    return
-
-                # Upsert occupant (track nickname and occupant_id)
-                self.db.execute("""
-                    INSERT INTO occupant (account_id, room_jid_id, nick, occupant_id)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(account_id, room_jid_id, nick)
-                    DO UPDATE SET occupant_id = COALESCE(excluded.occupant_id, occupant.occupant_id)
-                """, (self.account_id, room_jid_id, nickname, occupant_id_str))
-
-                # Get occupant.id
-                occupant_row = self.db.fetchone("""
-                    SELECT id FROM occupant
-                    WHERE account_id = ? AND room_jid_id = ? AND nick = ?
-                """, (self.account_id, room_jid_id, nickname))
-
-                if not occupant_row:
-                    if self.logger:
-                        self.logger.error(f"Failed to get occupant.id for {nickname}")
-                    return
-
-                occupant_db_id = occupant_row['id']
-
-                if emojis:
-                    # Store MUC reaction using occupant_id
-                    self.db.execute("""
-                        INSERT INTO reaction (account_id, content_item_id, occupant_id, time, emojis)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(account_id, content_item_id, occupant_id)
-                        DO UPDATE SET emojis = excluded.emojis, time = excluded.time
-                    """, (self.account_id, content_item_id, occupant_db_id, reaction_time, emojis_str))
-                else:
-                    # Remove MUC reaction
-                    self.db.execute("""
-                        DELETE FROM reaction
-                        WHERE account_id = ? AND content_item_id = ? AND occupant_id = ?
-                    """, (self.account_id, content_item_id, occupant_db_id))
-
-            else:  # 1-1 chat
-                # Get jid_id for sender
-                from_bare_jid = JID(metadata.from_jid).bare
-                jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (from_bare_jid,))
-                if not jid_row:
-                    if self.logger:
-                        self.logger.warning(f"Reaction: JID {from_bare_jid} not found")
-                    return
-
-                jid_id = jid_row['id']
-
-                if emojis:
-                    # Store 1-1 reaction using jid_id
-                    self.db.execute("""
-                        INSERT INTO reaction (account_id, content_item_id, jid_id, time, emojis)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(account_id, content_item_id, jid_id)
-                        DO UPDATE SET emojis = excluded.emojis, time = excluded.time
-                    """, (self.account_id, content_item_id, jid_id, reaction_time, emojis_str))
-                else:
-                    # Remove 1-1 reaction
-                    self.db.execute("""
-                        DELETE FROM reaction
-                        WHERE account_id = ? AND content_item_id = ? AND jid_id = ?
-                    """, (self.account_id, content_item_id, jid_id))
-
-            self.db.commit()
-
-            # Emit signal to refresh UI
-            conversation_jid = JID(metadata.from_jid).bare if conv_type == 0 else JID(metadata.from_jid).bare
+            conversation_jid = JID(metadata.from_jid).bare
             self.signals['message_received'].emit(self.account_id, conversation_jid, True)
-
         except Exception as e:
             if self.logger:
-                self.logger.error(f"Failed to process reaction: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
+                self.logger.error(f"Failed to emit signal after reaction: {e}")
 
     def _on_chat_state(self, from_jid: str, state: str):
         """

@@ -1,13 +1,15 @@
 """
-Emoji picker dialog for message reactions.
+Emoji picker dialog - Pure UI component.
 
-Shows a grid of common emoji reactions for the user to select.
+Shows a grid of emoji for the user to select.
+Returns the selected emoji string (or None if cancelled).
 """
 
 import logging
+from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QGridLayout, QLabel,
-    QDialogButtonBox, QPushButton, QLineEdit
+    QDialogButtonBox, QPushButton, QLineEdit, QScrollArea, QWidget, QHBoxLayout
 )
 from PySide6.QtCore import Qt
 
@@ -176,207 +178,29 @@ EMOJI_DATA = [
 ]
 
 
-def _store_sent_reaction(account_manager, account_id, message_id, emoji):
+def show_emoji_picker_dialog(parent) -> Optional[str]:
     """
-    Store a sent reaction locally for immediate feedback.
-
-    Args:
-        account_manager: AccountManager instance
-        account_id: Current account ID
-        message_id: Message ID to react to
-        emoji: Emoji string, or None to remove reactions
-    """
-    import time
-    from slixmpp.jid import JID
-    from ...db.database import get_db
-
-    db = get_db()
-    account = account_manager.get_account(account_id)
-    if not account:
-        return
-
-    try:
-        # Find content_item by message_id (search both messages and file transfers)
-        content_item = db.fetchone("""
-            SELECT ci.id, ci.conversation_id, c.type as conv_type, ci.time
-            FROM content_item ci
-            JOIN message m ON ci.foreign_id = m.id AND ci.content_type = 0
-            JOIN conversation c ON ci.conversation_id = c.id
-            WHERE m.account_id = ?
-              AND (m.origin_id = ? OR m.stanza_id = ? OR m.message_id = ?)
-
-            UNION
-
-            SELECT ci.id, ci.conversation_id, c.type as conv_type, ci.time
-            FROM content_item ci
-            JOIN file_transfer ft ON ci.foreign_id = ft.id AND ci.content_type = 2
-            JOIN conversation c ON ci.conversation_id = c.id
-            WHERE ft.account_id = ?
-              AND (ft.origin_id = ? OR ft.stanza_id = ? OR ft.message_id = ?)
-
-            ORDER BY ci.time DESC
-            LIMIT 1
-        """, (account_id, message_id, message_id, message_id,
-              account_id, message_id, message_id, message_id))
-
-        if not content_item:
-            logger.warning(f"Could not find message {message_id} to store reaction")
-            return
-
-        content_item_id = content_item['id']
-        conv_type = content_item['conv_type']  # 0=chat, 1=groupchat
-        reaction_time = int(time.time() * 1000)
-
-        # Handle MUC vs 1-1 reactions - use occupant_id for MUC, jid_id for 1-1
-        if conv_type == 1:  # MUC
-            # Get conversation JID to lookup room
-            conv_jid_row = db.fetchone("""
-                SELECT c.jid_id, j.bare_jid
-                FROM conversation c
-                JOIN jid j ON c.jid_id = j.id
-                WHERE c.id = ?
-            """, (content_item['conversation_id'],))
-
-            if not conv_jid_row:
-                logger.error(f"Failed to get conversation JID")
-                return
-
-            room_jid_id = conv_jid_row['jid_id']
-            room_jid = conv_jid_row['bare_jid']
-
-            # Get our nickname in this room from client's rooms config
-            if room_jid not in account.client.rooms:
-                logger.error(f"Room {room_jid} not in client's rooms config")
-                return
-
-            our_nick = account.client.rooms[room_jid].get('nick')
-            if not our_nick:
-                logger.error(f"Failed to get our nickname in MUC {room_jid}")
-                return
-
-            # Get or create occupant entry
-            db.execute("""
-                INSERT INTO occupant (account_id, room_jid_id, nick)
-                VALUES (?, ?, ?)
-                ON CONFLICT(account_id, room_jid_id, nick) DO NOTHING
-            """, (account_id, room_jid_id, our_nick))
-
-            occupant_row = db.fetchone("""
-                SELECT id FROM occupant
-                WHERE account_id = ? AND room_jid_id = ? AND nick = ?
-            """, (account_id, room_jid_id, our_nick))
-
-            if not occupant_row:
-                logger.error(f"Failed to get occupant.id for {our_nick}")
-                return
-
-            occupant_id = occupant_row['id']
-
-            if emoji:
-                # Store MUC reaction using occupant_id
-                db.execute("""
-                    INSERT INTO reaction (account_id, content_item_id, occupant_id, time, emojis)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(account_id, content_item_id, occupant_id)
-                    DO UPDATE SET emojis = excluded.emojis, time = excluded.time
-                """, (account_id, content_item_id, occupant_id, reaction_time, emoji))
-            else:
-                # Remove MUC reaction
-                db.execute("""
-                    DELETE FROM reaction
-                    WHERE account_id = ? AND content_item_id = ? AND occupant_id = ?
-                """, (account_id, content_item_id, occupant_id))
-
-        else:  # 1-1 chat
-            # Get our own jid_id
-            our_jid = account.client.boundjid.bare
-            jid_row = db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (our_jid,))
-            if not jid_row:
-                # Create JID entry for ourselves
-                db.execute("INSERT OR IGNORE INTO jid (bare_jid) VALUES (?)", (our_jid,))
-                db.commit()
-                jid_row = db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (our_jid,))
-                if not jid_row:
-                    logger.error(f"Failed to get jid_id for {our_jid}")
-                    return
-
-            jid_id = jid_row['id']
-
-            if emoji:
-                # Store 1-1 reaction using jid_id
-                db.execute("""
-                    INSERT INTO reaction (account_id, content_item_id, jid_id, time, emojis)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(account_id, content_item_id, jid_id)
-                    DO UPDATE SET emojis = excluded.emojis, time = excluded.time
-                """, (account_id, content_item_id, jid_id, reaction_time, emoji))
-            else:
-                # Remove 1-1 reaction
-                db.execute("""
-                    DELETE FROM reaction
-                    WHERE account_id = ? AND content_item_id = ? AND jid_id = ?
-                """, (account_id, content_item_id, jid_id))
-
-        db.commit()
-        logger.debug(f"Stored sent reaction locally: {emoji} on message {message_id}")
-
-    except Exception as e:
-        logger.error(f"Failed to store sent reaction: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-
-
-def show_emoji_picker_dialog(parent, message_id, account_manager, account_id, current_jid, chat_view=None, mode="reaction", input_field=None):
-    """
-    Show emoji picker dialog for reacting to a message or inserting emoji into input.
+    Show emoji picker dialog.
 
     Args:
         parent: Parent widget
-        message_id: The message ID to react to (origin_id or stanza_id) - only for mode="reaction"
-        account_manager: AccountManager instance
-        account_id: Current account ID
-        current_jid: Current conversation JID
-        chat_view: ChatView instance for refreshing after reaction
-        mode: "reaction" to send reaction, "insert" to insert emoji into input field
-        input_field: MessageInputField widget - required for mode="insert"
 
     Returns:
-        True if a reaction was sent or emoji was inserted, False otherwise
+        Selected emoji string, or None if cancelled
     """
-    if not account_id or not current_jid:
-        logger.error("Cannot show emoji picker: no active conversation")
-        return False
-
-    account = account_manager.get_account(account_id)
-    if not account or not account.is_connected():
-        logger.error(f"Cannot show emoji picker: account not connected")
-        return False
-
     dialog = QDialog(parent)
-    if mode == "reaction":
-        dialog.setWindowTitle("React to Message")
-        label_text = "<b>Choose an emoji reaction:</b>"
-    else:
-        dialog.setWindowTitle("Insert Emoji")
-        label_text = "<b>Choose an emoji:</b>"
-
+    dialog.setWindowTitle("Choose Emoji")
     dialog.setMinimumWidth(480)
     dialog.setMinimumHeight(400)
-    dialog.setMaximumHeight(600)  # Force scrolling so navigation buttons work
+    dialog.setMaximumHeight(600)
 
     layout = QVBoxLayout(dialog)
-    layout.addWidget(QLabel(label_text))
+    layout.addWidget(QLabel("<b>Choose an emoji:</b>"))
 
     # Search field
     search_field = QLineEdit()
     search_field.setPlaceholderText("Search emojis... (try ':D', 'smile', 'sad', ':rofl:')")
     layout.addWidget(search_field)
-
-    # Category navigation buttons
-    from PySide6.QtWidgets import QScrollArea, QWidget, QHBoxLayout
-    nav_layout = QHBoxLayout()
-    nav_layout.setSpacing(5)
-    category_buttons = {}  # Will store buttons for each category
 
     # Create scrollable area for emoji groups
     scroll_area = QScrollArea()
@@ -387,78 +211,14 @@ def show_emoji_picker_dialog(parent, message_id, account_manager, account_id, cu
     scroll_layout = QVBoxLayout(scroll_widget)
     scroll_layout.setSpacing(15)
 
-    # Track if reaction was sent or emoji inserted
-    action_completed = [False]  # Use list to allow modification in nested function
+    # Track selected emoji
+    selected_emoji = [None]  # Use list to allow modification in nested function
     emoji_buttons = []  # Keep track of all buttons for search filtering
 
-    def send_reaction(emoji):
-        """Send reaction and close dialog."""
-        try:
-            # Send reaction via XMPP
-            account.client.send_reaction(current_jid, message_id, emoji)
-            logger.info(f"Sent reaction {emoji} to message {message_id}")
-
-            # Store locally for immediate feedback (optimistic UI)
-            # This provides instant visual feedback that the reaction was sent
-            _store_sent_reaction(account_manager, account_id, message_id, emoji)
-
-            # Refresh the chat view to show the reaction immediately
-            if chat_view:
-                chat_view.refresh(send_markers=False)
-
-            action_completed[0] = True
-            dialog.accept()
-        except Exception as e:
-            logger.error(f"Failed to send reaction: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-
-    def insert_emoji(emoji):
-        """Insert emoji at cursor position in input field and close dialog."""
-        try:
-            if not input_field:
-                logger.error("No input field provided for emoji insertion")
-                return
-
-            # Get current cursor
-            cursor = input_field.textCursor()
-
-            # Insert emoji at cursor position
-            cursor.insertText(emoji)
-
-            # Set focus back to input field
-            input_field.setFocus()
-
-            action_completed[0] = True
-            dialog.accept()
-        except Exception as e:
-            logger.error(f"Failed to insert emoji: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-
-    def remove_reaction():
-        """Remove all reactions and close dialog."""
-        try:
-            # Remove reaction via XMPP
-            account.client.remove_reaction(current_jid, message_id)
-            logger.info(f"Removed all reactions from message {message_id}")
-
-            # Remove locally for immediate feedback
-            _store_sent_reaction(account_manager, account_id, message_id, None)
-
-            # Refresh the chat view to show the change immediately
-            if chat_view:
-                chat_view.refresh(send_markers=False)
-
-            action_completed[0] = True
-            dialog.accept()
-        except Exception as e:
-            logger.error(f"Failed to remove reaction: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-
-    # Choose the callback based on mode
-    emoji_callback = send_reaction if mode == "reaction" else insert_emoji
+    def on_emoji_clicked(emoji):
+        """Handle emoji selection."""
+        selected_emoji[0] = emoji
+        dialog.accept()
 
     # Build emoji groups from EMOJI_DATA
     emoji_groups = {
@@ -468,23 +228,19 @@ def show_emoji_picker_dialog(parent, message_id, account_manager, account_id, cu
     }
 
     for emoji, keywords, text_reps in EMOJI_DATA:
-        # Categorize by first checking more specific categories
-        # Check Hands first (to catch all hand gestures before they fall through to Faces)
+        # Categorize by keywords
         if any(kw in keywords for kw in ["thumbs", "hand", "hands", "fist", "point", "wave", "clap", "pray", "muscle",
                                           "fingers", "finger", "palm", "palms", "peace", "vulcan", "punch", "ok",
                                           "handshake", "rock", "metal", "call", "arm", "write", "pen", "celebrate", "you"]):
             emoji_groups["Hands"].append((emoji, keywords, text_reps))
-        # Check Hearts (fire, stars, party symbols)
         elif any(kw in keywords for kw in ["fire", "star", "party", "trophy", "medal", "balloon", "gift", "ribbon", "confetti"]):
             emoji_groups["Hearts"].append((emoji, keywords, text_reps))
-        # Check if it's primarily a heart emoji (explicit list)
         elif emoji in ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "❤️‍🔥", "❤️‍🩹", "💕", "💞", "💓", "💗", "💖", "💘", "💝", "💟"]:
             emoji_groups["Hearts"].append((emoji, keywords, text_reps))
-        # Everything else goes to Faces
         else:
             emoji_groups["Faces"].append((emoji, keywords, text_reps))
 
-    # Group labels to store for navigation
+    # Group labels for navigation
     group_labels = {}
 
     # Create emoji groups with labels
@@ -518,7 +274,7 @@ def show_emoji_picker_dialog(parent, message_id, account_manager, account_id, cu
                     background-color: #e0e0e0;
                 }
             """)
-            btn.clicked.connect(lambda checked=False, e=emoji: emoji_callback(e))
+            btn.clicked.connect(lambda checked=False, e=emoji: on_emoji_clicked(e))
 
             # Store metadata for search
             btn.setProperty("emoji_keywords", keywords)
@@ -534,7 +290,10 @@ def show_emoji_picker_dialog(parent, message_id, account_manager, account_id, cu
     scroll_area.setWidget(scroll_widget)
     layout.addWidget(scroll_area)
 
-    # Create navigation buttons (after scroll_area is set up)
+    # Category navigation buttons
+    nav_layout = QHBoxLayout()
+    nav_layout.setSpacing(5)
+
     for group_name in emoji_groups.keys():
         if group_name not in group_labels:
             continue
@@ -551,7 +310,6 @@ def show_emoji_picker_dialog(parent, message_id, account_manager, account_id, cu
 
         nav_btn.clicked.connect(make_scroll_callback(group_labels[group_name]))
         nav_layout.addWidget(nav_btn)
-        category_buttons[group_name] = nav_btn
 
     nav_layout.addStretch()
     layout.addLayout(nav_layout)
@@ -576,12 +334,6 @@ def show_emoji_picker_dialog(parent, message_id, account_manager, account_id, cu
 
     search_field.textChanged.connect(on_search_changed)
 
-    # Remove reaction button (only for reaction mode)
-    if mode == "reaction":
-        remove_btn = QPushButton("Remove All Reactions")
-        remove_btn.clicked.connect(remove_reaction)
-        layout.addWidget(remove_btn)
-
     # Cancel button
     button_box = QDialogButtonBox(QDialogButtonBox.Cancel)
     button_box.rejected.connect(dialog.reject)
@@ -590,5 +342,10 @@ def show_emoji_picker_dialog(parent, message_id, account_manager, account_id, cu
     # Focus search field for quick typing
     search_field.setFocus()
 
-    dialog.exec_()
-    return action_completed[0]
+    # Show dialog and return result
+    result = dialog.exec_()
+
+    if result == QDialog.Accepted:
+        return selected_emoji[0]
+    else:
+        return None

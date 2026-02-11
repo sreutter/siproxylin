@@ -342,6 +342,14 @@ class XMPPAccount(QObject):
         """Send message - delegates to MessageBarrel."""
         return await self.messages.send_message(to_jid, message, encrypted)
 
+    def send_reaction(self, to_jid: str, message_id: str, emoji: str):
+        """Send reaction - delegates to MessageBarrel."""
+        self.messages.send_reaction(to_jid, message_id, emoji)
+
+    def remove_reaction(self, to_jid: str, message_id: str):
+        """Remove reaction - delegates to MessageBarrel."""
+        self.messages.remove_reaction(to_jid, message_id)
+
     async def request_subscription(self, jid: str):
         """Request presence subscription - delegates to PresenceBarrel."""
         await self.presence.request_subscription(jid)

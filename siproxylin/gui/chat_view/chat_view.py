@@ -772,23 +772,22 @@ class ChatViewWidget(QWidget):
         self.message_actions.on_send_clicked(self.current_account_id, self.current_jid)
 
     def _on_emoji_button_clicked(self):
-        """Handle emoji button click - show emoji picker in insert mode."""
+        """Handle emoji button click - show emoji picker to insert into input field."""
         from ..dialogs.emoji_picker_dialog import show_emoji_picker_dialog
 
         if not self.current_account_id or not self.current_jid:
             return
 
-        # Show emoji picker in insert mode
-        show_emoji_picker_dialog(
-            parent=self,
-            message_id=None,  # Not needed for insert mode
-            account_manager=self.account_manager,
-            account_id=self.current_account_id,
-            current_jid=self.current_jid,
-            chat_view=None,  # No need to refresh for insert mode
-            mode="insert",
-            input_field=self.input_field
-        )
+        # Show emoji picker (pure UI - returns emoji or None)
+        emoji = show_emoji_picker_dialog(self)
+
+        if emoji:
+            # Insert emoji at cursor position in input field
+            cursor = self.input_field.textCursor()
+            cursor.insertText(emoji)
+
+            # Set focus back to input field
+            self.input_field.setFocus()
 
     def _adjust_input_height(self):
         """Auto-resize input field based on content (StackOverflow approach)."""

@@ -82,6 +82,11 @@ class ContextMenuManager:
             react_action.triggered.connect(lambda: self._show_emoji_picker(message_id, current_account_id, current_jid))
             menu.addAction(react_action)
 
+            # Add Remove Reaction option
+            remove_reaction_action = QAction("Remove Reaction", self.parent)
+            remove_reaction_action.triggered.connect(lambda: self._remove_reaction(message_id, current_account_id, current_jid))
+            menu.addAction(remove_reaction_action)
+
         # For all messages: add Copy option
         if body or file_path:
             copy_action = QAction("Copy Message", self.parent)
@@ -321,11 +326,39 @@ class ContextMenuManager:
 
     def _show_emoji_picker(self, message_id, current_account_id, current_jid):
         """Show emoji picker dialog for reacting to a message."""
-        show_emoji_picker_dialog(
-            self.parent,
-            message_id,
-            self.account_manager,
-            current_account_id,
-            current_jid,
-            self.parent  # Pass chat_view for immediate refresh
-        )
+        # Show emoji picker (pure UI - returns emoji or None)
+        emoji = show_emoji_picker_dialog(self.parent)
+
+        if emoji:
+            # Get account and send reaction
+            account = self.account_manager.get_account(current_account_id)
+            if account and account.is_connected():
+                try:
+                    # Send reaction via account barrel
+                    account.send_reaction(current_jid, message_id, emoji)
+
+                    # Refresh chat view to show reaction immediately
+                    self.parent.refresh(send_markers=False)
+                except Exception as e:
+                    logger.error(f"Failed to send reaction: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            else:
+                logger.error("Cannot send reaction: account not connected")
+
+    def _remove_reaction(self, message_id, current_account_id, current_jid):
+        """Remove all reactions from a message."""
+        account = self.account_manager.get_account(current_account_id)
+        if account and account.is_connected():
+            try:
+                # Remove reaction via account barrel
+                account.remove_reaction(current_jid, message_id)
+
+                # Refresh chat view to show change immediately
+                self.parent.refresh(send_markers=False)
+            except Exception as e:
+                logger.error(f"Failed to remove reaction: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        else:
+            logger.error("Cannot remove reaction: account not connected")
