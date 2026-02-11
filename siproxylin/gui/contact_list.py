@@ -371,23 +371,24 @@ class ContactListWidget(QWidget):
                 c.account_id,
                 j.bare_jid as jid,
                 c.type,
-                COALESCE(r.name, j.bare_jid) as display_name,
+                COALESCE(b.name, r.name, j.bare_jid) as display_name,
                 a.bare_jid as account_jid
             FROM conversation c
             JOIN account a ON c.account_id = a.id
             JOIN jid j ON c.jid_id = j.id
             LEFT JOIN roster r ON c.account_id = r.account_id AND c.jid_id = r.jid_id
+            LEFT JOIN bookmark b ON c.account_id = b.account_id AND c.jid_id = b.jid_id
             WHERE a.enabled = 1
-            AND (r.name LIKE ? OR j.bare_jid LIKE ?)
+            AND (b.name LIKE ? OR r.name LIKE ? OR j.bare_jid LIKE ?)
             ORDER BY display_name, j.bare_jid
-        """, (query, query))
+        """, (query, query, query))
 
         # Populate dropdown
         self.contact_search_dropdown.clear()
         if rows:
             for row in rows:
                 # Format: "Contact Name (JID) - account@server"
-                contact_type = "🏠" if row['type'] == 'groupchat' else "👤"
+                contact_type = "👥" if row['type'] == 1 else "👤"
                 display_text = f"{contact_type} {row['display_name']}"
                 if row['jid'] != row['display_name']:
                     display_text += f" ({row['jid']})"
