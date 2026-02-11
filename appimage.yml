@@ -44,6 +44,9 @@ AppDir:
       - hunspell-es
       - hunspell-ro
       - hunspell-ar
+      - fonts-noto-color-emoji
+      - fonts-liberation
+      - fontconfig
 
     exclude:
       - adwaita-icon-theme

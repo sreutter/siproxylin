@@ -77,6 +77,10 @@ export QT_QPA_PLATFORM_PLUGIN_PATH="$APPDIR/usr/lib/x86_64-linux-gnu/qt6/plugins
 # XDG data dirs for enchant/hunspell dictionary discovery
 export XDG_DATA_DIRS="$APPDIR/usr/share"
 
+# Font configuration (bundled fonts + system fallback)
+# Check bundled fonts first, then fall back to system fonts
+export FONTCONFIG_PATH="$APPDIR/etc/fonts:/etc/fonts"
+
 # Launch the application
 # Use bundled python3 with our bundled libraries
 exec "$APPDIR/usr/bin/python3" "$APPDIR/usr/share/com.siproxylin/main.py" --dot-data-dir "$@"

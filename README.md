@@ -32,16 +32,15 @@ venv/bin/pip install -r requirements.txt
 venv/bin/python main.py
 ```
 
-### Those with Debian 12 can try existing AppImage builds
-**Download:** [Latest AppImage](https://github.com/yourusername/siproxylin/releases/latest) (Debian 12 only, for now)
+### AppImage builds
+
+**Download:** [Latest AppImage](https://github.com/yourusername/siproxylin/releases/latest) (tested on: Debian 12-13, Arch)
 
 **Run:**
 ```bash
 chmod +x Siproxylin-*.AppImage
 ./Siproxylin-*.AppImage
 ```
-
-**Requirements:** Linux Debian 12 (AppImage build needs fixes to become truly OS independent)
 
 ---
 
@@ -100,7 +99,7 @@ So definitely **use it with caution**, and please don't be shy about reporting i
 ## Known Issues
 
 - **Conversations.im → Siproxylin calls:** Won't connect due to ICE nomination issue in Conversations' WebRTC stack (Siproxylin → Conversations works fine)
-- **Platform:** Currently Linux-only (Windows/macOS support planned)
+- **Platform:** Currently Linux-only (Windows/MacOS support planned)
 - **Unread counters:** Sometimes pops up after app restart, investigating
 - **Unclear process of MUC membership:** There is lack of information on how members-only MUC are handled, currently it relies on the mercy of auto-approve by server
 - **MUC dialog lacks real-time:** Some changes do not update dialog GUI on the fly
@@ -182,7 +181,7 @@ Siproxylin **forces calls to be relayed** to avoid IP leaks. The call window sho
 
 ## Installation
 
-### AppImage (Debian 12 Linux)
+### AppImage
 
 Download the latest AppImage from [Releases](https://github.com/yourusername/siproxylin/releases):
 
