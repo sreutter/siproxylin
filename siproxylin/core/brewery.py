@@ -54,6 +54,7 @@ class XMPPAccount(QObject):
 
     # Signals for connection state changes
     connection_state_changed = Signal(int, str)  # (account_id, state: 'connecting'|'connected'|'disconnected'|'error')
+    connection_error = Signal(int, str)  # (account_id, error_message)
     roster_updated = Signal(int)  # (account_id)
     message_received = Signal(int, str, bool)  # (account_id, from_jid, is_marker) - new message or marker/receipt update
     chat_state_changed = Signal(int, str, str)  # (account_id, from_jid, state) - typing indicators
@@ -114,6 +115,7 @@ class XMPPAccount(QObject):
         # Create signal dictionary for barrels
         self._signals = {
             'connection_state_changed': self.connection_state_changed,
+            'connection_error': self.connection_error,
             'roster_updated': self.roster_updated,
             'presence_changed': self.presence_changed,
             'subscription_request_received': self.subscription_request_received,
@@ -268,6 +270,7 @@ class XMPPAccount(QObject):
             'on_session_resumed': self._on_session_resumed,
             'on_disconnected': self._on_disconnected_event,
             'on_failed_auth': self._on_failed_auth_event,
+            'on_connection_failed': self._on_connection_failed_event,
         }
         # Delegate to ConnectionBarrel
         self.connection.connect(callbacks)
@@ -479,6 +482,20 @@ class XMPPAccount(QObject):
         self.connection_state_changed.emit(self.account_id, 'error')
         if self.app_logger:
             self.app_logger.error("XMPP authentication failed")
+
+    async def _on_connection_failed_event(self, event):
+        """Handle connection failure event."""
+        error_msg = str(event) if event else "Connection failed"
+
+        if self.app_logger:
+            self.app_logger.error(f"XMPP connection failed: {error_msg}")
+
+        # Only show GUI error for SSL/TLS errors (cert issues), not transient network errors
+        if 'SSL' in error_msg or 'certificate' in error_msg.lower() or 'TLS' in error_msg:
+            self.connected = False
+            self.connection._set_status('error')
+            self.connection_state_changed.emit(self.account_id, 'error')
+            self.connection_error.emit(self.account_id, error_msg)
 
     async def _on_disconnected(self, event):
         """Handle disconnection."""

@@ -147,6 +147,9 @@ class ConnectionBarrel:
             if self.logger:
                 self.logger.info(f"Proxy configured: {proxy_type} {proxy_host}:{proxy_port}")
 
+        # Get client certificate path (validated by GUI before saving)
+        client_cert_path = self.account_data.get('client_cert_path')
+
         # Create DrunkXMPP client
         try:
             self.client = DrunkXMPP(
@@ -183,6 +186,7 @@ class ConnectionBarrel:
                 proxy_port=proxy_port,
                 proxy_username=proxy_username,
                 proxy_password=proxy_password,
+                client_cert_path=client_cert_path,
             )
 
             # Don't add duplicate event handlers - drunk-xmpp already has them
@@ -200,6 +204,7 @@ class ConnectionBarrel:
             # Add connection event handlers for status bar updates
             self.client.add_event_handler("disconnected", callbacks.get('on_disconnected'))
             self.client.add_event_handler("failed_auth", callbacks.get('on_failed_auth'))
+            self.client.add_event_handler("connection_failed", callbacks.get('on_connection_failed'))
 
             # Carbon handlers (XEP-0280) are now internal to DrunkXMPP
             # DrunkXMPP calls on_private_message_callback for carbons with metadata.is_carbon=True
@@ -234,6 +239,9 @@ class ConnectionBarrel:
                 self.logger.error(f"Connection failed: {e}")
                 import traceback
                 self.logger.error(traceback.format_exc())
+
+            if 'connection_error' in self.signals:
+                self.signals['connection_error'].emit(self.account_id, str(e))
 
     def disconnect(self, call_bridge=None):
         """
@@ -345,7 +353,8 @@ class ConnectionBarrel:
     @staticmethod
     async def test_connection(jid, password, server=None, port=None,
                             proxy_type=None, proxy_host=None, proxy_port=None,
-                            proxy_username=None, proxy_password=None):
+                            proxy_username=None, proxy_password=None,
+                            client_cert_path=None):
         """
         Test XMPP connection with given credentials (static utility method).
 
@@ -359,6 +368,7 @@ class ConnectionBarrel:
             proxy_port: Optional proxy port
             proxy_username: Optional proxy username
             proxy_password: Optional proxy password
+            client_cert_path: Optional path to client certificate (unencrypted key only)
 
         Returns:
             dict: {
@@ -370,6 +380,8 @@ class ConnectionBarrel:
         logger = logging.getLogger('siproxylin.connection_test')
         test_result = {"success": False, "error": None, "server_info": None}
         client = None
+
+        # Certificate validation is handled by GUI before calling this method
 
         try:
             # Create temporary client for testing
@@ -384,7 +396,8 @@ class ConnectionBarrel:
                 proxy_host=proxy_host,
                 proxy_port=proxy_port,
                 proxy_username=proxy_username,
-                proxy_password=proxy_password
+                proxy_password=proxy_password,
+                client_cert_path=client_cert_path
             )
 
             client.connection_timeout = 15

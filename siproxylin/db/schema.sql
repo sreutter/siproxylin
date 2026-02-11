@@ -1,6 +1,6 @@
 -- DRUNK-XMPP-GUI Database Schema
 -- Inspired by Dino's architecture with adaptations for ROADMAP-v1.txt requirements
--- Schema Version: 12
+-- Schema Version: 13
 
 -- =============================================================================
 -- Meta and Settings
@@ -14,7 +14,7 @@ CREATE TABLE _meta (
 );
 
 -- Initialize schema version
-INSERT INTO _meta (name, int_val) VALUES ('schema_version', 12);
+INSERT INTO _meta (name, int_val) VALUES ('schema_version', 13);
 
 -- Global application settings
 CREATE TABLE settings (
@@ -50,7 +50,8 @@ CREATE TABLE account (
     -- TLS settings
     ignore_tls_errors INTEGER NOT NULL DEFAULT 0,
     require_strong_tls INTEGER NOT NULL DEFAULT 1,
-    client_cert_path TEXT,              -- Path to client certificate
+    client_cert_path TEXT,              -- Path to client certificate (unencrypted key only)
+    client_cert_password TEXT,          -- Reserved for future use (encrypted certs not currently supported)
 
     -- OMEMO settings
     omemo_enabled INTEGER NOT NULL DEFAULT 1,

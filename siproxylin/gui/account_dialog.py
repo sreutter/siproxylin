@@ -27,6 +27,7 @@ from ..utils.paths import get_paths
 from ..core.brewery import get_account_brewery
 from ..core.constants import ProxyType
 from .threads.connection_test import ConnectionTestThread
+from .utils import validate_client_cert
 
 
 logger = logging.getLogger('siproxylin.account_dialog')
@@ -278,6 +279,19 @@ class AccountDialog(QDialog):
         cert_layout.addWidget(self.client_cert_browse_button)
 
         tls_layout.addLayout(cert_layout)
+
+        # Warning label for cert requirements
+        cert_warning_label = QLabel("⚠️ Note: Private key must be unencrypted (no passphrase)")
+        cert_warning_label.setStyleSheet("color: #856404; font-size: 11px; font-style: italic;")
+        tls_layout.addWidget(cert_warning_label)
+
+        # Error label for cert validation (hidden by default)
+        self.cert_error_label = QLabel("")
+        self.cert_error_label.setStyleSheet("color: #d32f2f; font-size: 11px; font-weight: bold;")
+        self.cert_error_label.setWordWrap(True)
+        self.cert_error_label.hide()
+        tls_layout.addWidget(self.cert_error_label)
+
         tls_group.setLayout(tls_layout)
         layout.addWidget(tls_group)
 
@@ -503,6 +517,31 @@ class AccountDialog(QDialog):
         )
         if file_path:
             self.client_cert_input.setText(file_path)
+            # Validate certificate immediately
+            self._validate_client_cert(file_path)
+
+    def _validate_client_cert(self, cert_path: str) -> bool:
+        """
+        Validate client certificate and show error if invalid.
+
+        Args:
+            cert_path: Path to certificate file to validate
+
+        Returns:
+            True if valid, False if invalid
+        """
+        if not cert_path or not cert_path.strip():
+            self.cert_error_label.hide()
+            return True
+
+        success, error_msg = validate_client_cert(cert_path)
+        if success:
+            self.cert_error_label.hide()
+            return True
+        else:
+            self.cert_error_label.setText(f"❌ {error_msg}")
+            self.cert_error_label.show()
+            return False
 
     def _on_test_connection(self):
         """Test XMPP connection with current settings."""
@@ -541,6 +580,20 @@ class AccountDialog(QDialog):
         proxy_username = self.proxy_username_input.text().strip() or None
         proxy_password = self.proxy_password_input.text().strip() or None
 
+        # Get client certificate path
+        client_cert_path = self.client_cert_input.text().strip() or None
+
+        # Validate client certificate if provided
+        if client_cert_path and not self._validate_client_cert(client_cert_path):
+            # Validation failed - error is already shown in cert_error_label
+            # Reset UI state and show elegant ✗
+            self.test_spinner.setVisible(False)
+            self.test_button.setEnabled(True)
+            self.test_status_icon.setText("✗")
+            self.test_status_icon.setStyleSheet("color: #d9534f;")
+            self.test_status_icon.setVisible(True)
+            return
+
         # Create and start test thread
         self.test_thread = ConnectionTestThread(
             jid, password, server, port,
@@ -548,7 +601,8 @@ class AccountDialog(QDialog):
             proxy_host=proxy_host,
             proxy_port=proxy_port,
             proxy_username=proxy_username,
-            proxy_password=proxy_password
+            proxy_password=proxy_password,
+            client_cert_path=client_cert_path
         )
         self.test_thread.test_completed.connect(self._on_test_completed)
         self.test_thread.start()
@@ -784,6 +838,14 @@ class AccountDialog(QDialog):
             self.jid_input.setFocus()
             return
 
+        # Validate client certificate if provided
+        client_cert_path = self.client_cert_input.text().strip() or None
+        if client_cert_path and not self._validate_client_cert(client_cert_path):
+            QMessageBox.warning(self, "Validation Error", "Invalid client certificate! Please fix or remove it.")
+            self.tabs.setCurrentIndex(2)  # Switch to Security tab
+            self.client_cert_input.setFocus()
+            return
+
         # Save account
         try:
             enabled = self.enabled_checkbox.isChecked()
@@ -900,7 +962,12 @@ class AccountDialog(QDialog):
         # Security tab
         self.require_strong_tls_checkbox.setChecked(bool(account['require_strong_tls']))
         self.ignore_tls_errors_checkbox.setChecked(bool(account['ignore_tls_errors']))
-        self.client_cert_input.setText(account['client_cert_path'] or '')
+
+        # Handle client_cert_path (field may not exist for old accounts before migration)
+        try:
+            self.client_cert_input.setText(account['client_cert_path'] or '')
+        except (KeyError, IndexError):
+            self.client_cert_input.setText('')
 
         self.omemo_enabled_checkbox.setChecked(bool(account['omemo_enabled']))
         self.omemo_mode_combo.setCurrentText(account['omemo_mode'] or 'default')

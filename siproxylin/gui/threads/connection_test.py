@@ -15,7 +15,7 @@ class ConnectionTestThread(QThread):
 
     def __init__(self, jid, password, server, port, proxy_type=None,
                  proxy_host=None, proxy_port=None, proxy_username=None,
-                 proxy_password=None):
+                 proxy_password=None, client_cert_path=None):
         """
         Initialize connection test thread.
 
@@ -29,6 +29,7 @@ class ConnectionTestThread(QThread):
             proxy_port: Optional proxy port
             proxy_username: Optional proxy username
             proxy_password: Optional proxy password
+            client_cert_path: Optional path to client certificate (unencrypted key only)
         """
         super().__init__()
         self.jid = jid
@@ -40,6 +41,7 @@ class ConnectionTestThread(QThread):
         self.proxy_port = proxy_port
         self.proxy_username = proxy_username
         self.proxy_password = proxy_password
+        self.client_cert_path = client_cert_path
         self.is_complete = False
 
     def run(self):
@@ -61,7 +63,8 @@ class ConnectionTestThread(QThread):
                     self.proxy_host,
                     self.proxy_port,
                     self.proxy_username,
-                    self.proxy_password
+                    self.proxy_password,
+                    self.client_cert_path
                 )
             )
 

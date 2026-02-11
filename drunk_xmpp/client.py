@@ -43,12 +43,14 @@ from drunk_xmpp.slixmpp_patches import (
     apply_xep0199_patch,
     apply_xep0280_reactions_patch,
     apply_xep0353_finish_patch,
-    apply_xep0045_membership_patch
+    apply_xep0045_membership_patch,
+    apply_cert_stdin_prevention_patch
 )
 apply_xep0199_patch()
 apply_xep0280_reactions_patch()
 apply_xep0353_finish_patch()
 apply_xep0045_membership_patch()
+apply_cert_stdin_prevention_patch()
 
 # import aiohttp  # Not currently used
 from slixmpp import ClientXMPP
@@ -319,6 +321,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         proxy_port: Optional[int] = None,
         proxy_username: Optional[str] = None,
         proxy_password: Optional[str] = None,
+        client_cert_path: Optional[str] = None,
     ):
         """
         Initialize DrunkXMPP client with OMEMO support.
@@ -360,6 +363,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             proxy_port: Proxy server port
             proxy_username: Optional proxy authentication username
             proxy_password: Optional proxy authentication password
+            client_cert_path: Path to client certificate .pem file for TLS authentication (key must be unencrypted)
         """
         # Pass sasl_mech to slixmpp's ClientXMPP constructor
         # This properly configures feature_mechanisms plugin before connection
@@ -399,6 +403,13 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                 if proxy_username:
                     proxy_info = f"{proxy_username}@{proxy_info}"
                 logging.getLogger(__name__).info(f"{proxy_type_upper} proxy configured: {proxy_info}")
+
+        # Configure client certificate for TLS authentication (works with both STARTTLS and direct TLS)
+        # NOTE: Only unencrypted keys are supported (cert should be validated by caller before passing)
+        if client_cert_path:
+            self.certfile = client_cert_path
+            self.keyfile = client_cert_path  # Same file contains both cert and key
+            logging.getLogger(__name__).info(f"Client certificate configured: {client_cert_path}")
 
         self.rooms = rooms if rooms is not None else {}
         self.on_message_callback = on_message_callback

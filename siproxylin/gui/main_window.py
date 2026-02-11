@@ -129,6 +129,7 @@ class MainWindow(QMainWindow):
         # Connect signals from all accounts
         for account_id, account in self.account_manager.accounts.items():
             account.connection_state_changed.connect(self._on_connection_state_changed)
+            account.connection_error.connect(self._on_connection_error)
 
             # Roster signals - handled by RosterManager
             self.roster_manager.connect_account_signals(account)
@@ -1182,6 +1183,20 @@ class MainWindow(QMainWindow):
         self.contact_list.refresh()
         # Update status bar to reflect new connection state
         self._update_status_bar_stats()
+
+    @Slot(int, str)
+    def _on_connection_error(self, account_id: int, error_message: str):
+        """Handle connection error signal from account."""
+        logger.error(f"Connection error for account {account_id}: {error_message}")
+
+        account = self.account_manager.get_account(account_id)
+        account_jid = account.account_data.get('bare_jid', f'Account {account_id}') if account else f'Account {account_id}'
+
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setWindowTitle("Connection Failed")
+        msg_box.setText(f"Failed to connect account:\n{account_jid}\n\nError: {error_message}")
+        msg_box.show()
 
     def _refresh_contact_display_name(self, account_id: int, jid: str):
         """Delegate to RosterManager."""
