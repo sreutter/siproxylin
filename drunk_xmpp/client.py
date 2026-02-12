@@ -2593,6 +2593,10 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         else:
             self.logger.info("Disconnecting from XMPP server (auto-reconnect may occur)...")
 
+        # Clear joined rooms on disconnect (fixes MUC color staying blue)
+        self.joined_rooms.clear()
+        self.logger.debug("Cleared joined_rooms on disconnect")
+
         return super().disconnect(wait=wait, reason=reason, ignore_send_queue=ignore_send_queue)
 
     def is_omemo_ready(self) -> bool:

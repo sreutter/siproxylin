@@ -34,6 +34,9 @@ class MUCDetailsDialog(QDialog):
         self.room_jid = room_jid
         self.account_manager = get_account_manager()
 
+        # Dialog lifecycle flag (prevents async crashes after close)
+        self._destroyed = False
+
         # Shared room info for both Info and Config tabs
         self.room_info = None
 
@@ -63,15 +66,15 @@ class MUCDetailsDialog(QDialog):
 
         # Info tab
         self.info_tab = self._create_info_tab()
-        self.tabs.addTab(self.info_tab, "Info")
+        self.info_tab_index = self.tabs.addTab(self.info_tab, "Info")
 
         # Participants tab (unified: online, offline, affiliated, banned)
         self.participants_tab = self._create_participants_tab()
-        self.tabs.addTab(self.participants_tab, "Participants")
+        self.participants_tab_index = self.tabs.addTab(self.participants_tab, "Participants")
 
         # Settings tab
         self.settings_tab = self._create_settings_tab()
-        self.tabs.addTab(self.settings_tab, "Settings")
+        self.settings_tab_index = self.tabs.addTab(self.settings_tab, "Settings")
 
         # Config tab (server-side room configuration - owner only)
         self.config_tab = self._create_config_tab()
@@ -95,12 +98,37 @@ class MUCDetailsDialog(QDialog):
         self._load_room_info()
         self._load_participants()
         self._load_settings()
-        self._load_config()
+        self._load_config()  # This handles Config tab visibility (owner-only)
+        self._update_tab_visibility()  # Handle Info/Participants visibility (joined-only)
 
         logger.debug(f"MUC details dialog opened for {room_jid}")
 
+    def _update_tab_visibility(self):
+        """
+        Show/hide tabs based on joined status.
+
+        Not joined (gray): Only Settings tab visible (local bookmark settings)
+        Joined (blue): Info + Participants + Settings + (Config if owner)
+        """
+        account = self.account_manager.get_account(self.account_id)
+        is_joined = (account and account.client and
+                     self.room_jid in account.client.joined_rooms)
+
+        # Info, Participants: only when joined (require disco/roster data)
+        self.tabs.setTabVisible(self.info_tab_index, is_joined)
+        self.tabs.setTabVisible(self.participants_tab_index, is_joined)
+
+        # Settings: always visible (local bookmark settings)
+        self.tabs.setTabVisible(self.settings_tab_index, True)
+
+        # Config: handled separately by _load_config() (owner-only when joined)
+        logger.debug(f"Tab visibility updated: is_joined={is_joined}")
+
     def closeEvent(self, event):
         """Clean up when dialog is closed."""
+        # Mark dialog as destroyed to prevent async callbacks from accessing UI
+        self._destroyed = True
+
         # Stop auto-refresh timer to prevent memory leaks
         if self.refresh_timer.isActive():
             self.refresh_timer.stop()
@@ -502,6 +530,12 @@ class MUCDetailsDialog(QDialog):
             logger.warning(f"Account {self.account_id} not found")
             return
 
+        # Only fetch live data if connected and joined
+        if not account.is_connected():
+            logger.debug(f"Account disconnected, showing cached data only for {self.room_jid}")
+            self._load_room_info_sync()  # Load from cache/DB only
+            return
+
         # Fetch fresh disco#info to ensure we have latest room features
         # (e.g., allow_subject_change can be changed by room owner)
         if account.client:
@@ -509,6 +543,11 @@ class MUCDetailsDialog(QDialog):
                 try:
                     logger.info(f"Fetching fresh disco#info for {self.room_jid}")
                     disco_info = await account.client.get_room_features(self.room_jid)
+
+                    # Check if dialog was closed during async operation
+                    if self._destroyed:
+                        logger.debug("Dialog destroyed during disco fetch, skipping UI update")
+                        return
 
                     # Update disco cache with fresh data
                     if not hasattr(account.client, 'disco_cache'):
@@ -1418,18 +1457,19 @@ class MUCDetailsDialog(QDialog):
         if not account:
             return
 
-        # Check if user is room owner
+        # Check if joined and if user is room owner
+        is_joined = (account.client and self.room_jid in account.client.joined_rooms)
         is_owner = account.muc.is_room_owner(self.room_jid)
 
         # Use shared room_info (already loaded by _load_room_info)
         room_info = self.room_info
 
-        if not is_owner:
-            # Non-owner: hide Config tab completely
+        # Config tab: only visible if joined AND owner
+        if not is_joined or not is_owner:
             self.tabs.setTabVisible(self.config_tab_index, False)
             return
 
-        # Owner: show tab and load config
+        # Joined + Owner: show tab and load config
         self.tabs.setTabVisible(self.config_tab_index, True)
 
         # Fetch fresh config if not cached or if owner (to ensure fresh data)
@@ -1442,6 +1482,11 @@ class MUCDetailsDialog(QDialog):
                         await account.muc.fetch_and_store_room_config(self.room_jid)
                         logger.info(f"Fresh room config fetched for {self.room_jid}")
 
+                        # Check if dialog was closed during async operation
+                        if self._destroyed:
+                            logger.debug("Dialog destroyed during config fetch, skipping UI update")
+                            return
+
                         # Reload config tab now that we have fresh data
                         self._load_config_sync()
 
@@ -1449,6 +1494,9 @@ class MUCDetailsDialog(QDialog):
                         logger.error(f"Failed to fetch fresh room config for {self.room_jid}: {e}")
                         import traceback
                         logger.error(traceback.format_exc())
+                        # Check if dialog was closed
+                        if self._destroyed:
+                            return
                         # Show error in UI
                         self._load_config_sync()
 
@@ -1733,6 +1781,11 @@ class MUCDetailsDialog(QDialog):
                 # Fetch and cache room config
                 success = await account.muc.fetch_and_store_room_config(self.room_jid)
 
+                # Check if dialog was closed during async operation
+                if self._destroyed:
+                    logger.debug("Dialog destroyed during config refresh, skipping UI update")
+                    return
+
                 if success:
                     # Reload room info and config tabs to display updated values
                     self._load_room_info()
@@ -1753,6 +1806,9 @@ class MUCDetailsDialog(QDialog):
 
             except Exception as e:
                 logger.error(f"Failed to refresh room config: {e}")
+                # Check if dialog was closed
+                if self._destroyed:
+                    return
                 # Non-blocking error
                 msg = QMessageBox(self)
                 msg.setIcon(QMessageBox.Critical)
