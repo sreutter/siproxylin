@@ -262,8 +262,8 @@ class MUCManager:
             self.main_window,
             "Leave Room",
             f"Leave room '{room_name}'?\n\n"
-            f"This will remove it from your bookmarks.\n"
-            f"Message history will be preserved.",
+            f"This will permanently delete all messages and remove the room.\n"
+            f"This action cannot be undone.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
@@ -294,8 +294,12 @@ class MUCManager:
                 self.db.execute("DELETE FROM roster WHERE account_id = ? AND jid_id = ?",
                                (account_id, jid_id))
 
+                # Delete conversation (CASCADE will delete all content_items/messages)
+                self.db.execute("DELETE FROM conversation WHERE account_id = ? AND jid_id = ? AND type = 1",
+                               (account_id, jid_id))
+
                 self.db.commit()
-                logger.debug(f"Removed MUC from bookmark and roster tables: {room_jid}")
+                logger.debug(f"Removed MUC bookmark, roster, and conversation (with all messages): {room_jid}")
 
             # Refresh contact list to remove MUC entry
             self.contact_list.refresh()

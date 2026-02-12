@@ -59,14 +59,18 @@ class RosterStyle:
             return self.default_text_color
 
         # Dynamic mode - color based on state
-        # Priority: Call > MUC > Presence
+        # Priority: Call > Presence (MUCs use presence-based colors too)
         if call_state:
             return self.call_active_color
 
+        # MUCs: blue when joined (available), gray when not joined (unavailable)
         if is_muc:
-            return self.muc_color
+            if presence == 'available':
+                return self.muc_color  # Blue for joined MUCs
+            else:
+                return self.presence_unavailable_color  # Gray for not-joined MUCs
 
-        # Presence colors
+        # Presence colors for 1-to-1 contacts
         presence_map = {
             'available': self.presence_available_color,
             'away': self.presence_away_color,

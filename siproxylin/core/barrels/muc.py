@@ -886,15 +886,15 @@ class MucBarrel:
 
             jid_id = jid_row['id']
 
-            # Get room data from conversation + bookmark
+            # Get room data from conversation + bookmark (or just bookmark if conversation doesn't exist yet)
             room_data = self.db.fetchone("""
                 SELECT
                     c.muc_nonanonymous,
                     c.muc_membersonly,
                     b.name
-                FROM conversation c
-                LEFT JOIN bookmark b ON b.account_id = c.account_id AND b.jid_id = c.jid_id
-                WHERE c.account_id = ? AND c.jid_id = ? AND c.type = 1
+                FROM bookmark b
+                LEFT JOIN conversation c ON c.account_id = b.account_id AND c.jid_id = b.jid_id AND c.type = 1
+                WHERE b.account_id = ? AND b.jid_id = ?
             """, (self.account_id, jid_id))
 
             if not room_data:

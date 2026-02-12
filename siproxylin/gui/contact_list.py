@@ -225,8 +225,8 @@ class ContactListWidget(QWidget):
             self._update_account_item(account_item, account_data)
             account_item.setExpanded(True)
 
-            # Get MUC rooms from both bookmarks AND roster (deduplicated by JID)
-            # A MUC can be in roster (from server roster), bookmark (user bookmarked), or both
+            # Get MUC rooms from bookmarks, roster, OR conversations with messages
+            # A MUC can be: bookmarked, in roster, or have messages (e.g., invitations)
             rooms = self.db.fetchall("""
                 SELECT
                     j.bare_jid,
@@ -237,7 +237,15 @@ class ContactListWidget(QWidget):
                 FROM jid j
                 LEFT JOIN bookmark b ON b.jid_id = j.id AND b.account_id = ?
                 LEFT JOIN roster r ON r.jid_id = j.id AND r.account_id = ?
-                WHERE (b.id IS NOT NULL OR r.id IS NOT NULL)
+                WHERE (
+                    b.id IS NOT NULL  -- In bookmarks
+                    OR r.id IS NOT NULL  -- In roster
+                    OR EXISTS (  -- OR has MUC conversation with messages (invitations, etc.)
+                        SELECT 1 FROM conversation c
+                        JOIN content_item ci ON ci.conversation_id = c.id
+                        WHERE c.account_id = ? AND c.jid_id = j.id AND c.type = 1
+                    )
+                  )
                   AND j.bare_jid LIKE '%@%'
                   AND (
                     -- MUC JIDs typically contain conference/chat/muc keywords
@@ -249,7 +257,7 @@ class ContactListWidget(QWidget):
                   )
                 GROUP BY j.bare_jid
                 ORDER BY name, j.bare_jid
-            """, (account_id, account_id))
+            """, (account_id, account_id, account_id))
 
             # Get 1-to-1 contacts: roster contacts OR conversations with messages
             muc_jids = {room['bare_jid'] for room in rooms}
