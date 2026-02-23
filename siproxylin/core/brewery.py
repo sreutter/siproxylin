@@ -125,6 +125,8 @@ class XMPPAccount(QObject):
             'message_received': self.message_received,
             'chat_state_changed': self.chat_state_changed,
             'muc_join_error': self.muc_join_error,
+            'muc_role_changed': self.muc_role_changed,
+            'muc_invite_received': self.muc_invite_received,
             'call_incoming': self.call_incoming,
             'call_initiated': self.call_initiated,
             'call_accepted': self.call_accepted,

@@ -1002,7 +1002,9 @@ class ChatHeaderWidget(QFrame):
 
         logger.info(f"MUC join success for {room_jid}, updating UI")
 
-        # Hide join button (we're now in the room)
+        # Reset button state before hiding (prevents stuck "Joining..." text)
+        self.join_room_button.setText("Join Room")
+        self.join_room_button.setEnabled(True)
         self.join_room_button.hide()
 
         # Update MUC info immediately (participant count, subject, etc.)

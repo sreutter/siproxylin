@@ -8,7 +8,6 @@ import logging
 import asyncio
 import base64
 from PySide6.QtWidgets import QMessageBox
-from PySide6.QtCore import QTimer
 
 
 logger = logging.getLogger('siproxylin.muc_manager')
@@ -55,6 +54,9 @@ class MUCManager:
         """
         Handle MUC invitation.
 
+        Creates a bookmark with autojoin=0 so the invite appears in the roster
+        as a joinable MUC. User can join via "Join Group" button in chat header.
+
         Args:
             account_id: Account ID
             room_jid: MUC room JID
@@ -64,140 +66,48 @@ class MUCManager:
         """
         logger.info(f"MUC invite received: {room_jid} from {inviter_jid} (account {account_id})")
 
-        # Extract room name from JID localpart (before @)
-        room_name = room_jid.split('@')[0] if '@' in room_jid else room_jid
-
-        # Build invitation message
-        invite_msg = f"{inviter_jid} invited you to join:\n\n{room_name} ({room_jid})"
-        if reason:
-            invite_msg += f"\n\nReason: {reason}"
-        if password:
-            invite_msg += f"\n\n(Room is password protected)"
-
-        # Show dialog
-        reply = QMessageBox.question(
-            self.main_window,
-            "MUC Invitation",
-            invite_msg + "\n\nDo you want to join this room?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-
-        if reply == QMessageBox.Yes:
-            # Get account
-            account = self.account_manager.get_account(account_id)
-            if not account:
-                QMessageBox.warning(self.main_window, "Error", "Account not found.")
-                return
-
-            # Check if account is connected
-            if not account.is_connected():
-                QMessageBox.warning(
-                    self.main_window,
-                    "Cannot Add Group",
-                    "Cannot add group while offline.\n\n"
-                    "Please connect the account first."
-                )
-                return
-
-            # Get account nickname for MUC (with fallbacks: muc_nickname > nickname > JID localpart)
-            account_data = self.db.fetchone("SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?", (account_id,))
-            if account_data and account_data['muc_nickname']:
-                nick = account_data['muc_nickname']
-            elif account_data and account_data['nickname']:
-                nick = account_data['nickname']
-            elif account_data and account_data['bare_jid']:
-                # Fallback: use localpart of JID
-                nick = account_data['bare_jid'].split('@')[0]
-            else:
-                nick = 'User'
-
-            # Save bookmark and trigger join (all sync, delegate async work)
-            try:
-                # Get or create JID entry
-                jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
-                if jid_row:
-                    jid_id = jid_row['id']
-                else:
-                    cursor = self.db.execute("INSERT INTO jid (bare_jid) VALUES (?)", (room_jid,))
-                    jid_id = cursor.lastrowid
-
-                # Store bookmark locally (use JID as name for now, will be updated after join)
-                encoded_password = base64.b64encode(password.encode()).decode() if password else None
-                self.db.execute("""
-                    INSERT INTO bookmark (account_id, jid_id, name, nick, password, autojoin)
-                    VALUES (?, ?, ?, ?, ?, 1)
-                    ON CONFLICT (account_id, jid_id) DO UPDATE SET
-                        name = excluded.name,
-                        nick = excluded.nick,
-                        password = excluded.password,
-                        autojoin = excluded.autojoin
-                """, (account_id, jid_id, room_jid, nick, encoded_password))
-                self.db.commit()
-                logger.debug(f"Bookmark saved for {room_jid}")
-
-                # Refresh roster to show new bookmark
-                self.contact_list.load_roster()
-
-                # Defer async operations to escape XMPP callback context
-                # Using QTimer.singleShot(0) to queue for next event loop iteration
-                QTimer.singleShot(0, lambda: self._execute_room_join_from_invite(
-                    account_id, room_jid, nick, password
-                ))
-                logger.debug(f"Queued room join for next event loop: {room_jid}")
-
-            except Exception as e:
-                logger.error(f"Failed to save bookmark: {e}")
-                QMessageBox.critical(self.main_window, "Error", f"Failed to join room: {e}")
-
-    def _execute_room_join_from_invite(self, account_id: int, room_jid: str, nick: str, password: str):
-        """
-        Execute room join operations after escaping XMPP callback context.
-        Called via QTimer.singleShot(0) to defer to next event loop iteration.
-
-        Args:
-            account_id: Account ID
-            room_jid: MUC room JID
-            nick: Nickname to use
-            password: Room password (may be empty string)
-        """
-        logger.debug(f"Executing deferred room join: {room_jid}")
-
-        # Get account
-        account = self.account_manager.get_account(account_id)
-        if not account or not account.client:
-            logger.error(f"Cannot join room - account {account_id} not available")
-            QMessageBox.warning(self.main_window, "Error", "Account not available.")
-            return
-
-        # Check if still connected
-        if not account.is_connected():
-            logger.error(f"Cannot join room - account {account_id} disconnected")
-            QMessageBox.warning(self.main_window, "Error", "Account disconnected. Room will auto-join on next connection.")
-            return
+        # Get account nickname for MUC (with fallbacks: muc_nickname > nickname > JID localpart)
+        account_data = self.db.fetchone("SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?", (account_id,))
+        if account_data and account_data['muc_nickname']:
+            nick = account_data['muc_nickname']
+        elif account_data and account_data['nickname']:
+            nick = account_data['nickname']
+        elif account_data and account_data['bare_jid']:
+            # Fallback: use localpart of JID
+            nick = account_data['bare_jid'].split('@')[0]
+        else:
+            nick = 'User'
 
         try:
-            # Sync bookmark to server (XEP-0402)
-            asyncio.create_task(
-                account.client.add_bookmark(
-                    jid=room_jid,
-                    name=room_jid,  # Will be updated via disco#info after join
-                    nick=nick,
-                    password=password,
-                    autojoin=True
-                )
-            )
-            logger.debug(f"Syncing bookmark to server: {room_jid}")
+            # Get or create JID entry
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
+            if jid_row:
+                jid_id = jid_row['id']
+            else:
+                cursor = self.db.execute("INSERT INTO jid (bare_jid) VALUES (?)", (room_jid,))
+                jid_id = cursor.lastrowid
 
-            # Join the room immediately
-            asyncio.create_task(account.add_and_join_room(room_jid, nick, password))
-            logger.debug(f"Joining room from invite: {room_jid}")
+            # Store bookmark with autojoin=0 (user can join manually via UI)
+            # Use room JID as name for now, will be updated via disco#info when joined
+            encoded_password = base64.b64encode(password.encode()).decode() if password else None
+            self.db.execute("""
+                INSERT INTO bookmark (account_id, jid_id, name, nick, password, autojoin)
+                VALUES (?, ?, ?, ?, ?, 0)
+                ON CONFLICT (account_id, jid_id) DO UPDATE SET
+                    name = excluded.name,
+                    nick = excluded.nick,
+                    password = excluded.password
+            """, (account_id, jid_id, room_jid, nick, encoded_password))
+            self.db.commit()
+            logger.info(f"Saved invite as bookmark (autojoin=0): {room_jid}")
+
+            # Refresh roster to show new bookmark
+            self.contact_list.load_roster()
 
         except Exception as e:
-            logger.error(f"Failed to join room: {e}")
+            logger.error(f"Failed to save MUC invite bookmark: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            QMessageBox.critical(self.main_window, "Error", f"Failed to join room: {e}")
 
     def on_muc_role_changed(self, account_id: int, room_jid: str, old_role: str, new_role: str):
         """

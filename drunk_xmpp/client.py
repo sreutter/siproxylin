@@ -1445,6 +1445,15 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         except (KeyError, TypeError):
             pass
 
+        # Check for MUC invite (XEP-0045) - skip if this is an invite message
+        # Invites are handled by _on_groupchat_invite, not as regular messages
+        try:
+            if msg['muc']['invite']:
+                self.logger.debug(f"Private message is a MUC invite, will be handled by invite handler")
+                return
+        except (KeyError, TypeError):
+            pass
+
         # Check for reply (XEP-0461)
         try:
             if msg['reply']['id']:
