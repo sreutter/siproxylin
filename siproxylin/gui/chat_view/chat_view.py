@@ -284,21 +284,33 @@ class ChatViewWidget(QWidget):
         # Switch to chat view (Page 1)
         self.stack.setCurrentIndex(1)
 
-        # Check if this is a MUC room by checking bookmarks in database
-        muc_check = self.db.fetchone("""
-            SELECT 1 FROM bookmark b
-            JOIN jid j ON b.jid_id = j.id
-            WHERE b.account_id = ? AND j.bare_jid = ?
-        """, (account_id, jid))
-
-        self.current_is_muc = muc_check is not None
-
         # Get jid_id and conversation_id
         jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (jid,))
         if jid_row:
             jid_id = jid_row['id']
-            conv_type = 1 if self.current_is_muc else 0
-            self.current_conversation_id = self.db.get_or_create_conversation(account_id, jid_id, conv_type)
+
+            # Check if this is a MUC room by checking the conversation type
+            # (type=1 for MUC, type=0 for 1-on-1)
+            # First try to get existing conversation to determine type
+            conv_row = self.db.fetchone("""
+                SELECT id, type FROM conversation
+                WHERE account_id = ? AND jid_id = ?
+            """, (account_id, jid_id))
+
+            if conv_row:
+                # Existing conversation - use its type
+                self.current_conversation_id = conv_row['id']
+                self.current_is_muc = conv_row['type'] == 1
+            else:
+                # New conversation - check if it's bookmarked to determine type
+                muc_check = self.db.fetchone("""
+                    SELECT 1 FROM bookmark b
+                    WHERE b.account_id = ? AND b.jid_id = ?
+                """, (account_id, jid_id))
+
+                self.current_is_muc = muc_check is not None
+                conv_type = 1 if self.current_is_muc else 0
+                self.current_conversation_id = self.db.get_or_create_conversation(account_id, jid_id, conv_type)
         else:
             self.current_conversation_id = None
 

@@ -912,8 +912,11 @@ class ChatHeaderWidget(QFrame):
                 self.participant_count_label.setText("👥 ?")
                 return False
 
-        # No account or client
-        self.participant_count_label.setText("👥 ?")
+        # No account or client - but room is bookmarked, so show join button
+        # (User can join once account connects)
+        self.participant_count_label.setText("👥 Not joined")
+        self.participant_count_label.show()
+        self.join_room_button.show()
         return False
 
     def _refresh_muc_info_once(self):
@@ -947,44 +950,111 @@ class ChatHeaderWidget(QFrame):
         if not account:
             return
 
-        # Get bookmark info to get nickname
-        bookmark = account.muc.get_bookmark(self.current_jid)
-        if not bookmark:
-            logger.warning(f"No bookmark found for {self.current_jid}")
+        # Check if account is connected
+        if not account.is_connected():
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("Account Not Connected")
+            msg_box.setText("Cannot join room: account is not connected.\n"
+                           "Please connect the account first.")
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.show()  # Non-blocking
             return
 
-        nick = bookmark.nick or account.jid.split('@')[0]
-        password = bookmark.password
+        # Get bookmark if exists, otherwise create one
+        bookmark = account.muc.get_bookmark(self.current_jid)
 
-        logger.info(f"Joining MUC room {self.current_jid} as {nick} (triggered from chat header)")
+        if bookmark:
+            # Bookmark exists - use its nickname and password
+            nick = bookmark.nick or account.jid.split('@')[0]
+            password = bookmark.password
 
-        # Disable button during join
-        self.join_room_button.setEnabled(False)
-        self.join_room_button.setText("Joining...")
+            logger.info(f"Joining MUC room {self.current_jid} as {nick} (from existing bookmark)")
 
-        async def do_join():
-            try:
-                # Use _perform_room_join directly (no DB transaction needed for rejoining)
-                # Room is already bookmarked, we just need to send join presence
-                await account.muc._perform_room_join(self.current_jid, nick, password)
-                logger.info(f"Successfully initiated join for {self.current_jid}")
+            # Disable button during join
+            self.join_room_button.setEnabled(False)
+            self.join_room_button.setText("Joining...")
 
-                # Update UI will happen automatically via roster_updated signal
-                # and _update_muc_info will be called by the refresh timer
-                # Error handling is done via muc_join_error signal (see _on_muc_join_error)
+            async def do_join_existing():
+                try:
+                    # Use _perform_room_join directly (room already bookmarked)
+                    await account.muc._perform_room_join(self.current_jid, nick, password)
+                    logger.info(f"Successfully initiated join for {self.current_jid}")
+                except Exception as e:
+                    # This catches exceptions from the join call itself (not server errors)
+                    logger.error(f"Failed to join room {self.current_jid}: {e}")
 
-            except Exception as e:
-                # This catches exceptions from the join call itself (not server errors)
-                logger.error(f"Failed to join room {self.current_jid}: {e}")
-                QMessageBox.critical(self, "Join Failed", f"Failed to join room:\n{e}")
+                    msg_box = QMessageBox(self)
+                    msg_box.setIcon(QMessageBox.Critical)
+                    msg_box.setWindowTitle("Join Failed")
+                    msg_box.setText(f"Failed to join room:\n{e}")
+                    msg_box.show()  # Non-blocking
 
-                # Re-enable button on error
-                self.join_room_button.setEnabled(True)
-                self.join_room_button.setText("Join Room")
+                    # Re-enable button on error
+                    self.join_room_button.setEnabled(True)
+                    self.join_room_button.setText("Join Room")
 
-        # Use QTimer to schedule the async task (avoids nested task issues)
-        from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: asyncio.create_task(do_join()))
+            # Use QTimer to schedule the async task (avoids nested task issues)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: asyncio.create_task(do_join_existing()))
+
+        else:
+            # No bookmark - create one first (same pattern as MUC invite handling)
+            logger.info(f"No bookmark found for {self.current_jid}, creating one before join")
+
+            # Get default nickname with fallbacks (same as MUC invite flow)
+            account_data = self.db.fetchone(
+                "SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?",
+                (self.current_account_id,)
+            )
+            if account_data:
+                nick = (account_data['muc_nickname'] or
+                        account_data['nickname'] or
+                        account_data['bare_jid'].split('@')[0])
+            else:
+                nick = account.jid.split('@')[0]
+
+            password = None  # No password initially (will prompt if needed via muc_join_error)
+
+            logger.info(f"Joining MUC room {self.current_jid} as {nick} (creating new bookmark)")
+
+            # Disable button during join
+            self.join_room_button.setEnabled(False)
+            self.join_room_button.setText("Joining...")
+
+            async def do_create_and_join():
+                try:
+                    # Create bookmark with autojoin=0 (same as MUC invite)
+                    await account.muc.create_or_update_bookmark(
+                        room_jid=self.current_jid,
+                        name=None,  # Will be fetched from disco#info after join
+                        nick=nick,
+                        password=None,
+                        autojoin=False
+                    )
+                    logger.info(f"Created bookmark for {self.current_jid}")
+
+                    # Now join using add_and_join_room
+                    await account.add_and_join_room(self.current_jid, nick, password)
+                    logger.info(f"Successfully initiated join for {self.current_jid}")
+
+                except Exception as e:
+                    # This catches exceptions from the join call itself (not server errors)
+                    logger.error(f"Failed to create bookmark and join {self.current_jid}: {e}")
+
+                    msg_box = QMessageBox(self)
+                    msg_box.setIcon(QMessageBox.Critical)
+                    msg_box.setWindowTitle("Join Failed")
+                    msg_box.setText(f"Failed to join room:\n{e}")
+                    msg_box.show()  # Non-blocking
+
+                    # Re-enable button on error
+                    self.join_room_button.setEnabled(True)
+                    self.join_room_button.setText("Join Room")
+
+            # Use QTimer to schedule the async task (avoids nested task issues)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: asyncio.create_task(do_create_and_join()))
 
     def _on_muc_join_success(self, account_id: int, room_jid: str):
         """
