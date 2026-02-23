@@ -238,6 +238,9 @@ class MUCDetailsDialog(QDialog):
         self.omemo_compatible_label.setFont(QFont("", 10, QFont.Bold))
         omemo_layout.addWidget(self.omemo_compatible_label)
 
+        # Reason label (created dynamically when room doesn't support OMEMO)
+        self.omemo_reason_label = None
+
         omemo_note = QLabel(
             "OMEMO in MUCs requires: Non-anonymous (MUST) + Members-only (SHOULD)"
         )
@@ -615,19 +618,33 @@ class MUCDetailsDialog(QDialog):
             if room_info.omemo_compatible:
                 self.omemo_compatible_label.setText("✅ This room supports OMEMO encryption")
                 self.omemo_compatible_label.setStyleSheet("color: green;")
+
+                # Remove reason label if it exists (room now supports OMEMO)
+                if self.omemo_reason_label:
+                    self.omemo_reason_label.setParent(None)
+                    self.omemo_reason_label.deleteLater()
+                    self.omemo_reason_label = None
             else:
                 self.omemo_compatible_label.setText("⚠️ This room does NOT support OMEMO encryption")
                 self.omemo_compatible_label.setStyleSheet("color: orange;")
 
-                # Explain why
+                # Remove old reason label if it exists
+                if self.omemo_reason_label:
+                    self.omemo_reason_label.setParent(None)
+                    self.omemo_reason_label.deleteLater()
+                    self.omemo_reason_label = None
+
+                # Add new reason label
+                reason_text = ""
                 if not room_info.nonanonymous:
-                    reason = QLabel("Reason: Room is anonymous (must be non-anonymous for OMEMO)")
-                    reason.setStyleSheet("color: gray; font-size: 9pt;")
-                    self.omemo_compatible_label.parent().layout().addWidget(reason)
+                    reason_text = "Reason: Room is anonymous (must be non-anonymous for OMEMO)"
                 elif not room_info.membersonly:
-                    reason = QLabel("Reason: Room is open (should be members-only for OMEMO)")
-                    reason.setStyleSheet("color: gray; font-size: 9pt;")
-                    self.omemo_compatible_label.parent().layout().addWidget(reason)
+                    reason_text = "Reason: Room is open (should be members-only for OMEMO)"
+
+                if reason_text:
+                    self.omemo_reason_label = QLabel(reason_text)
+                    self.omemo_reason_label.setStyleSheet("color: gray; font-size: 9pt;")
+                    self.omemo_compatible_label.parent().layout().addWidget(self.omemo_reason_label)
 
             # Display subject/description
             if room_info.subject:
