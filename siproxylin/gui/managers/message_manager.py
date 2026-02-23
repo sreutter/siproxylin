@@ -294,6 +294,10 @@ class MessageManager:
 
             logger.debug(f"✓ File '{filename}' sent to {jid} (id={file_transfer_id}, origin_id={message_id})")
 
+            # Clean up temp file if it was a pasted image
+            if file_path in self.chat_view.temp_pasted_files:
+                self.chat_view._cleanup_temp_file(file_path)
+
             # Refresh to update state indicator
             QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))
 
@@ -308,6 +312,10 @@ class MessageManager:
                 UPDATE file_transfer SET state = ? WHERE id = ?
             """, (3, file_transfer_id))  # state=3 (failed)
             self.db.commit()
+
+            # Clean up temp file if it was a pasted image (even on failure)
+            if file_path in self.chat_view.temp_pasted_files:
+                self.chat_view._cleanup_temp_file(file_path)
 
             # Refresh to show error state
             QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))

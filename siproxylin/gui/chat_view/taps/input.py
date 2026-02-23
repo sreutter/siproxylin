@@ -9,8 +9,8 @@ Provides the message input field with:
 
 import logging
 from PySide6.QtWidgets import QTextEdit, QLabel
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import Qt, Signal, QTimer, QMimeData
+from PySide6.QtGui import QKeyEvent, QImage
 
 
 logger = logging.getLogger('siproxylin.chat_view.input')
@@ -26,6 +26,8 @@ class MessageInputField(QTextEdit):
     active_state = Signal()     # User is active (sent message or cleared field)
     # Signal for voice request
     voice_request_clicked = Signal()  # User clicked "Request voice" link
+    # Signal for image paste
+    image_pasted = Signal(QImage, QMimeData)  # User pasted an image from clipboard (image, mime_data)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -129,6 +131,25 @@ class MessageInputField(QTextEdit):
         super().resizeEvent(event)
         # Make overlay same size as input field
         self.visitor_overlay.setGeometry(self.rect())
+
+    def insertFromMimeData(self, source: QMimeData):
+        """
+        Override paste handler to intercept image pastes.
+
+        When user pastes an image from clipboard, emit signal to parent
+        for special handling (save to temp file, strip EXIF, show attachment UI).
+        Regular text pastes work normally.
+        """
+        if source.hasImage():
+            # User pasted an image - emit signal to parent (pass both image and mime data for format detection)
+            image = source.imageData()
+            if isinstance(image, QImage) and not image.isNull():
+                logger.debug("Image pasted from clipboard - emitting signal")
+                self.image_pasted.emit(image, source)
+                return  # Don't insert image into text field
+
+        # Not an image (or invalid image) - use default paste behavior (text)
+        super().insertFromMimeData(source)
 
     def keyPressEvent(self, event: QKeyEvent):
         """Override to catch arrow-up in empty field."""
