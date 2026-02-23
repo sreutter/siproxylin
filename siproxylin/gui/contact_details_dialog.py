@@ -5,6 +5,8 @@ Shows contact information, OMEMO devices, conversation settings,
 presence subscription, and allows renaming contacts.
 """
 
+import asyncio
+import base64
 import logging
 from datetime import datetime
 from PySide6.QtWidgets import (
@@ -13,7 +15,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QWidget, QFormLayout, QCheckBox, QLineEdit,
     QGroupBox
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 
 from ..db.database import get_db
@@ -274,23 +276,36 @@ class ContactDetailsDialog(QDialog):
             table.setSpan(0, 0, 1, 6)
 
     def _format_fingerprint(self, identity_key: str) -> str:
-        """Format identity key as readable fingerprint."""
+        """
+        Format identity key as readable fingerprint per XEP-0384.
+
+        Converts base64-encoded identity key to lowercase hexadecimal,
+        grouped in 8-character chunks with 4 groups per line.
+        """
         if not identity_key:
             return "N/A"
 
-        # Remove any whitespace
-        key = identity_key.replace(" ", "").replace("\n", "")
+        try:
+            # Decode base64 to bytes
+            key_bytes = base64.b64decode(identity_key)
 
-        # Split into groups of 8 characters
-        groups = [key[i:i+8] for i in range(0, len(key), 8)]
+            # Convert to lowercase hex (per XEP-0384 spec)
+            hex_string = key_bytes.hex()
 
-        # Join with spaces, 4 groups per line
-        lines = []
-        for i in range(0, len(groups), 4):
-            line_groups = groups[i:i+4]
-            lines.append(" ".join(line_groups))
+            # Split into groups of 8 characters
+            groups = [hex_string[i:i+8] for i in range(0, len(hex_string), 8)]
 
-        return "\n".join(lines)
+            # Join with spaces, 4 groups per line
+            lines = []
+            for i in range(0, len(groups), 4):
+                line_groups = groups[i:i+4]
+                lines.append(" ".join(line_groups))
+
+            return "\n".join(lines)
+        except Exception as e:
+            # Handle invalid base64 gracefully
+            logger.error(f"Failed to decode fingerprint: {e}")
+            return f"Invalid key"
 
     def _get_trust_display(self, trust_level: int):
         """Get display text and color for trust level."""
@@ -339,7 +354,16 @@ class ContactDetailsDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
 
-        # Update database
+        # Get bare JID from jid_id
+        jid_row = self.db.fetchone("SELECT bare_jid FROM jid WHERE id = ?", (jid_id,))
+        if not jid_row:
+            QMessageBox.critical(self, "Error", "JID not found in database")
+            logger.error(f"JID ID {jid_id} not found in database")
+            return
+
+        bare_jid = jid_row['bare_jid']
+
+        # Update GUI database (optimistic update)
         self.db.execute("""
             UPDATE omemo_device
             SET trust_level = ?
@@ -347,6 +371,17 @@ class ContactDetailsDialog(QDialog):
         """, (new_trust_level, self.account_id, jid_id, device_id))
 
         logger.info(f"Changed trust level for device {device_id} to {new_trust_level}")
+
+        # Get account to call async OMEMO library update
+        account = self.account_manager.get_account(self.account_id)
+        if account and account.client:
+            # Schedule async trust change to sync with OMEMO library
+            # Use QTimer.singleShot for Qt-safe async execution
+            QTimer.singleShot(0, lambda: asyncio.ensure_future(
+                account.omemo.set_device_trust(bare_jid, device_id, new_trust_level)
+            ))
+        else:
+            logger.warning(f"Account {self.account_id} not connected, trust change only saved to GUI database")
 
         # Refresh display
         self._load_devices()

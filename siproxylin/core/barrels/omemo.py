@@ -107,6 +107,54 @@ class OmemoBarrel:
             if self.logger:
                 self.logger.error(f"Failed to update OMEMO device list for {jid}: {e}")
 
+    async def set_device_trust(self, jid: str, device_id: int, trust_level: int) -> bool:
+        """
+        Set trust level for an OMEMO device.
+
+        Args:
+            jid: Bare JID owning the device
+            device_id: Device ID to trust/distrust
+            trust_level: Trust level (0=untrusted, 1=blind_trust, 2=verified, 3=compromised)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.client:
+            if self.logger:
+                self.logger.warning("Client not connected, cannot set OMEMO trust")
+            return False
+
+        # Map GUI trust level to library trust level name
+        trust_map = {
+            0: 'UNDECIDED',
+            1: 'BLINDLY_TRUSTED',
+            2: 'TRUSTED',
+            3: 'DISTRUSTED'
+        }
+
+        trust_level_name = trust_map.get(trust_level, 'UNDECIDED')
+
+        try:
+            # Call DrunkXMPP method to set trust in OMEMO library
+            success = await self.client.set_omemo_trust(jid, device_id, trust_level_name)
+
+            if success:
+                if self.logger:
+                    self.logger.info(f"Set OMEMO trust for device {device_id} of {jid} to {trust_level_name}")
+
+                # Sync back to GUI database to reflect changes
+                await self.sync_omemo_devices_to_db(jid)
+            else:
+                if self.logger:
+                    self.logger.error(f"Failed to set OMEMO trust for device {device_id} of {jid}")
+
+            return success
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Error setting OMEMO trust: {e}")
+            return False
+
     # =========================================================================
     # Future OMEMO Device Management (TODO)
     # =========================================================================

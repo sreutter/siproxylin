@@ -125,3 +125,45 @@ class OMEMODevicesMixin:
         except Exception as e:
             self.logger.exception(f"Failed to get own OMEMO devices: {e}")
             return []
+
+    async def set_omemo_trust(self, jid: str, device_id: int, trust_level_name: str) -> bool:
+        """
+        Set trust level for an OMEMO device.
+
+        Args:
+            jid: Bare JID owning the device
+            device_id: Device ID to trust/distrust
+            trust_level_name: Trust level string (TRUSTED, BLINDLY_TRUSTED, UNDECIDED, DISTRUSTED)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.omemo_enabled:
+            self.logger.warning("OMEMO not enabled, cannot set trust")
+            return False
+
+        try:
+            xep_0384 = self.plugin['xep_0384']
+            session_manager = await xep_0384.get_session_manager()
+
+            # Get device information to retrieve identity key
+            device_infos = await session_manager.get_device_information(jid)
+
+            # Find the specific device
+            for device_info in device_infos:
+                if device_info.device_id == device_id:
+                    # Set trust in library
+                    await session_manager.set_trust(
+                        jid,
+                        device_info.identity_key,
+                        trust_level_name
+                    )
+                    self.logger.info(f"Set trust for device {device_id} of {jid} to {trust_level_name}")
+                    return True
+
+            self.logger.error(f"Device {device_id} not found for {jid}")
+            return False
+
+        except Exception as e:
+            self.logger.exception(f"Failed to set OMEMO trust: {e}")
+            return False

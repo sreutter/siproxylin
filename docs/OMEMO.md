@@ -167,7 +167,7 @@ Shows your own OMEMO devices (all logged-in instances).
    - Contact shares their device fingerprint
    - Locate matching Device ID in table
    - Compare fingerprint character-by-character
-   - Fingerprint format: `n6sPriNU D5jsm8sX nL15IyvG KnZps_ct NLPW2yhG HXU=`
+   - Fingerprint format: `05c48712 2ba463fd 11223344 55667788`
 
 4. **Take Action**
    - **If match**: Click "Verify" button → Device becomes ✅ Verified
@@ -179,16 +179,23 @@ Shows your own OMEMO devices (all logged-in instances).
 
 ### Fingerprint Format
 
-- Base64-encoded identity key
+**Per XEP-0384 Specification:**
+- Lowercase hexadecimal encoding
 - Grouped in sets of 8 characters
-- 4 groups per line, 2 lines total
+- 4 groups per line (for 32-byte keys = 64 hex chars = 2 lines)
 - Monospace font for readability
-- Case-sensitive
+- Case-insensitive (but displayed as lowercase)
+
+**Format is compatible with:**
+- Conversations (Android)
+- Dino (Desktop)
+- Gajim (Desktop)
+- All XEP-0384 compliant OMEMO clients
 
 **Example:**
 ```
-n6sPriNU D5jsm8sX nL15IyvG KnZps_ct
-NLPW2yhG HXU=
+05c48712 2ba463fd 11223344 55667788
+99aabbcc ddeeff00 12345678 9abcdef0
 ```
 
 ---
