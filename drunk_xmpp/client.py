@@ -2488,6 +2488,21 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         if room_jid in self.rooms:
             del self.rooms[room_jid]
 
+    def send_muc_invite(self, room_jid: str, invitee_jid: str, reason: str = ''):
+        """
+        Send a mediated MUC invitation (XEP-0045 §7.8.2).
+
+        Note: Passwords are NOT sent in invites. If the room is password-protected,
+        the inviter must communicate the password separately (e.g., via direct message).
+
+        Args:
+            room_jid: Room JID to invite user to
+            invitee_jid: JID of user to invite
+            reason: Optional reason for the invitation
+        """
+        self.logger.info(f"Sending MUC invite: {invitee_jid} to {room_jid}" + (f" (reason: {reason})" if reason else ""))
+        self.plugin['xep_0045'].invite(room_jid, invitee_jid, reason)
+
     async def change_room_subject(self, room_jid: str, subject: str) -> bool:
         """
         Change the subject/topic of a MUC room (XEP-0045 §8.1).

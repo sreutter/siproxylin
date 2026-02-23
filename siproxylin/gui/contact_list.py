@@ -53,6 +53,7 @@ class ContactListWidget(QWidget):
 
     # MUC-specific signals
     view_muc_details_requested = Signal(int, str)  # (account_id, room_jid)
+    invite_to_muc_requested = Signal(int, str)  # (account_id, room_jid)
     leave_muc_requested = Signal(int, str)  # (account_id, room_jid)
 
     # Account-specific signals
@@ -924,6 +925,11 @@ class ContactListWidget(QWidget):
         view_details_action = QAction("View Details...", self)
         view_details_action.triggered.connect(lambda: self.view_muc_details_requested.emit(account_id, room_jid))
         menu.addAction(view_details_action)
+
+        # Invite Contact to Room
+        invite_action = QAction("Invite Contact...", self)
+        invite_action.triggered.connect(lambda: self.invite_to_muc_requested.emit(account_id, room_jid))
+        menu.addAction(invite_action)
 
         menu.addSeparator()
 

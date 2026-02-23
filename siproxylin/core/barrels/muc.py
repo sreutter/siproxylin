@@ -1545,3 +1545,25 @@ class MucBarrel:
             if self.logger:
                 self.logger.error(f"Failed to create/update bookmark for {room_jid}: {e}")
             raise
+
+    def invite_to_room(self, room_jid: str, invitee_jid: str, reason: str = ''):
+        """
+        Invite a user to a MUC room (XEP-0045 §7.8.2).
+
+        Sends a mediated invitation through the room. Passwords are NOT included
+        in invites - if the room is password-protected, communicate the password
+        separately.
+
+        Args:
+            room_jid: Room JID to invite user to
+            invitee_jid: Bare JID of user to invite
+            reason: Optional invitation reason/message
+        """
+        if not self.client:
+            if self.logger:
+                self.logger.error(f"Cannot send invite - client not connected")
+            return
+
+        self.client.send_muc_invite(room_jid, invitee_jid, reason)
+        if self.logger:
+            self.logger.info(f"Invited {invitee_jid} to {room_jid}")

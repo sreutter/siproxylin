@@ -176,6 +176,7 @@ class MainWindow(QMainWindow):
 
         # MUC context menu signals
         self.contact_list.view_muc_details_requested.connect(self._on_view_muc_details)
+        self.contact_list.invite_to_muc_requested.connect(self._on_invite_to_muc)
         self.contact_list.leave_muc_requested.connect(self.leave_muc)
 
         # Account context menu signals
@@ -1058,6 +1059,10 @@ class MainWindow(QMainWindow):
     def _on_view_muc_details(self, account_id: int, room_jid: str):
         """Delegate to DialogManager."""
         self.dialog_manager.show_muc_details_dialog(account_id, room_jid)
+
+    def _on_invite_to_muc(self, account_id: int, room_jid: str):
+        """Delegate to MUCManager."""
+        self.muc_manager.invite_to_muc(account_id, room_jid)
 
     def leave_muc(self, account_id: int, room_jid: str):
         """Delegate to MUCManager."""

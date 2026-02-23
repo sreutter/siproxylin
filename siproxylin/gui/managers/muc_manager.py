@@ -130,6 +130,52 @@ class MUCManager:
             logger.debug(f"Updating input state for current room: {room_jid}")
             self.chat_view._update_muc_input_state(account_id, room_jid)
 
+    def invite_to_muc(self, account_id: int, room_jid: str):
+        """
+        Invite a contact to a MUC room.
+
+        Shows a dialog to enter the invitee's JID and optional reason,
+        then sends the invitation via XMPP.
+
+        Args:
+            account_id: Account ID
+            room_jid: Room JID to invite to
+        """
+        from ..dialogs import InviteContactDialog
+
+        logger.info(f"Invite to MUC requested: {room_jid} (account {account_id})")
+
+        # Check if account is connected
+        account = self.account_manager.get_account(account_id)
+        if not account or not account.is_connected():
+            QMessageBox.warning(
+                self.main_window,
+                "Cannot Send Invite",
+                "Cannot send invitation while offline.\n\n"
+                "Please connect the account first."
+            )
+            return
+
+        # Show invite dialog
+        dialog = InviteContactDialog(self.main_window, room_jid)
+        if dialog.exec():
+            invite_data = dialog.get_invite_data()
+            if invite_data:
+                invitee_jid, reason = invite_data
+                logger.info(f"Sending invite: {invitee_jid} to {room_jid}")
+
+                # Send invite via MucBarrel
+                try:
+                    account.muc.invite_to_room(room_jid, invitee_jid, reason)
+                    logger.info(f"Invite sent successfully to {invitee_jid}")
+                except Exception as e:
+                    logger.error(f"Failed to send invite: {e}")
+                    QMessageBox.critical(
+                        self.main_window,
+                        "Invite Failed",
+                        f"Failed to send invitation:\n\n{e}"
+                    )
+
     def leave_muc(self, account_id: int, room_jid: str):
         """
         Leave a MUC room (centralized handler for all leave operations).
