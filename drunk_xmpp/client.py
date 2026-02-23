@@ -585,6 +585,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.add_event_handler("failed_auth", self._on_failed_auth)
         self.add_event_handler("groupchat_message", self._on_groupchat_message)
         self.add_event_handler("groupchat_subject", self._on_groupchat_subject)
+        self.add_event_handler("groupchat_config_status", self._on_groupchat_config_status)
         self.add_event_handler("message", self._on_private_message)
         self.add_event_handler("message_error", self._on_message_error)
         self.add_event_handler("reactions", self._on_reactions)
@@ -1164,24 +1165,26 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         """
         Handle room configuration change (status code 104).
         Query disco#info to get the new room name and notify the application.
+        Also updates the disco_cache with fresh features.
 
         Args:
             room_jid: The bare JID of the room that changed
         """
         try:
             # Query disco#info to get updated room information
-            disco_info = await self.plugin['xep_0030'].get_info(jid=room_jid, timeout=10)
+            # Use get_room_features() instead of raw disco query for consistent formatting
+            room_features = await self.get_room_features(room_jid)
 
-            # Extract room name from identities
-            room_name = None
-            for identity in disco_info['disco_info']['identities']:
-                if identity[0] == 'conference' and identity[1] == 'text':
-                    # Identity tuple is (category, type, name, lang)
-                    room_name = identity[2] if len(identity) > 2 else None
-                    break
+            # Update disco_cache with fresh data
+            if not hasattr(self, 'disco_cache'):
+                self.disco_cache = {}
+            self.disco_cache[room_jid] = room_features
 
+            room_name = room_features.get('name')
             if room_name:
-                self.logger.info(f"Room {room_jid} name changed to: {room_name}")
+                self.logger.info(f"Room {room_jid} config changed - name: {room_name}, "
+                               f"nonanonymous: {room_features.get('muc_nonanonymous')}, "
+                               f"membersonly: {room_features.get('muc_membersonly')}")
 
                 # Notify application via callback
                 if self.on_room_config_changed_callback:
@@ -1219,6 +1222,28 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         # Store subject for this room
         self.room_subjects[room] = subject
 
+    async def _on_groupchat_config_status(self, msg):
+        """
+        Handler for MUC status codes (XEP-0045 status notifications).
+
+        Slixmpp triggers this event when a MUC message contains status codes
+        in the <x xmlns='http://jabber.org/protocol/muc#user'> element.
+
+        Status codes indicating room configuration/privacy changes:
+          104 = Room configuration changed
+          172 = Room does not broadcast presence
+          173 = Room discussions are publicly logged
+          174 = Room is non-anonymous (full JIDs visible)
+        """
+        room = msg['from'].bare
+
+        # Check for config/privacy-related status codes
+        config_changed_codes = {104, 172, 173, 174}
+        if msg['muc']['status_codes'] and config_changed_codes & msg['muc']['status_codes']:
+            matched_codes = config_changed_codes & msg['muc']['status_codes']
+            self.logger.info(f"Room configuration/privacy changed for {room} (status codes: {matched_codes})")
+            await self._handle_room_config_changed(room)
+
     async def _on_groupchat_message(self, msg):
         """
         Handler for groupchat messages.
@@ -1229,13 +1254,6 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         room = msg['from'].bare
         nick = msg['from'].resource
         body = msg['body']
-
-        # Check for MUC status codes (e.g., room config changed)
-        # Status code 104 = room configuration changed
-        if msg['muc']['status_codes'] and 104 in msg['muc']['status_codes']:
-            self.logger.info(f"Room configuration changed for {room} (status code 104)")
-            await self._handle_room_config_changed(room)
-            # Don't return yet - there might be a body message too
 
         # Build metadata object
         metadata = MessageMetadata(

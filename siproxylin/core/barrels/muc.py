@@ -767,17 +767,17 @@ class MucBarrel:
 
     async def on_room_config_changed(self, room_jid: str, room_name: str):
         """
-        Handle room configuration change (status code 104).
+        Handle room configuration change (status code 104/173/174).
 
         Refreshes cached room config and updates bookmark name in database.
-        This is called automatically when the server sends status code 104.
+        This is called automatically when the server sends status codes.
 
         Args:
             room_jid: The bare JID of the room
             room_name: The new room name from disco#info
         """
         if self.logger:
-            self.logger.info(f"Room config changed (status 104): {room_jid} -> {room_name}")
+            self.logger.info(f"Room config changed (status 104/173/174): {room_jid} -> {room_name}")
 
         # Refresh room configuration cache (owner-only, may fail gracefully)
         try:
@@ -787,6 +787,10 @@ class MucBarrel:
         except Exception as e:
             if self.logger:
                 self.logger.debug(f"Could not refresh room config for {room_jid}: {e}")
+
+        # Emit roster_updated IMMEDIATELY after disco_cache update
+        # This ensures encryption button updates even if bookmark update fails
+        self.signals['roster_updated'].emit(self.account_id)
 
         # Update bookmark name in database
         try:
@@ -810,9 +814,6 @@ class MucBarrel:
             """, (room_name, self.account_id, jid_id))
 
             db.commit()
-
-            # Emit roster_updated to refresh GUI (updates room list and details dialog)
-            self.signals['roster_updated'].emit(self.account_id)
 
             if self.logger:
                 self.logger.info(f"Updated bookmark name for {room_jid} to '{room_name}'")
@@ -889,8 +890,6 @@ class MucBarrel:
             # Get room data from conversation + bookmark (or just bookmark if conversation doesn't exist yet)
             room_data = self.db.fetchone("""
                 SELECT
-                    c.muc_nonanonymous,
-                    c.muc_membersonly,
                     b.name
                 FROM bookmark b
                 LEFT JOIN conversation c ON c.account_id = b.account_id AND c.jid_id = b.jid_id AND c.type = 1
@@ -900,10 +899,16 @@ class MucBarrel:
             if not room_data:
                 return None
 
-            # Extract values from database
-            nonanonymous = bool(room_data['muc_nonanonymous'] or 0)
-            membersonly = bool(room_data['muc_membersonly'] or 0)
             room_name = room_data['name'] or room_jid
+
+            # Read muc_nonanonymous and muc_membersonly from disco_cache (in-memory)
+            # instead of database for always-fresh data
+            disco_info = {}
+            if self.client and hasattr(self.client, 'disco_cache'):
+                disco_info = self.client.disco_cache.get(room_jid, {})
+
+            nonanonymous = disco_info.get('muc_nonanonymous', False)
+            membersonly = disco_info.get('muc_membersonly', False)
 
             # Get config from in-memory cache (if available)
             config = self.room_configs.get(room_jid, {})

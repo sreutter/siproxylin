@@ -1616,6 +1616,9 @@ class MUCDetailsDialog(QDialog):
             if self.parent() and hasattr(self.parent(), 'contact_list'):
                 self.parent().contact_list.refresh()
 
+            # Reload settings to show updated values in form
+            self._load_settings()
+
             QMessageBox.information(self, "Settings Saved", "Room settings have been saved.")
 
         except Exception as e:
@@ -1726,15 +1729,24 @@ class MUCDetailsDialog(QDialog):
                                 )
                                 logger.debug(f"Synced bookmark password to server: {self.room_jid}")
 
+                    # Show progress: waiting for server to update disco#info
+                    self.save_config_button.setText("Refreshing room info...")
+                    logger.debug(f"Waiting 1.5s for server to update disco#info for {self.room_jid}")
+
+                    # Wait for server to update its disco#info response
+                    # (servers typically need a brief moment to propagate config changes)
+                    await asyncio.sleep(1.5)
+
                     # Reload both tabs from fresh server data
-                    self._load_room_info()  # Updates self.room_info + Info tab
+                    # _load_room_info() will fetch fresh disco#info automatically
+                    self._load_room_info()  # Fetches fresh disco + updates Info tab
                     self._load_config()     # Config tab reads from self.room_info
 
                     # Non-blocking success message
                     msg = QMessageBox(self)
                     msg.setIcon(QMessageBox.Information)
                     msg.setWindowTitle("Configuration Saved")
-                    msg.setText("Room configuration has been updated successfully.")
+                    msg.setText("Room configuration saved and room features refreshed successfully.")
                     msg.show()
 
                     logger.info(f"Saved room configuration for {self.room_jid}")

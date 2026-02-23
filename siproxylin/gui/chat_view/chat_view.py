@@ -505,13 +505,13 @@ class ChatViewWidget(QWidget):
         try:
             # Get conversation details
             conv = self.db.fetchone("""
-                SELECT type, encryption, muc_nonanonymous, muc_membersonly
+                SELECT type, encryption
                 FROM conversation
                 WHERE id = ?
             """, (self.current_conversation_id,))
         except Exception as e:
-            # Graceful degradation if migration hasn't run yet (columns don't exist)
-            logger.debug(f"Failed to query MUC features (migration pending?): {e}")
+            # Graceful degradation if query fails
+            logger.debug(f"Failed to query conversation: {e}")
             self.header.header_encryption_button.setVisible(True)  # Default: show
             return
 
@@ -522,15 +522,17 @@ class ChatViewWidget(QWidget):
         conv_type = conv['type']
         encryption = conv['encryption']
 
-        # Try to get MUC feature flags (may not exist if migration hasn't run)
-        try:
-            muc_nonanonymous = conv['muc_nonanonymous']
-            muc_membersonly = conv['muc_membersonly']
-        except (KeyError, IndexError):
-            # Columns don't exist yet - migration pending
-            logger.debug("MUC feature columns missing - migration v4→v5 needed")
-            self.header.header_encryption_button.setVisible(True)  # Default: show until migrated
-            return
+        # Read MUC feature flags from disco_cache (in-memory) instead of database
+        # for always-fresh data
+        muc_nonanonymous = None
+        muc_membersonly = None
+
+        # Get account and client to access disco_cache
+        account = self.account_manager.get_account(self.current_account_id)
+        if account and account.client and hasattr(account.client, 'disco_cache'):
+            disco_info = account.client.disco_cache.get(self.current_jid, {})
+            muc_nonanonymous = disco_info.get('muc_nonanonymous')
+            muc_membersonly = disco_info.get('muc_membersonly')
 
         # Determine visibility
         show_button = True
@@ -539,12 +541,13 @@ class ChatViewWidget(QWidget):
             show_button = True
         elif conv_type == 1:  # GROUPCHAT (MUC)
             # XEP-0384: OMEMO requires non-anonymous (MUST) and members-only (SHOULD)
-            if encryption != 0:
-                # Encryption already enabled, always show button (to allow disabling)
-                show_button = True
-            else:
-                # Check if room supports OMEMO
+            # Always check disco_cache for current room capabilities (ignore stale DB encryption field)
+            if muc_nonanonymous is not None and muc_membersonly is not None:
+                # disco_cache available - check if room CURRENTLY supports OMEMO
                 show_button = bool(muc_nonanonymous and muc_membersonly)
+            else:
+                # disco_cache not available (offline or not joined) - safe default: show button
+                show_button = True
 
         self.header.header_encryption_button.setVisible(show_button)
 

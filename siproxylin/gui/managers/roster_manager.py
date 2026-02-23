@@ -72,6 +72,11 @@ class RosterManager:
             # Use unified display name refresh (applies 3-source priority)
             self.refresh_contact_display_name(account_id, jid)
 
+            # Update encryption button visibility for MUC rooms
+            # (disco_cache has fresh data from config changes via status codes)
+            if self.chat_view.current_is_muc:
+                self.chat_view._update_encryption_button_visibility()
+
     @Slot(int, str, bool)
     def on_message_received(self, account_id: int, from_jid: str, is_marker: bool = False):
         """
