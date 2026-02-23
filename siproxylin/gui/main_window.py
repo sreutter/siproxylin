@@ -734,11 +734,11 @@ class MainWindow(QMainWindow):
     async def _sync_and_show_contact_details_dialog(self, account, jid: str):
         """Helper to sync OMEMO devices then show ContactDetailsDialog."""
         try:
-            # Sync OMEMO devices
-            if account.omemo_available:
-                await account.sync_omemo_devices(jid)
+            # Sync OMEMO devices (if OMEMO is enabled for this account)
+            if account.account_data.get('omemo_enabled', 0):
+                await account.sync_omemo_devices_to_db(jid)
                 own_jid = account.client.boundjid.bare
-                await account.sync_omemo_devices(own_jid)
+                await account.sync_omemo_devices_to_db(own_jid)
         except Exception as e:
             logger.warning(f"Failed to sync OMEMO devices: {e}")
 
