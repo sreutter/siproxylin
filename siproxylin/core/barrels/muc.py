@@ -1567,3 +1567,71 @@ class MucBarrel:
         self.client.send_muc_invite(room_jid, invitee_jid, reason)
         if self.logger:
             self.logger.info(f"Invited {invitee_jid} to {room_jid}")
+
+    async def destroy_room(self, room_jid: str, reason: str = ''):
+        """
+        Destroy a MUC room (owner only, XEP-0045 §10.9).
+
+        Permanently deletes the room from the server. Performs full cleanup:
+        1. Destroy room on server (kicks all participants, removes room)
+        2. Remove bookmark from server (XEP-0402)
+        3. Clean local database (bookmark, roster, conversation with messages)
+        4. Emit roster_updated signal to refresh UI
+
+        Args:
+            room_jid: Room JID to destroy
+            reason: Optional reason shown to participants before destruction
+
+        Raises:
+            RuntimeError: If not connected or if user is not room owner
+            Exception: If server destroy operation fails
+        """
+        if not self.client:
+            raise RuntimeError("Not connected")
+
+        if not self.is_room_owner(room_jid):
+            raise RuntimeError("Only room owners can destroy rooms")
+
+        if self.logger:
+            self.logger.info(f"Destroying room {room_jid}" + (f" with reason: {reason}" if reason else ""))
+
+        # Destroy room on server (raises exception on error)
+        await self.client.destroy_room(room_jid, reason)
+
+        # Remove bookmark from server (XEP-0402)
+        if hasattr(self.client, 'remove_bookmark'):
+            try:
+                await self.client.remove_bookmark(room_jid)
+                if self.logger:
+                    self.logger.debug(f"Removed bookmark from server: {room_jid}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"Failed to remove bookmark from server: {e}")
+
+        # Clean local database
+        jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
+        if jid_row:
+            jid_id = jid_row['id']
+
+            # Delete bookmark
+            self.db.execute("DELETE FROM bookmark WHERE account_id = ? AND jid_id = ?",
+                          (self.account_id, jid_id))
+
+            # Delete roster entry (if present)
+            self.db.execute("DELETE FROM roster WHERE account_id = ? AND jid_id = ?",
+                          (self.account_id, jid_id))
+
+            # Delete conversation (CASCADE will delete all content_items/messages)
+            self.db.execute("DELETE FROM conversation WHERE account_id = ? AND jid_id = ? AND type = 1",
+                          (self.account_id, jid_id))
+
+            self.db.commit()
+
+            if self.logger:
+                self.logger.debug(f"Cleaned local database for destroyed room: {room_jid}")
+
+        # Refresh UI
+        self.signals['roster_updated'].emit(self.account_id)
+
+        if self.logger:
+            self.logger.info(f"Room destroyed and cleaned up: {room_jid}")

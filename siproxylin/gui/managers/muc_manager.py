@@ -7,7 +7,7 @@ Extracted from MainWindow to improve maintainability.
 import logging
 import asyncio
 import base64
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QInputDialog, QLineEdit
 
 
 logger = logging.getLogger('siproxylin.muc_manager')
@@ -313,3 +313,132 @@ class MUCManager:
             import traceback
             logger.error(traceback.format_exc())
             QMessageBox.critical(self.main_window, "Error", f"Failed to leave room:\n{e}")
+
+    def destroy_muc(self, account_id: int, room_jid: str):
+        """
+        Destroy a MUC room (owner only, centralized handler).
+
+        Handles:
+        - User confirmation (two-stage: warning + optional reason)
+        - Sending XMPP destroy command
+        - Removing bookmark from server
+        - Removing bookmark from database
+        - Updating UI (contact list, chat view)
+
+        Args:
+            account_id: Account ID
+            room_jid: Room JID
+        """
+        logger.debug(f"Destroy MUC requested: {room_jid}")
+
+        # Check if account is connected
+        account = self.account_manager.get_account(account_id)
+        if not account or not account.is_connected():
+            QMessageBox.warning(
+                self.main_window,
+                "Cannot Perform Operation",
+                f"Cannot destroy room while offline.\n\n"
+                f"Please connect the account first."
+            )
+            return
+
+        # Check if user is room owner
+        if not account.muc.is_room_owner(room_jid):
+            QMessageBox.warning(
+                self.main_window,
+                "Permission Denied",
+                f"Only room owners can destroy rooms.\n\n"
+                f"Your current affiliation: {account.muc.get_own_affiliation(room_jid) or 'Unknown'}"
+            )
+            return
+
+        # Get room name for confirmation dialog
+        room_info = self.db.fetchone("""
+            SELECT b.name FROM bookmark b
+            JOIN jid j ON b.jid_id = j.id
+            WHERE b.account_id = ? AND j.bare_jid = ?
+        """, (account_id, room_jid))
+
+        room_name = room_info['name'] if (room_info and room_info['name']) else room_jid
+
+        # Stage 1: Warning confirmation
+        reply = QMessageBox.warning(
+            self.main_window,
+            "Destroy Room?",
+            f"⚠️ WARNING: This will permanently destroy '{room_name}' on the server.\n\n"
+            f"This action will:\n"
+            f"• Kick all participants immediately\n"
+            f"• Delete all room configuration and history on the server\n"
+            f"• Delete your local conversation history\n"
+            f"• Prevent anyone from rejoining this room\n\n"
+            f"This action CANNOT be undone.\n\n"
+            f"Are you absolutely sure?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # Stage 2: Optional reason
+        reason, ok = QInputDialog.getText(
+            self.main_window,
+            "Destroy Room",
+            "Optional reason (shown to participants):",
+            QLineEdit.Normal,
+            ""
+        )
+
+        if not ok:
+            return
+
+        # Perform destroy operation asynchronously
+        async def do_destroy():
+            try:
+                # Destroy room via barrel API (handles server + local cleanup)
+                await account.muc.destroy_room(room_jid, reason)
+
+                logger.info(f"Successfully destroyed room: {room_jid}")
+
+                # Close chat view if currently viewing this room
+                if self.chat_view.current_account_id == account_id and self.chat_view.current_jid == room_jid:
+                    self.chat_view.clear()
+
+                # Log to both main logger and account-specific app logger
+                if account.app_logger:
+                    account.app_logger.info(f"Destroyed room '{room_name}' ({room_jid})")
+
+            except RuntimeError as e:
+                # Handle permission/connection errors
+                error_msg = str(e)
+                if "not connected" in error_msg.lower():
+                    msg = "Account disconnected before destroy could complete."
+                elif "owner" in error_msg.lower():
+                    msg = "Only room owners can destroy rooms."
+                else:
+                    msg = error_msg
+
+                logger.error(f"Failed to destroy room: {e}")
+                QMessageBox.critical(self.main_window, "Destroy Failed", msg)
+
+            except Exception as e:
+                # Handle XMPP/server errors
+                logger.error(f"Failed to destroy room: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+                # Parse common XMPP errors
+                error_str = str(e).lower()
+                if "forbidden" in error_str:
+                    msg = "Server forbids room destruction.\n\nOnly room owners can destroy rooms."
+                elif "item-not-found" in error_str or "not-found" in error_str:
+                    msg = "Room no longer exists on server.\n\nIt may have already been destroyed."
+                elif "not-allowed" in error_str:
+                    msg = "Server policy does not allow room destruction."
+                else:
+                    msg = f"Failed to destroy room:\n\n{e}"
+
+                QMessageBox.critical(self.main_window, "Error", msg)
+
+        # Run async destroy operation
+        asyncio.create_task(do_destroy())

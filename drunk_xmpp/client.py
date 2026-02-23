@@ -2488,6 +2488,31 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         if room_jid in self.rooms:
             del self.rooms[room_jid]
 
+    async def destroy_room(self, room_jid: str, reason: str = '', altroom: str = None):
+        """
+        Destroy a MUC room (owner only, XEP-0045 §10.9).
+
+        Permanently deletes the room from the server. All occupants will be kicked,
+        and the room will no longer be accessible. This action cannot be undone.
+
+        Args:
+            room_jid: Room JID to destroy
+            reason: Optional reason shown to participants
+            altroom: Optional alternate room JID to suggest to participants
+        """
+        self.logger.info(f"Destroying room: {room_jid}" + (f" (reason: {reason})" if reason else ""))
+
+        # Destroy room on server (raises exception on error)
+        await self.plugin['xep_0045'].destroy(room_jid, reason, altroom)
+
+        # Remove from tracking
+        if room_jid in self.joined_rooms:
+            self.joined_rooms.remove(room_jid)
+        if room_jid in self.rooms:
+            del self.rooms[room_jid]
+
+        self.logger.info(f"Room destroyed successfully: {room_jid}")
+
     def send_muc_invite(self, room_jid: str, invitee_jid: str, reason: str = ''):
         """
         Send a mediated MUC invitation (XEP-0045 §7.8.2).

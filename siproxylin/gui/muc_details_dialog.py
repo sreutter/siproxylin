@@ -25,8 +25,9 @@ logger = logging.getLogger('siproxylin.muc_details_dialog')
 class MUCDetailsDialog(QDialog):
     """Dialog for viewing and managing MUC room details."""
 
-    # Signal emitted when user wants to leave the room
+    # Signals
     leave_room_requested = Signal(int, str)  # (account_id, room_jid)
+    destroy_room_requested = Signal(int, str)  # (account_id, room_jid)
 
     def __init__(self, account_id: int, room_jid: str, parent=None):
         super().__init__(parent)
@@ -416,6 +417,16 @@ class MUCDetailsDialog(QDialog):
         leave_button.clicked.connect(self._on_leave_room)
         actions_layout.addWidget(leave_button)
 
+        # Destroy room button (owner only, persistent rooms only)
+        self.destroy_button = QPushButton("Destroy Room")
+        self.destroy_button.setStyleSheet(
+            "QPushButton { background-color: #a94442; color: white; padding: 8px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #843534; }"
+        )
+        self.destroy_button.setVisible(False)  # Hidden by default
+        self.destroy_button.clicked.connect(self._on_destroy_room)
+        actions_layout.addWidget(self.destroy_button)
+
         layout.addWidget(actions_group)
 
         layout.addStretch()
@@ -719,6 +730,15 @@ class MUCDetailsDialog(QDialog):
             can_edit_subject = self.room_info.allow_subject_change
 
         self.edit_subject_button.setVisible(can_edit_subject)
+
+        # Show/hide Destroy Room button based on ownership and room persistence
+        # Only owners of persistent rooms can destroy rooms (XEP-0045 §10.9)
+        # Non-persistent rooms auto-delete when last occupant leaves
+        is_owner = account.muc.is_room_owner(self.room_jid)
+        is_persistent = room_info.persistent if (room_info and room_info.config_fetched is not None) else False
+        can_destroy_room = is_owner and is_persistent
+
+        self.destroy_button.setVisible(can_destroy_room)
 
         # Update refresh button state based on ownership
         # Only owners can query room configuration (XEP-0045 §10)
@@ -1939,6 +1959,15 @@ class MUCDetailsDialog(QDialog):
         """Handle Leave Room button click - emit signal for main_window to handle."""
         # Emit signal - main_window will handle the actual leaving logic
         self.leave_room_requested.emit(self.account_id, self.room_jid)
+
+        # Close dialog (main_window will show confirmation and handle everything)
+        self.accept()
+
+    def _on_destroy_room(self):
+        """Handle Destroy Room button click - emit signal for main_window to handle."""
+        # Emit signal - main_window will handle the actual destruction logic
+        # (confirmation dialogs and async operations are handled in MUCManager)
+        self.destroy_room_requested.emit(self.account_id, self.room_jid)
 
         # Close dialog (main_window will show confirmation and handle everything)
         self.accept()

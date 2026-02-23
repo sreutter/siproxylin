@@ -1068,6 +1068,10 @@ class MainWindow(QMainWindow):
         """Delegate to MUCManager."""
         self.muc_manager.leave_muc(account_id, room_jid)
 
+    def destroy_muc(self, account_id: int, room_jid: str):
+        """Delegate to MUCManager."""
+        self.muc_manager.destroy_muc(account_id, room_jid)
+
     def _on_account_connect(self, account_id: int):
         """Handle Connect from account context menu."""
         logger.debug(f"Connect requested for account {account_id}")

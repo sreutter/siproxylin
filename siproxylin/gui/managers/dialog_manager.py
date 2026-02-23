@@ -195,7 +195,8 @@ class DialogManager:
             room_jid=room_jid,
             parent=self.main_window
         )
-        # Connect dialog's leave signal to MainWindow's leave_muc method
+        # Connect dialog's signals to MainWindow methods
         dialog.leave_room_requested.connect(self.main_window.leave_muc)
+        dialog.destroy_room_requested.connect(self.main_window.destroy_muc)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
