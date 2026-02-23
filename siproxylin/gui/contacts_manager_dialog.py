@@ -88,6 +88,11 @@ class ContactsManagerDialog(QDialog):
         self.open_chat_button.setEnabled(False)
         button_layout.addWidget(self.open_chat_button)
 
+        self.invite_button = QPushButton("Invite to Room...")
+        self.invite_button.clicked.connect(self._on_invite_to_room)
+        self.invite_button.setEnabled(False)
+        button_layout.addWidget(self.invite_button)
+
         self.edit_button = QPushButton("Edit...")
         self.edit_button.clicked.connect(self._on_edit_contact)
         self.edit_button.setEnabled(False)
@@ -260,6 +265,10 @@ class ContactsManagerDialog(QDialog):
         self.edit_button.setEnabled(has_selection)
         self.remove_button.setEnabled(has_selection)
         self.block_button.setEnabled(has_selection)
+
+        # Invite button: enable only if selection AND any account has joined MUCs
+        has_any_mucs = self._check_if_any_mucs_exist()
+        self.invite_button.setEnabled(has_selection and has_any_mucs)
 
         if has_selection:
             # Update block button text
@@ -455,3 +464,50 @@ class ContactsManagerDialog(QDialog):
         # Reload table after signal processing
         self._load_contacts()
         self.contact_modified.emit()
+
+    def _check_if_any_mucs_exist(self) -> bool:
+        """
+        Check if any account has joined MUCs.
+
+        Returns:
+            True if at least one account has joined MUCs, False otherwise
+        """
+        for account in self.account_manager.accounts.values():
+            if account.client and account.client.joined_rooms:
+                return True
+        return False
+
+    def _on_invite_to_room(self):
+        """Open MUC selection dialog to invite selected contact to a room."""
+        row = self.table.currentRow()
+        if row < 0:
+            return
+
+        # Get contact data
+        data = self.table.item(row, 0).data(Qt.UserRole)
+        contact_jid = data['jid']
+
+        # Import and show dialog
+        from .dialogs import SelectMucDialog
+
+        dialog = SelectMucDialog(contact_jid, parent=self)
+        if dialog.exec():
+            invite_data = dialog.get_invite_data()
+            if invite_data:
+                account_id, room_jid, invitee_jid, reason = invite_data
+
+                logger.info(f"Inviting {invitee_jid} to {room_jid} from account {account_id}")
+
+                # Call MUCManager directly
+                main_window = self.parent()
+                if main_window and hasattr(main_window, 'muc_manager'):
+                    main_window.muc_manager.invite_contact_to_room(
+                        account_id, room_jid, invitee_jid, reason
+                    )
+                else:
+                    logger.error("Could not find main window's muc_manager")
+                    QMessageBox.critical(
+                        self,
+                        "Error",
+                        "Failed to send invitation: Internal error (MUC manager not found)"
+                    )

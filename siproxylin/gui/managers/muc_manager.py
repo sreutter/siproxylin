@@ -176,6 +176,45 @@ class MUCManager:
                         f"Failed to send invitation:\n\n{e}"
                     )
 
+    def invite_contact_to_room(self, account_id: int, room_jid: str,
+                               invitee_jid: str, reason: str = ''):
+        """
+        Invite a specific contact to a room (reverse flow from Contact Manager).
+
+        This skips the JID input dialog since the contact is already selected.
+        The invitation is sent from the specified account.
+
+        Args:
+            account_id: Account ID to send invite from
+            room_jid: Room JID to invite to
+            invitee_jid: Contact JID to invite
+            reason: Optional invitation message
+        """
+        logger.info(f"Invite contact to MUC: {invitee_jid} -> {room_jid} (from account {account_id})")
+
+        # Check if account is connected
+        account = self.account_manager.get_account(account_id)
+        if not account or not account.is_connected():
+            QMessageBox.warning(
+                self.main_window,
+                "Cannot Send Invite",
+                "Cannot send invitation while offline.\n\n"
+                "Please connect the account first."
+            )
+            return
+
+        # Send invite via MucBarrel
+        try:
+            account.muc.invite_to_room(room_jid, invitee_jid, reason)
+            logger.info(f"Invite sent successfully: {invitee_jid} to {room_jid}")
+        except Exception as e:
+            logger.error(f"Failed to send invite: {e}")
+            QMessageBox.critical(
+                self.main_window,
+                "Invite Failed",
+                f"Failed to send invitation:\n\n{e}"
+            )
+
     def leave_muc(self, account_id: int, room_jid: str):
         """
         Leave a MUC room (centralized handler for all leave operations).
