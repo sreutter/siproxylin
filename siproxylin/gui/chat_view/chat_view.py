@@ -493,19 +493,19 @@ class ChatViewWidget(QWidget):
         """
         Update encryption button visibility based on conversation type and MUC features.
 
-        Per XEP-0384 and standard behavior (TODO.md):
+        Per XEP-0384:
         - 1-to-1 Chat: Always show
-        - MUC: Show only if muc_nonanonymous (required) AND muc_membersonly (recommended)
-        - If encryption is already enabled, always show (to allow disabling)
+        - MUC: Show only if room CURRENTLY supports OMEMO (requires muc_nonanonymous AND muc_membersonly)
+        - Uses live disco_cache data, not stale database values
         """
         if not self.current_conversation_id:
             self.header.header_encryption_button.setVisible(True)  # Default: show
             return
 
         try:
-            # Get conversation details
+            # Get conversation type
             conv = self.db.fetchone("""
-                SELECT type, encryption
+                SELECT type
                 FROM conversation
                 WHERE id = ?
             """, (self.current_conversation_id,))
@@ -520,7 +520,6 @@ class ChatViewWidget(QWidget):
             return
 
         conv_type = conv['type']
-        encryption = conv['encryption']
 
         # Read MUC feature flags from disco_cache (in-memory) instead of database
         # for always-fresh data
@@ -556,18 +555,6 @@ class ChatViewWidget(QWidget):
                 f"Hiding encryption button for MUC {self.current_jid}: "
                 f"nonanonymous={muc_nonanonymous}, membersonly={muc_membersonly}"
             )
-
-        # Update conversation.encryption field in database
-        # 0 = plain, 1 = OMEMO
-        if self.current_conversation_id:
-            encryption_value = 1 if self.encryption_enabled else 0
-            self.db.execute("""
-                UPDATE conversation
-                SET encryption = ?
-                WHERE id = ?
-            """, (encryption_value, self.current_conversation_id))
-            self.db.commit()
-            logger.debug(f"Updated conversation {self.current_conversation_id} encryption to {encryption_value}")
 
     # Header signal handlers
 

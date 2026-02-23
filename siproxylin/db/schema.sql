@@ -1,6 +1,6 @@
 -- DRUNK-XMPP-GUI Database Schema
 -- Inspired by Dino's architecture with adaptations for ROADMAP-v1.txt requirements
--- Schema Version: 13
+-- Schema Version: 14
 
 -- =============================================================================
 -- Meta and Settings
@@ -14,7 +14,7 @@ CREATE TABLE _meta (
 );
 
 -- Initialize schema version
-INSERT INTO _meta (name, int_val) VALUES ('schema_version', 13);
+INSERT INTO _meta (name, int_val) VALUES ('schema_version', 14);
 
 -- Global application settings
 CREATE TABLE settings (
@@ -193,8 +193,6 @@ CREATE TABLE conversation (
     muc_nick TEXT,
     muc_password TEXT,
     muc_autojoin INTEGER NOT NULL DEFAULT 0,
-    muc_nonanonymous INTEGER DEFAULT 0,     -- XEP-0384 requirement (v4→v5)
-    muc_membersonly INTEGER DEFAULT 0,      -- XEP-0384 recommendation (v4→v5)
 
     UNIQUE (account_id, jid_id, type) ON CONFLICT IGNORE,
     FOREIGN KEY (account_id) REFERENCES account(id) ON DELETE CASCADE,
