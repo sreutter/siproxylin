@@ -831,6 +831,13 @@ class ContactListWidget(QWidget):
 
         menu.addSeparator()
 
+        # Copy JID (utility action)
+        copy_jid_action = QAction("Copy JID", self)
+        copy_jid_action.triggered.connect(lambda: self._copy_to_clipboard(jid))
+        menu.addAction(copy_jid_action)
+
+        menu.addSeparator()
+
         # Delete & Block (nuclear option - only show when not already blocked)
         if not is_blocked:
             delete_and_block_action = QAction("Delete && Block", self)
