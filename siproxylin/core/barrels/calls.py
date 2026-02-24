@@ -1256,6 +1256,34 @@ class CallBarrel:
             # Use unified end_call with send_terminate=True (we're initiating termination)
             await self.end_call(session_id, reason='success', send_terminate=True)
 
+    async def set_mute(self, session_id: str, muted: bool):
+        """
+        Set microphone mute state for an active call.
+
+        Args:
+            session_id: Session ID of active call
+            muted: True to mute microphone, False to unmute
+
+        Raises:
+            ValueError: If call functionality not initialized
+        """
+        if not self.call_bridge:
+            raise ValueError("CallBridge not initialized - call functionality unavailable")
+
+        if self.logger:
+            self.logger.info(f"Setting mute state for call {session_id}: muted={muted}")
+
+        try:
+            await self.call_bridge.set_mute(session_id, muted)
+            if self.logger:
+                self.logger.debug(f"Mute state set successfully for {session_id}")
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to set mute state for {session_id}: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+            raise
+
     async def end_call(self, session_id: str, reason: str = 'success', send_terminate: bool = True):
         """
         Unified call termination and cleanup.

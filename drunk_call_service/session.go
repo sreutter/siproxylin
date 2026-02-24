@@ -35,6 +35,11 @@ type Session struct {
 	// Stub pipeline for echo probe (created early so capture can reference it)
 	echoProbeStubPipeline *gst.Pipeline
 
+	// Mute state and volume element for muting microphone
+	muted         bool
+	volumeElement *gst.Element
+	muteMu        sync.RWMutex
+
 	// Audio device selection
 	microphoneDevice string // Device name for pulsesrc (empty = default)
 	speakersDevice   string // Device name for pulsesink (empty = default)
@@ -754,9 +759,9 @@ func (s *Session) addAudioTrack() error {
 			"noise_level", noiseLevel,
 			"gain_control", s.audioConfig.GainControl)
 
-		pipelineStr = fmt.Sprintf("%s ! audioconvert ! audioresample ! %s ! opusenc ! appsink name=appsink", audioSrc, dspElement)
+		pipelineStr = fmt.Sprintf("%s ! audioconvert ! audioresample ! %s ! volume name=volume ! opusenc ! appsink name=appsink", audioSrc, dspElement)
 	} else {
-		pipelineStr = fmt.Sprintf("%s ! audioconvert ! audioresample ! opusenc ! appsink name=appsink", audioSrc)
+		pipelineStr = fmt.Sprintf("%s ! audioconvert ! audioresample ! volume name=volume ! opusenc ! appsink name=appsink", audioSrc)
 	}
 
 	s.logger.Info("Creating GStreamer pipeline", "session_id", s.ID, "pipeline", pipelineStr)
@@ -768,6 +773,24 @@ func (s *Session) addAudioTrack() error {
 	}
 
 	s.pipeline = pipeline
+
+	// Get volume element for mute control
+	volumeElement, err := pipeline.GetElementByName("volume")
+	if err != nil {
+		s.logger.Error("Failed to get volume element", "session_id", s.ID, "error", err)
+		return fmt.Errorf("failed to get volume: %w", err)
+	}
+	s.volumeElement = volumeElement
+
+	// Apply initial mute state
+	s.muteMu.RLock()
+	initialMuted := s.muted
+	s.muteMu.RUnlock()
+	if err := s.volumeElement.SetProperty("mute", initialMuted); err != nil {
+		s.logger.Error("Failed to set initial mute state", "session_id", s.ID, "error", err)
+		return fmt.Errorf("failed to set initial mute: %w", err)
+	}
+	s.logger.Info("Applied initial mute state to volume element", "session_id", s.ID, "muted", initialMuted)
 
 	// Get appsink element
 	appsinkElement, err := pipeline.GetElementByName("appsink")
@@ -1349,4 +1372,45 @@ func (h *httpProxyDialer) Dial(network, address string) (net.Conn, error) {
 		"proxy", h.proxyAddr)
 
 	return conn, nil
+}
+
+// SetMute sets the mute state for the session's microphone
+func (s *Session) SetMute(muted bool) error {
+	s.muteMu.Lock()
+	defer s.muteMu.Unlock()
+
+	s.logger.Info("Setting mute state",
+		"session_id", s.ID,
+		"muted", muted,
+		"previous_muted", s.muted,
+	)
+
+	// Update mute state
+	s.muted = muted
+
+	// If pipeline and volume element exist, update the volume property
+	if s.volumeElement != nil {
+		// GStreamer volume element: mute property is a boolean
+		// volume property is 0.0 (silent) to 1.0 (full volume)
+		// We use the mute property which is cleaner
+		if err := s.volumeElement.SetProperty("mute", muted); err != nil {
+			s.logger.Error("Failed to set mute property on volume element",
+				"session_id", s.ID,
+				"error", err,
+			)
+			return fmt.Errorf("failed to set mute property: %w", err)
+		}
+
+		s.logger.Info("Mute property set on volume element",
+			"session_id", s.ID,
+			"muted", muted,
+		)
+	} else {
+		// Pipeline not created yet - mute state will be applied when pipeline starts
+		s.logger.Debug("Volume element not yet created, mute state will be applied on pipeline creation",
+			"session_id", s.ID,
+		)
+	}
+
+	return nil
 }

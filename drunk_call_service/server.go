@@ -359,6 +359,30 @@ func (s *CallServer) ListAudioDevices(ctx context.Context, req *pb.Empty) (*pb.L
 	return &pb.ListAudioDevicesResponse{Devices: devices}, nil
 }
 
+// SetMute sets the mute state for a session's microphone (gRPC handler)
+func (s *CallServer) SetMute(ctx context.Context, req *pb.SetMuteRequest) (*pb.Empty, error) {
+	sessionID := req.SessionId
+	muted := req.Muted
+
+	s.logger.Info("SetMute called", "session_id", sessionID, "muted", muted)
+
+	// Get session
+	session, exists := s.GetSession(sessionID)
+	if !exists {
+		s.logger.Error("Session not found for SetMute", "session_id", sessionID)
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	// Set mute state on the session
+	if err := session.SetMute(muted); err != nil {
+		s.logger.Error("Failed to set mute state", "session_id", sessionID, "error", err)
+		return nil, err
+	}
+
+	s.logger.Info("Mute state set successfully", "session_id", sessionID, "muted", muted)
+	return &pb.Empty{}, nil
+}
+
 // StreamEvents streams events to client (gRPC handler)
 func (s *CallServer) StreamEvents(req *pb.StreamEventsRequest, stream pb.CallService_StreamEventsServer) error {
 	sessionID := req.SessionId

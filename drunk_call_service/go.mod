@@ -1,6 +1,6 @@
 module github.com/yourusername/drunk-call-service
 
-go 1.24
+go 1.24.0
 
 require (
 	github.com/go-gst/go-gst v1.4.0

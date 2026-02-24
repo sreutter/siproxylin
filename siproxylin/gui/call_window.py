@@ -159,11 +159,24 @@ class CallWindow(QWidget):
         self.hangup_button.clicked.connect(self._on_hangup)
         controls_layout.addWidget(self.hangup_button)
 
-        # Mute button (future - disabled for now)
-        self.mute_button = QPushButton("🎤 Mute")
+        # Mute button (red when active = privacy concern, gray when muted = safe)
+        self.mute_button = QPushButton("🎤")
         self.mute_button.setCheckable(True)
-        self.mute_button.setEnabled(False)  # TODO: Implement mute
-        self.mute_button.setToolTip("Mute/unmute microphone (coming soon)")
+        self.mute_button.setEnabled(True)
+        self.mute_button.setToolTip("Mute/unmute microphone")
+        # Default state: unmuted (microphone active = privacy concern = red)
+        self.mute_button.setStyleSheet("""
+            QPushButton {
+                background-color: #c0392b;
+                color: white;
+                font-size: 18px;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background-color: #e74c3c;
+            }
+        """)
+        self.mute_button.clicked.connect(self._on_mute_toggled)
         controls_layout.addWidget(self.mute_button)
 
         layout.addLayout(controls_layout)
@@ -305,6 +318,44 @@ class CallWindow(QWidget):
         """User clicked Hang Up button."""
         logger.info(f"User requested hangup: {self.session_id}")
         self.hangup_requested.emit()
+
+    def _on_mute_toggled(self):
+        """User toggled Mute button."""
+        is_muted = self.mute_button.isChecked()
+        logger.info(f"User toggled mute: {is_muted} (session {self.session_id})")
+
+        # Update button style based on state
+        if is_muted:
+            # Muted = safe, no privacy concern = dark gray with strikethrough
+            self.mute_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #7f8c8d;
+                    color: white;
+                    font-size: 18px;
+                    padding: 8px;
+                    text-decoration: line-through;
+                }
+                QPushButton:hover {
+                    background-color: #95a5a6;
+                }
+            """)
+        else:
+            # Unmuted = microphone active = privacy concern = dark red
+            self.mute_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #c0392b;
+                    color: white;
+                    font-size: 18px;
+                    padding: 8px;
+                }
+                QPushButton:hover {
+                    background-color: #e74c3c;
+                }
+            """)
+
+        # Request mute state change via parent (MainWindow will call account.set_mute)
+        if hasattr(self.parent(), 'request_call_mute'):
+            self.parent().request_call_mute(self.account_id, self.session_id, is_muted)
 
     def resizeEvent(self, event):
         """Override resize event to prevent unwanted shrinking when expanded."""

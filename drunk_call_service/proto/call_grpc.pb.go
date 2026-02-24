@@ -30,6 +30,7 @@ const (
 	CallService_Shutdown_FullMethodName             = "/call.CallService/Shutdown"
 	CallService_GetStats_FullMethodName             = "/call.CallService/GetStats"
 	CallService_ListAudioDevices_FullMethodName     = "/call.CallService/ListAudioDevices"
+	CallService_SetMute_FullMethodName              = "/call.CallService/SetMute"
 )
 
 // CallServiceClient is the client API for CallService service.
@@ -60,6 +61,8 @@ type CallServiceClient interface {
 	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error)
 	// List available audio devices
 	ListAudioDevices(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListAudioDevicesResponse, error)
+	// Set microphone mute state for a session
+	SetMute(ctx context.Context, in *SetMuteRequest, opts ...grpc.CallOption) (*Empty, error)
 }
 
 type callServiceClient struct {
@@ -189,6 +192,16 @@ func (c *callServiceClient) ListAudioDevices(ctx context.Context, in *Empty, opt
 	return out, nil
 }
 
+func (c *callServiceClient) SetMute(ctx context.Context, in *SetMuteRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, CallService_SetMute_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CallServiceServer is the server API for CallService service.
 // All implementations must embed UnimplementedCallServiceServer
 // for forward compatibility.
@@ -217,6 +230,8 @@ type CallServiceServer interface {
 	GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error)
 	// List available audio devices
 	ListAudioDevices(context.Context, *Empty) (*ListAudioDevicesResponse, error)
+	// Set microphone mute state for a session
+	SetMute(context.Context, *SetMuteRequest) (*Empty, error)
 	mustEmbedUnimplementedCallServiceServer()
 }
 
@@ -259,6 +274,9 @@ func (UnimplementedCallServiceServer) GetStats(context.Context, *GetStatsRequest
 }
 func (UnimplementedCallServiceServer) ListAudioDevices(context.Context, *Empty) (*ListAudioDevicesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAudioDevices not implemented")
+}
+func (UnimplementedCallServiceServer) SetMute(context.Context, *SetMuteRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMute not implemented")
 }
 func (UnimplementedCallServiceServer) mustEmbedUnimplementedCallServiceServer() {}
 func (UnimplementedCallServiceServer) testEmbeddedByValue()                     {}
@@ -472,6 +490,24 @@ func _CallService_ListAudioDevices_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CallService_SetMute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMuteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CallServiceServer).SetMute(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CallService_SetMute_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CallServiceServer).SetMute(ctx, req.(*SetMuteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CallService_ServiceDesc is the grpc.ServiceDesc for CallService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -518,6 +554,10 @@ var CallService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAudioDevices",
 			Handler:    _CallService_ListAudioDevices_Handler,
+		},
+		{
+			MethodName: "SetMute",
+			Handler:    _CallService_SetMute_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

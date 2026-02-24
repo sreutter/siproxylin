@@ -38,6 +38,9 @@ service CallService {
 
   // List available audio devices
   rpc ListAudioDevices(Empty) returns (ListAudioDevicesResponse);
+
+  // Set microphone mute state for a session
+  rpc SetMute(SetMuteRequest) returns (Empty);
 }
 
 // Request/Response messages
@@ -175,4 +178,9 @@ message AudioDevice {
 
 message ListAudioDevicesResponse {
   repeated AudioDevice devices = 1;
+}
+
+message SetMuteRequest {
+  string session_id = 1;
+  bool muted = 2;  // true = mute microphone, false = unmute
 }

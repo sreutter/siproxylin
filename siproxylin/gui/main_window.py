@@ -1235,6 +1235,19 @@ class MainWindow(QMainWindow):
         """
         self.call_manager.request_call_stats(account_id, session_id)
 
+    def request_call_mute(self, account_id: int, session_id: str, muted: bool):
+        """
+        Request microphone mute state change for a session.
+
+        Called by CallWindow when user toggles mute button.
+
+        Args:
+            account_id: Account ID
+            session_id: Jingle session ID
+            muted: True to mute, False to unmute
+        """
+        self.call_manager.request_call_mute(account_id, session_id, muted)
+
     # =========================================================================
     # Other Signal Handlers
     # =========================================================================

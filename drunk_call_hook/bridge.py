@@ -633,6 +633,27 @@ class CallBridge:
             self.logger.error(f"Failed to list audio devices: {e}")
             return []
 
+    async def set_mute(self, session_id: str, muted: bool):
+        """
+        Set microphone mute state for a session.
+
+        Args:
+            session_id: Session ID
+            muted: True to mute microphone, False to unmute
+        """
+        if not self._stub:
+            raise RuntimeError("gRPC stub not initialized")
+
+        self.logger.info(f"Setting mute state for session {session_id}: muted={muted}")
+
+        request = call_pb2.SetMuteRequest(
+            session_id=session_id,
+            muted=muted
+        )
+
+        await self._stub.SetMute(request)
+        self.logger.info(f"Mute state set for session {session_id}")
+
     async def end_session(self, session_id: str):
         """
         End call session.

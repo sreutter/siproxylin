@@ -414,6 +414,37 @@ class CallManager:
         # Update status bar to reflect call stats
         self.main_window._update_status_bar_stats()
 
+    def request_call_mute(self, account_id: int, session_id: str, muted: bool):
+        """
+        Request microphone mute state change for a session.
+
+        Called by CallWindow when user toggles mute button.
+
+        Args:
+            account_id: Account ID
+            session_id: Jingle session ID
+            muted: True to mute, False to unmute
+        """
+        async def set_mute():
+            try:
+                # Get account manager for this account
+                account = self.account_manager.get_account(account_id)
+                if not account or not hasattr(account, 'calls'):
+                    logger.error(f"Account {account_id} not found or has no call functionality")
+                    return
+
+                # Set mute state via CallBarrel
+                await account.calls.set_mute(session_id, muted)
+                logger.info(f"Mute state set: session={session_id}, muted={muted}")
+
+            except Exception as e:
+                logger.error(f"Error setting mute state: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+        # Schedule async work
+        asyncio.ensure_future(set_mute())
+
     def request_call_stats(self, account_id: int, session_id: str):
         """
         Request call statistics update for a session.

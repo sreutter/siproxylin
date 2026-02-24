@@ -1228,6 +1228,58 @@ func (x *ListAudioDevicesResponse) GetDevices() []*AudioDevice {
 	return nil
 }
 
+type SetMuteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Muted         bool                   `protobuf:"varint,2,opt,name=muted,proto3" json:"muted,omitempty"` // true = mute microphone, false = unmute
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetMuteRequest) Reset() {
+	*x = SetMuteRequest{}
+	mi := &file_proto_call_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetMuteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetMuteRequest) ProtoMessage() {}
+
+func (x *SetMuteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_call_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetMuteRequest.ProtoReflect.Descriptor instead.
+func (*SetMuteRequest) Descriptor() ([]byte, []int) {
+	return file_proto_call_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *SetMuteRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *SetMuteRequest) GetMuted() bool {
+	if x != nil {
+		return x.Muted
+	}
+	return false
+}
+
 var File_proto_call_proto protoreflect.FileDescriptor
 
 const file_proto_call_proto_rawDesc = "" +
@@ -1338,7 +1390,11 @@ const file_proto_call_proto_rawDesc = "" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12!\n" +
 	"\fdevice_class\x18\x03 \x01(\tR\vdeviceClass\"G\n" +
 	"\x18ListAudioDevicesResponse\x12+\n" +
-	"\adevices\x18\x01 \x03(\v2\x11.call.AudioDeviceR\adevices2\x92\x05\n" +
+	"\adevices\x18\x01 \x03(\v2\x11.call.AudioDeviceR\adevices\"E\n" +
+	"\x0eSetMuteRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x14\n" +
+	"\x05muted\x18\x02 \x01(\bR\x05muted2\xc0\x05\n" +
 	"\vCallService\x12H\n" +
 	"\rCreateSession\x12\x1a.call.CreateSessionRequest\x1a\x1b.call.CreateSessionResponse\x12:\n" +
 	"\vCreateOffer\x12\x18.call.CreateOfferRequest\x1a\x11.call.SDPResponse\x12<\n" +
@@ -1351,7 +1407,8 @@ const file_proto_call_proto_rawDesc = "" +
 	"\tHeartbeat\x12\v.call.Empty\x1a\v.call.Empty\x12$\n" +
 	"\bShutdown\x12\v.call.Empty\x1a\v.call.Empty\x129\n" +
 	"\bGetStats\x12\x15.call.GetStatsRequest\x1a\x16.call.GetStatsResponse\x12?\n" +
-	"\x10ListAudioDevices\x12\v.call.Empty\x1a\x1e.call.ListAudioDevicesResponseB2Z0github.com/yourusername/drunk-call-service/protob\x06proto3"
+	"\x10ListAudioDevices\x12\v.call.Empty\x1a\x1e.call.ListAudioDevicesResponse\x12,\n" +
+	"\aSetMute\x12\x14.call.SetMuteRequest\x1a\v.call.EmptyB2Z0github.com/yourusername/drunk-call-service/protob\x06proto3"
 
 var (
 	file_proto_call_proto_rawDescOnce sync.Once
@@ -1366,7 +1423,7 @@ func file_proto_call_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_call_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_call_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_proto_call_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_proto_call_proto_goTypes = []any{
 	(ConnectionStateEvent_State)(0),     // 0: call.ConnectionStateEvent.State
 	(*CreateSessionRequest)(nil),        // 1: call.CreateSessionRequest
@@ -1387,6 +1444,7 @@ var file_proto_call_proto_goTypes = []any{
 	(*GetStatsResponse)(nil),            // 16: call.GetStatsResponse
 	(*AudioDevice)(nil),                 // 17: call.AudioDevice
 	(*ListAudioDevicesResponse)(nil),    // 18: call.ListAudioDevicesResponse
+	(*SetMuteRequest)(nil),              // 19: call.SetMuteRequest
 }
 var file_proto_call_proto_depIdxs = []int32{
 	12, // 0: call.CallEvent.ice_candidate:type_name -> call.ICECandidateEvent
@@ -1405,19 +1463,21 @@ var file_proto_call_proto_depIdxs = []int32{
 	10, // 13: call.CallService.Shutdown:input_type -> call.Empty
 	15, // 14: call.CallService.GetStats:input_type -> call.GetStatsRequest
 	10, // 15: call.CallService.ListAudioDevices:input_type -> call.Empty
-	2,  // 16: call.CallService.CreateSession:output_type -> call.CreateSessionResponse
-	5,  // 17: call.CallService.CreateOffer:output_type -> call.SDPResponse
-	5,  // 18: call.CallService.CreateAnswer:output_type -> call.SDPResponse
-	10, // 19: call.CallService.SetRemoteDescription:output_type -> call.Empty
-	10, // 20: call.CallService.AddICECandidate:output_type -> call.Empty
-	10, // 21: call.CallService.EndSession:output_type -> call.Empty
-	11, // 22: call.CallService.StreamEvents:output_type -> call.CallEvent
-	10, // 23: call.CallService.Heartbeat:output_type -> call.Empty
-	10, // 24: call.CallService.Shutdown:output_type -> call.Empty
-	16, // 25: call.CallService.GetStats:output_type -> call.GetStatsResponse
-	18, // 26: call.CallService.ListAudioDevices:output_type -> call.ListAudioDevicesResponse
-	16, // [16:27] is the sub-list for method output_type
-	5,  // [5:16] is the sub-list for method input_type
+	19, // 16: call.CallService.SetMute:input_type -> call.SetMuteRequest
+	2,  // 17: call.CallService.CreateSession:output_type -> call.CreateSessionResponse
+	5,  // 18: call.CallService.CreateOffer:output_type -> call.SDPResponse
+	5,  // 19: call.CallService.CreateAnswer:output_type -> call.SDPResponse
+	10, // 20: call.CallService.SetRemoteDescription:output_type -> call.Empty
+	10, // 21: call.CallService.AddICECandidate:output_type -> call.Empty
+	10, // 22: call.CallService.EndSession:output_type -> call.Empty
+	11, // 23: call.CallService.StreamEvents:output_type -> call.CallEvent
+	10, // 24: call.CallService.Heartbeat:output_type -> call.Empty
+	10, // 25: call.CallService.Shutdown:output_type -> call.Empty
+	16, // 26: call.CallService.GetStats:output_type -> call.GetStatsResponse
+	18, // 27: call.CallService.ListAudioDevices:output_type -> call.ListAudioDevicesResponse
+	10, // 28: call.CallService.SetMute:output_type -> call.Empty
+	17, // [17:29] is the sub-list for method output_type
+	5,  // [5:17] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name
@@ -1439,7 +1499,7 @@ func file_proto_call_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_call_proto_rawDesc), len(file_proto_call_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   18,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
