@@ -4,7 +4,26 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.19 - High-Proof-Moonshine] - 2026-02-24
+
+> (d0ea28bb83)
+
+    Added PyYAML to requirements.txt
+
+> (65feb070dc)
+
+    Add Service Discovery (Disco) admin tool
+    
+    - New checkbox Settings → Advanced → Enable Admin Tools
+    - Context menu 'Disco' on contacts/MUCs/accounts (when Admin Tools enabled)
+    - Shows original server XML response, pretty-formatted
+    - Has YAML/XML toggle display modes
+
 ## [0.0.18 - High-Proof-Moonshine] - 2026-02-24
+
+> (f419566c12)
+
+    Releasing v0.0.18 (critical bugfix)
 
 > (2ae7bad05b)
 
