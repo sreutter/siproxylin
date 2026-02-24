@@ -39,7 +39,7 @@ echo "✓ Version bump: $PREV → $CURR ($SIPROXYLIN_CODENAME)"
 
 # Auto-generate CHANGELOG.md
 echo "Generating CHANGELOG.md..."
-HOOK_DIR=$(readlink -f "$(dirname "$0")")
+HOOK_DIR=$(dirname "$(readlink -f "$0")")
 if [ -x "$HOOK_DIR/generate-changelog.sh" ]; then
     if "$HOOK_DIR/generate-changelog.sh"; then
         # Stage the updated CHANGELOG.md
