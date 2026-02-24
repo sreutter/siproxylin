@@ -4,7 +4,21 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.18 - High-Proof-Moonshine] - 2026-02-24
+
+> (2ae7bad05b)
+
+    Important fix of misuse of slixmpp API causing spurious XML elements and potentially leading to message loss
+
+> (6d807d8dda)
+
+    Registered git hook which creates CHANGELOG.md automatically
+
 ## [0.0.17 - Double-Distilled] - 2026-02-24
+
+> (0c01ad0264)
+
+    Releasing v0.0.17
 
 > (406c748a60)
 
