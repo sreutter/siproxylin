@@ -24,7 +24,7 @@ class Database:
     Handles schema initialization, migrations, and query execution.
     """
 
-    SCHEMA_VERSION = 15  # Current schema version
+    SCHEMA_VERSION = 16  # Current schema version (v16 = MAM catchup tracking)
 
     def __init__(self, db_path: Optional[Path] = None):
         """
