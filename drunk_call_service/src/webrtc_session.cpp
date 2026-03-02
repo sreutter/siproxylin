@@ -26,6 +26,8 @@ WebRTCSession::WebRTCSession()
     , is_muted_(false)
     , is_outgoing_(false)
     , sdp_done_(false)
+    , last_bytes_sent_(0)
+    , last_bytes_received_(0)
 {
 }
 
@@ -293,11 +295,68 @@ bool WebRTCSession::set_mute(bool muted) {
 // ============================================================================
 
 MediaSession::Stats WebRTCSession::get_stats() const {
-    Stats stats = {};
+    Stats stats;
 
     try {
-        // TODO: Implement stats retrieval using get-stats action
-        // For now, return empty stats
+        if (!webrtc_) {
+            return stats;
+        }
+
+        // Get stats synchronously using get-stats action
+        GstPromise *promise = gst_promise_new();
+        g_signal_emit_by_name(webrtc_, "get-stats", nullptr, promise);
+
+        // Wait for promise (blocking, but stats should be fast)
+        GstPromiseResult result = gst_promise_wait(promise);
+
+        if (result == GST_PROMISE_RESULT_REPLIED) {
+            const GstStructure *reply = gst_promise_get_reply(promise);
+            if (reply) {
+                parse_stats(reply, stats);
+            }
+        }
+
+        gst_promise_unref(promise);
+
+        // Get ICE states from webrtcbin properties (not in stats structure)
+        GstWebRTCICEConnectionState ice_conn_state;
+        GstWebRTCICEGatheringState ice_gather_state;
+        g_object_get(webrtc_,
+                    "ice-connection-state", &ice_conn_state,
+                    "ice-gathering-state", &ice_gather_state,
+                    nullptr);
+
+        // Convert enums to strings
+        const char *ice_conn_names[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
+        const char *ice_gather_names[] = {"new", "gathering", "complete"};
+
+        if (ice_conn_state < 7) {
+            stats.ice_connection_state = ice_conn_names[ice_conn_state];
+        }
+        if (ice_gather_state < 3) {
+            stats.ice_gathering_state = ice_gather_names[ice_gather_state];
+        }
+
+        // Calculate bandwidth based on deltas
+        auto now = std::chrono::steady_clock::now();
+        if (last_stats_time_.time_since_epoch().count() > 0) {
+            auto delta_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_stats_time_).count();
+
+            if (delta_time > 0) {
+                int64_t delta_bytes_sent = stats.bytes_sent - last_bytes_sent_;
+                int64_t delta_bytes_received = stats.bytes_received - last_bytes_received_;
+                int64_t delta_bytes_total = delta_bytes_sent + delta_bytes_received;
+
+                // Convert to Kbps: (bytes * 8 bits/byte) / (ms / 1000) / 1000 = Kbps
+                stats.bandwidth_kbps = (delta_bytes_total * 8) / delta_time;
+            }
+        }
+
+        // Update last sample
+        last_stats_time_ = now;
+        last_bytes_sent_ = stats.bytes_sent;
+        last_bytes_received_ = stats.bytes_received;
 
     } catch (const std::exception &e) {
         std::cerr << "[WebRTCSession] get_stats failed: " << e.what() << std::endl;
@@ -962,6 +1021,168 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
 
     } catch (const std::exception &e) {
         std::cerr << "[WebRTCSession] on_incoming_stream exception: " << e.what() << std::endl;
+    }
+}
+
+// ============================================================================
+// Stats Parsing
+// ============================================================================
+
+void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) const {
+    try {
+        // Helper struct to pass around parsing context
+        struct ParseContext {
+            Stats *stats;
+            std::string selected_local_candidate_id;
+            std::string selected_remote_candidate_id;
+        };
+
+        ParseContext ctx = { &stats, "", "" };
+
+        // Iterate through all stats entries
+        gst_structure_foreach(stats_struct,
+            [](GQuark field_id, const GValue *value, gpointer user_data) -> gboolean {
+                ParseContext *ctx = static_cast<ParseContext*>(user_data);
+
+                const gchar *field_name = g_quark_to_string(field_id);
+
+                if (!GST_VALUE_HOLDS_STRUCTURE(value)) {
+                    std::cout << "[parse_stats] Field " << field_name << " is not a structure" << std::endl;
+                    return TRUE;  // Continue
+                }
+
+                const GstStructure *stat = gst_value_get_structure(value);
+
+                // Get type enum value
+                GstWebRTCStatsType type_enum = GST_WEBRTC_STATS_CODEC;  // Default
+                if (!gst_structure_get_enum(stat, "type",
+                    g_type_from_name("GstWebRTCStatsType"), (gint*)&type_enum)) {
+                    return TRUE;  // Skip entries without type
+                }
+
+                // Parse by stat type
+                if (type_enum == GST_WEBRTC_STATS_TRANSPORT) {
+                    // Selected candidate pair ID
+                    const gchar *selected_pair = gst_structure_get_string(stat, "selected-candidate-pair-id");
+                    if (selected_pair) {
+                        ctx->selected_local_candidate_id = selected_pair;  // Store for later lookup
+                    }
+
+                } else if (type_enum == GST_WEBRTC_STATS_CANDIDATE_PAIR) {
+                    // Check if this is the selected (nominated) pair
+                    gboolean selected = FALSE;
+                    gst_structure_get_boolean(stat, "selected", &selected);
+
+                    if (selected) {
+                        // Get local and remote candidate IDs
+                        const gchar *local_id = gst_structure_get_string(stat, "local-candidate-id");
+                        const gchar *remote_id = gst_structure_get_string(stat, "remote-candidate-id");
+
+                        if (local_id) ctx->selected_local_candidate_id = local_id;
+                        if (remote_id) ctx->selected_remote_candidate_id = remote_id;
+
+                        // Get bytes sent/received
+                        guint64 bytes_sent = 0, bytes_received = 0;
+                        gst_structure_get_uint64(stat, "bytes-sent", &bytes_sent);
+                        gst_structure_get_uint64(stat, "bytes-received", &bytes_received);
+                        ctx->stats->bytes_sent = bytes_sent;
+                        ctx->stats->bytes_received = bytes_received;
+
+                        // Get RTT (round-trip time)
+                        gdouble rtt = 0.0;
+                        if (gst_structure_get_double(stat, "round-trip-time", &rtt)) {
+                            ctx->stats->rtt_ms = static_cast<int>(rtt * 1000);  // Convert seconds to ms
+                        }
+                    }
+
+                } else if (type_enum == GST_WEBRTC_STATS_LOCAL_CANDIDATE) {
+                    // Parse local candidate info
+                    const gchar *candidate_id = gst_structure_get_string(stat, "id");
+                    const gchar *candidate_type = gst_structure_get_string(stat, "candidate-type");
+                    const gchar *ip = gst_structure_get_string(stat, "address");
+                    if (!ip) ip = gst_structure_get_string(stat, "ip");
+                    guint port = 0;
+                    gst_structure_get_uint(stat, "port", &port);
+
+                    if (ip && candidate_type) {
+                        // Format: "IP:port (type)"
+                        std::string formatted = std::string(ip) + ":" +
+                                              std::to_string(port) + " (" +
+                                              candidate_type + ")";
+                        ctx->stats->local_candidates.push_back(formatted);
+
+                        // If this is the selected candidate, use its type for connection_type
+                        if (candidate_id && ctx->selected_local_candidate_id == candidate_id) {
+                            if (g_strcmp0(candidate_type, "host") == 0) {
+                                ctx->stats->connection_type = "P2P (direct)";
+                            } else if (g_strcmp0(candidate_type, "srflx") == 0) {
+                                ctx->stats->connection_type = "P2P (srflx - NAT hole-punching)";
+                            } else if (g_strcmp0(candidate_type, "relay") == 0) {
+                                ctx->stats->connection_type = std::string("TURN relay (") + ip + ")";
+                            }
+                        }
+                    }
+
+                } else if (type_enum == GST_WEBRTC_STATS_REMOTE_CANDIDATE) {
+                    // Parse remote candidate info
+                    const gchar *candidate_type = gst_structure_get_string(stat, "candidate-type");
+                    const gchar *ip = gst_structure_get_string(stat, "address");
+                    if (!ip) ip = gst_structure_get_string(stat, "ip");
+                    guint port = 0;
+                    gst_structure_get_uint(stat, "port", &port);
+
+                    if (ip && candidate_type) {
+                        // Format: "IP:port (type)"
+                        std::string formatted = std::string(ip) + ":" +
+                                              std::to_string(port) + " (" +
+                                              candidate_type + ")";
+                        ctx->stats->remote_candidates.push_back(formatted);
+                    }
+
+                } else if (type_enum == GST_WEBRTC_STATS_INBOUND_RTP) {
+                    // Packet loss
+                    guint packets_lost = 0, packets_received = 0;
+                    gst_structure_get_uint(stat, "packets-lost", &packets_lost);
+                    gst_structure_get_uint(stat, "packets-received", &packets_received);
+
+                    if (packets_received > 0) {
+                        ctx->stats->packet_loss_pct =
+                            (100.0 * packets_lost) / (packets_lost + packets_received);
+                    }
+
+                    // Jitter (in seconds, convert to ms)
+                    gdouble jitter = 0.0;
+                    if (gst_structure_get_double(stat, "jitter", &jitter)) {
+                        ctx->stats->jitter_ms = static_cast<int>(jitter * 1000);
+                    }
+                }
+
+                return TRUE;  // Continue iteration
+            },
+            &ctx);
+
+        // Set connection state based on ICE state
+        if (stats.ice_connection_state == "completed" || stats.ice_connection_state == "connected") {
+            stats.connection_state = "connected";
+        } else if (stats.ice_connection_state == "checking") {
+            stats.connection_state = "connecting";
+        } else if (stats.ice_connection_state == "failed") {
+            stats.connection_state = "failed";
+        } else if (stats.ice_connection_state == "disconnected") {
+            stats.connection_state = "disconnected";
+        } else if (stats.ice_connection_state == "closed") {
+            stats.connection_state = "closed";
+        } else {
+            stats.connection_state = "new";
+        }
+
+        // Default connection type if not determined
+        if (stats.connection_type.empty()) {
+            stats.connection_type = "--";
+        }
+
+    } catch (const std::exception &e) {
+        std::cerr << "[WebRTCSession] parse_stats exception: " << e.what() << std::endl;
     }
 }
 

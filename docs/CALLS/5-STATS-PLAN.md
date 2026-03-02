@@ -1,8 +1,8 @@
 # Step 5: Statistics, Monitoring & Device Management
 
-**Status**: Planning
+**Status**: ✅ **COMPLETE** (devices ✅, stats ✅, logger pending)
 **Depends on**: 1-4 (all previous steps)
-**Leads to**: Production deployment
+**Leads to**: gRPC integration (4-GRPC-PLAN.md)
 
 ---
 
@@ -371,51 +371,7 @@ print(f"Remote IP: {response.remote_candidates[0]}")
 
 ### Task 5.7: Implement ListAudioDevices RPC
 
-**What**: Enumerate available microphones and speakers
-
-**PulseAudio approach** (Linux):
-```c++
-Status ListAudioDevices(ServerContext* context,
-                       const Empty* request,
-                       ListAudioDevicesResponse* response) {
-    // Use pactl to list devices
-    FILE *fp = popen("pactl list sources short", "r");
-    if (!fp) {
-        return Status(StatusCode::INTERNAL, "Failed to enumerate sources");
-    }
-
-    char line[1024];
-    while (fgets(line, sizeof(line), fp)) {
-        // Parse line: "1    alsa_input.pci-...    module-alsa-card.c    ..."
-        char *name = strtok(line, "\t");
-        char *device = strtok(NULL, "\t");
-
-        if (device) {
-            auto *dev = response->add_devices();
-            dev->set_name(device);
-            dev->set_device_class("Audio/Source");
-
-            // Get description from pactl list sources (long form)
-            // Or use placeholder
-            dev->set_description(device);
-        }
-    }
-    pclose(fp);
-
-    // Repeat for sinks (speakers)
-    fp = popen("pactl list sinks short", "r");
-    // ... similar parsing ...
-    pclose(fp);
-
-    return Status::OK;
-}
-```
-
-**Reference**: `docs/CALLS/webrtcbin-reference.cpp` lines 390-394
-
-**Better approach**: Use PulseAudio C API (libpulse)
-```c++
-#include <pulse/pulseaudio.h>
+**Status**: ✅ **IMPLEMENTED** - DeviceEnumerator class in device_enumerator.cpp (GstDeviceMonitor API, cross-platform)
 
 // Requires async API or threaded mainloop
 // See: https://freedesktop.org/software/pulseaudio/doxygen/
@@ -776,16 +732,27 @@ kill -TERM <pid>
 
 ## STATUS
 
-**Current**: Not started (depends on 1-4 completion)
+**Current**: ✅ **Stats & Device Enumeration Complete**
 
-**Done**: []
+**Implemented**:
+- ✅ **MediaSession::Stats struct** - Full stats structure (src/media_session.h:64-89)
+- ✅ **WebRTCSession::get_stats()** - GStreamer stats parsing with bandwidth calculation (src/webrtc_session.cpp:297-373)
+- ✅ **DeviceEnumerator** - Cross-platform audio device enumeration via GstDeviceMonitor (src/device_enumerator.cpp)
+- ✅ **Mute control** - set_mute() implemented (src/webrtc_session.cpp)
+- ✅ **Test coverage** - test_stats.cpp validates stats collection
 
-**Next**: Task 5.1 - Implement GetStats RPC
+**Implementation Notes**:
+- Stats use `gst_structure_get_enum()` for GstWebRTCStatsType (not string)
+- ICE states retrieved from webrtcbin properties, not stats structure
+- Bandwidth: delta-based calculation `(bytes * 8) / time_ms` in Kbps
+- Candidates only appear in stats when ICE actively connected
+- Test: tests/standalone/test_stats.cpp
+
+**Next**:
+- Video device enumeration (Task 5.7 extension)
+- spdlog logger integration
+- gRPC integration (4-GRPC-PLAN.md)
 
 **Blockers**: None
 
 **Last updated**: 2026-03-02
-
----
-
-**Last Updated**: 2026-03-02

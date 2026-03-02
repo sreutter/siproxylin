@@ -58,10 +58,11 @@
 ### Success Criteria:
 **Library level (before gRPC):**
 - ✅ WebRTCSession: SDP negotiation, ICE connectivity
-- ⏳ **Proxy support** (CRITICAL - old Go service had this, check drunk_call_service_go/, test with local SOCKS5)
-- ⏳ Device enumeration (GStreamer GstDeviceMonitor API, see gst-plugins-good/ext/pulse/pulsesink.c)
-- ⏳ Statistics (get_stats() method)
-- ⏳ Video streams (add_video_stream() at library level, test in test_step3)
+- ✅ **Proxy support** (HTTP/SOCKS5 via webrtcbin http-proxy + NiceAgent properties)
+- ✅ **Device enumeration** (DeviceEnumerator: audio input/output + video sources, cross-platform GstDeviceMonitor)
+- ✅ **Statistics** (get_stats() method: bandwidth, ICE states, candidates, packet loss, RTT, jitter)
+- ✅ **Logger** (spdlog: file output with rotation, log levels via CLI args)
+- ⏳ Video streams (add_video_stream() at library level)
 
 **gRPC service level:**
 - CreateSession, CreateOffer, CreateAnswer, StreamEvents
@@ -73,7 +74,27 @@
 - CMake 3.20+, C++17
 - GStreamer 1.22+ (`gstreamer-webrtc-1.0`, `gstreamer-sdp-1.0`)
 - gRPC C++ (`grpc++`, `protobuf`)
+- spdlog (`spdlog`)
 - Output: /home/m/claude/siproxylin/drunk_call_service/bin/drunk-call-service-{linux,windows,macos}
+
+### Implementation Files:
+**Core library (src/):**
+- `media_session.h` - Abstract interface: MediaSession, AudioDevice, VideoDevice, Stats structs
+- `webrtc_session.{h,cpp}` - WebRTC implementation (webrtcbin): SDP, ICE, stats, mute
+- `rtp_session.{h,cpp}` - RTP implementation (rtpbin) for exotic cases
+- `session_factory.cpp` - Factory pattern to select implementation
+- `device_enumerator.cpp` - Cross-platform device enumeration (audio + video)
+- `logger.{h,cpp}` - spdlog wrapper with file rotation
+
+**Tests (tests/standalone/):**
+- `test_step0_gstreamer_basic.cpp` - GStreamer installation verify
+- `test_step1_pipeline.cpp` - WebRTCSession creation
+- `test_step2_sdp_negotiation.cpp` - Offer/answer exchange
+- `test_step3_ice_connectivity.cpp` - ICE candidate exchange (with proxy support)
+- `test_device_enumeration.cpp` - Audio/video device listing
+- `test_stats.cpp` - Statistics collection
+- `test_logger.cpp` - Logger functionality
+- `Makefile` - Build all tests
 
 ### ICE State Machine:
 `NEW → CHECKING → CONNECTED → COMPLETED` (or `FAILED`/`DISCONNECTED`)
@@ -83,10 +104,24 @@ Stream state changes to Python via ConnectionStateEvent.
 1. ✅ **rtcp-mux**: RTP+RTCP on same port (webrtcbin auto-handles)
 2. ✅ **bundle**: Single ICE connection (`bundle-policy=max-bundle` set in webrtc_session.cpp:425)
 3. ✅ **trickle-ICE**: `a=ice-options:trickle` in SDP, candidates streamed via on_ice_candidate
-4. ⏳ **proxy**: MUST support SOCKS5/HTTP (old Go had it, check drunk_call_service_go/)
-5. ⏳ **devices**: GstDeviceMonitor (replace pactl)
-6. ⏳ **stats**: get_stats() method
-7. ⏳ **video**: add_video_stream() for future Qt integration
+4. ✅ **proxy**: HTTP (webrtcbin http-proxy property) + SOCKS5 (NiceAgent proxy-type/proxy-ip/proxy-port)
+5. ✅ **devices**: DeviceEnumerator class (device_enumerator.cpp)
+   - Audio: Linux/PulseAudio, Windows/WASAPI, macOS/CoreAudio
+   - Video: Linux/V4L2, Windows/KsVideo, macOS/AVFoundation
+   - Cross-platform via GstDeviceMonitor API
+6. ✅ **stats**: get_stats() method (src/webrtc_session.cpp:297-373)
+   - Connection states (ICE connection/gathering from webrtcbin properties)
+   - Bandwidth calculation (delta-based: bytes * 8 / time_ms)
+   - Quality metrics (packet loss, RTT, jitter from RTP stats)
+   - Connection type (P2P direct/srflx, TURN relay)
+   - Candidates list (when ICE connected)
+7. ✅ **logger**: spdlog integration (src/logger.h, src/logger.cpp)
+   - File output: ~/.siproxylin/logs/drunk-call-service.log
+   - Rotating file sink (10MB max, 3 files)
+   - CLI args: -log-level (TRACE/DEBUG/INFO/WARN/ERROR/CRITICAL), -log-path
+   - STDOUT reserved for libnice/GStreamer debug
+   - STDERR reserved for unhandled exceptions
+8. ⏳ **video**: add_video_stream() for future Qt integration
 
 ### Error Handling:
 - Try-catch all RPC handlers

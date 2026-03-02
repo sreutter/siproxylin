@@ -62,12 +62,30 @@ public:
 
     // Statistics
     struct Stats {
+        // Connection states
+        std::string connection_state;        // "new", "connecting", "connected", "disconnected", "failed", "closed"
+        std::string ice_connection_state;    // "new", "checking", "connected", "completed", "failed", "disconnected", "closed"
+        std::string ice_gathering_state;     // "new", "gathering", "complete"
+
+        // Bandwidth & traffic
         uint64_t bytes_sent;
         uint64_t bytes_received;
+        int64_t bandwidth_kbps;              // Current bandwidth in Kbps
+
+        // Quality metrics
         double packet_loss_pct;
         int rtt_ms;
         int jitter_ms;
-        std::string connection_type;
+
+        // ICE candidates
+        std::vector<std::string> local_candidates;   // ["IP:port (type)", ...]
+        std::vector<std::string> remote_candidates;  // ["IP:port (type)", ...]
+
+        // Connection type
+        std::string connection_type;         // "P2P (direct)", "P2P (srflx)", "TURN relay", etc.
+
+        Stats() : bytes_sent(0), bytes_received(0), bandwidth_kbps(0),
+                  packet_loss_pct(0.0), rtt_ms(0), jitter_ms(0) {}
     };
     virtual Stats get_stats() const = 0;
 
@@ -77,6 +95,53 @@ public:
     // Implementation type query
     enum class Type { WEBRTC, RTP };
     virtual Type get_type() const = 0;
+};
+
+/**
+ * Audio device information
+ */
+struct AudioDevice {
+    std::string id;             // Device ID (for pulsesrc/pulsesink device property)
+    std::string name;           // Human-readable name
+    std::string description;    // Full description
+    bool is_default;            // Is this the default device
+    bool is_input;              // true = microphone, false = speaker
+
+    AudioDevice() : is_default(false), is_input(true) {}
+};
+
+/**
+ * Video device information
+ */
+struct VideoDevice {
+    std::string id;             // Device ID (for v4l2src/ksvideosrc/avfvideosrc device property)
+    std::string name;           // Human-readable name
+    std::string description;    // Full description
+    std::string device_path;    // Device path (/dev/video0, etc.)
+    bool is_default;            // Is this the default device
+
+    VideoDevice() : is_default(false) {}
+};
+
+/**
+ * Device enumeration (static methods, platform-independent)
+ */
+class DeviceEnumerator {
+public:
+    // Audio devices
+    static std::vector<AudioDevice> list_audio_inputs();
+    static std::vector<AudioDevice> list_audio_outputs();
+    static AudioDevice get_default_input();
+    static AudioDevice get_default_output();
+
+    // Video devices
+    static std::vector<VideoDevice> list_video_sources();
+    static VideoDevice get_default_video_source();
+
+private:
+    // Platform-specific helpers
+    static std::vector<AudioDevice> enumerate_devices(const char *classes, bool is_input);
+    static std::vector<VideoDevice> enumerate_video_devices(const char *classes);
 };
 
 /**

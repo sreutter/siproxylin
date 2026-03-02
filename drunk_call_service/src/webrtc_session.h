@@ -15,6 +15,7 @@
 #include <gst/gst.h>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
 
 namespace drunk_call {
 
@@ -104,6 +105,15 @@ private:
     // Promise callback for set-remote-description before answer
     static void on_offer_set_for_answer_static(GstPromise *promise, gpointer user_data);
     void on_offer_set_for_answer();
+
+    // Stats helpers
+    static void on_stats_received_static(GstPromise *promise, gpointer user_data);
+    void parse_stats(const GstStructure *stats, Stats &result) const;
+
+    // Bandwidth tracking (for get_stats)
+    mutable std::chrono::steady_clock::time_point last_stats_time_;
+    mutable uint64_t last_bytes_sent_;
+    mutable uint64_t last_bytes_received_;
 };
 
 } // namespace drunk_call

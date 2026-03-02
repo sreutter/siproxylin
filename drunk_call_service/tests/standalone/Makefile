@@ -11,7 +11,7 @@ GST_CFLAGS = $(shell $(PKG_CONFIG) --cflags $(GST_PACKAGES))
 GST_LIBS = $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES))
 
 # Targets (in order of complexity)
-TESTS = test_step0_gstreamer_basic test_step1_pipeline test_step2_sdp_negotiation test_step3_ice_connectivity test_audio_loopback
+TESTS = test_step0_gstreamer_basic test_step1_pipeline test_step2_sdp_negotiation test_step3_ice_connectivity test_audio_loopback test_device_enumeration test_stats test_logger
 
 all: $(TESTS)
 
@@ -34,6 +34,18 @@ test_step3_ice_connectivity: test_step3_ice_connectivity.cpp
 # Audio loopback (based on GStreamer examples, for reference)
 test_audio_loopback: test_audio_loopback.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS)
+
+# Device enumeration test
+test_device_enumeration: test_device_enumeration.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+
+# Stats test
+test_stats: test_stats.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+
+# Logger test
+test_logger: test_logger.cpp ../../src/logger.cpp
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(shell $(PKG_CONFIG) --cflags --libs spdlog)
 
 clean:
 	rm -f $(TESTS)
