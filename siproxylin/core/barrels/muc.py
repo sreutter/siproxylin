@@ -467,19 +467,6 @@ class MucBarrel:
                 if self.logger:
                     self.logger.debug(f"No existing messages, querying {max_str} messages from MAM")
 
-            # Retrieve history from MAM (only NEW messages if start_time is set)
-            history = await self.client.retrieve_history(
-                jid=room_jid,
-                start=start_time,
-                max_messages=max_messages
-            )
-
-            if self.logger:
-                self.logger.info(f"Retrieved {len(history)} messages from MAM for {room_jid}")
-
-            if not history:
-                return
-
             # Get or create JID entry for room
             jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
             if jid_row:
@@ -487,126 +474,146 @@ class MucBarrel:
             else:
                 cursor = self.db.execute("INSERT INTO jid (bare_jid) VALUES (?)", (room_jid,))
                 jid_id = cursor.lastrowid
+                self.db.commit()
 
             # Filter out our own messages
             our_nick = self.client.rooms[room_jid].get('nick') if room_jid in self.client.rooms else None
 
-            # OPTIMIZATION: Batch duplicate detection - check BOTH message and file_transfer tables
-            # Collect all archive_ids and query DB once instead of 500 times
-            # (prevents duplicates when OMEMO encrypted files fail to decrypt on re-retrieval)
-            archive_ids = [msg_data.get('archive_id') for msg_data in history if msg_data.get('archive_id')]
+            # Retrieve history from MAM (only NEW messages if start_time is set) - yields pages
+            total_inserted = 0
+            page_count = 0
+            async for page in self.client.retrieve_history(
+                jid=room_jid,
+                start=start_time,
+                max_messages=max_messages
+            ):
+                page_count += 1
+                if self.logger:
+                    self.logger.debug(f"Processing MUC page {page_count} with {len(page)} messages for {room_jid}")
 
-            existing_stanza_ids = set()
-            if archive_ids:
-                # Query all existing messages in one go
-                placeholders = ','.join('?' * len(archive_ids))
+                # OPTIMIZATION: Batch duplicate detection for this page
+                archive_ids = [msg_data.get('archive_id') for msg_data in page if msg_data.get('archive_id')]
 
-                # Check message table
-                existing_msgs = self.db.fetchall(f"""
-                    SELECT stanza_id FROM message
-                    WHERE account_id = ? AND counterpart_id = ? AND stanza_id IN ({placeholders})
-                """, (self.account_id, jid_id, *archive_ids))
+                existing_stanza_ids = set()
+                if archive_ids:
+                    placeholders = ','.join('?' * len(archive_ids))
 
-                # Check file_transfer table
-                existing_files = self.db.fetchall(f"""
-                    SELECT stanza_id FROM file_transfer
-                    WHERE account_id = ? AND counterpart_id = ? AND stanza_id IN ({placeholders})
-                """, (self.account_id, jid_id, *archive_ids))
+                    # Check message table
+                    existing_msgs = self.db.fetchall(f"""
+                        SELECT stanza_id FROM message
+                        WHERE account_id = ? AND counterpart_id = ? AND stanza_id IN ({placeholders})
+                    """, (self.account_id, jid_id, *archive_ids))
 
-                # Combine both sets
-                existing_stanza_ids = {row['stanza_id'] for row in existing_msgs} | {row['stanza_id'] for row in existing_files}
+                    # Check file_transfer table
+                    existing_files = self.db.fetchall(f"""
+                        SELECT stanza_id FROM file_transfer
+                        WHERE account_id = ? AND counterpart_id = ? AND stanza_id IN ({placeholders})
+                    """, (self.account_id, jid_id, *archive_ids))
 
-            # Early duplicate detection - stop if we hit 10 consecutive duplicates
-            # This means we've caught up to already-synced range
-            consecutive_duplicates = 0
-            MAX_CONSECUTIVE_DUPLICATES = 10
+                    # Combine both sets
+                    existing_stanza_ids = {row['stanza_id'] for row in existing_msgs} | {row['stanza_id'] for row in existing_files}
 
-            # Store messages in database
-            inserted_count = 0
-            for msg_data in history:
-                # Extract data from MAM result
-                sender_jid = msg_data['jid']  # Bare JID
-                nick = msg_data.get('nick', '')  # MUC sender nickname (from resource)
-                body = msg_data['body']
-                timestamp = int(msg_data['timestamp'].timestamp())
-                is_encrypted = msg_data.get('is_encrypted', False)
-                occupant_id = msg_data.get('occupant_id')  # XEP-0421
+                # Early duplicate detection - stop if we hit 10 consecutive duplicates
+                consecutive_duplicates = 0
+                MAX_CONSECUTIVE_DUPLICATES = 10
 
-                # Get MAM archive result ID (stored as stanza_id)
-                archive_id = msg_data.get('archive_id')
-                archived_msg = msg_data.get('message')  # Raw stanza from MAM
+                # Store messages in database for this page
+                inserted_count = 0
+                for msg_data in page:
+                    # Extract data from MAM result
+                    sender_jid = msg_data['jid']  # Bare JID
+                    nick = msg_data.get('nick', '')  # MUC sender nickname (from resource)
+                    body = msg_data['body']
+                    timestamp = int(msg_data['timestamp'].timestamp())
+                    is_encrypted = msg_data.get('is_encrypted', False)
+                    occupant_id = msg_data.get('occupant_id')  # XEP-0421
 
-                # Extract XEP-0359 IDs from archived message for reactions
-                origin_id = None
-                stanza_id = None
-                if archived_msg:
-                    try:
-                        origin_id = archived_msg['origin_id']['id'] if archived_msg['origin_id']['id'] else None
-                    except (KeyError, TypeError):
-                        pass
-                    stanza_id = archived_msg.get('id')
+                    # Get MAM archive result ID (stored as stanza_id)
+                    archive_id = msg_data.get('archive_id')
+                    archived_msg = msg_data.get('message')  # Raw stanza from MAM
 
-                # Skip our own messages using occupant-id (most reliable) or nickname fallback
-                is_our_message = False
-                if occupant_id and room_jid in self.client.own_occupant_ids:
-                    is_our_message = (occupant_id == self.client.own_occupant_ids[room_jid])
-                elif nick and our_nick:
-                    is_our_message = (nick.lower() == our_nick.lower())
+                    # Extract XEP-0359 IDs from archived message for reactions
+                    origin_id = None
+                    stanza_id = None
+                    if archived_msg:
+                        try:
+                            origin_id = archived_msg['origin_id']['id'] if archived_msg['origin_id']['id'] else None
+                        except (KeyError, TypeError):
+                            pass
+                        stanza_id = archived_msg.get('id')
 
-                if is_our_message:
-                    if self.logger:
-                        self.logger.debug(f"Skipping own MAM message from {nick}")
-                    continue
+                    # Skip our own messages using occupant-id (most reliable) or nickname fallback
+                    is_our_message = False
+                    if occupant_id and room_jid in self.client.own_occupant_ids:
+                        is_our_message = (occupant_id == self.client.own_occupant_ids[room_jid])
+                    elif nick and our_nick:
+                        is_our_message = (nick.lower() == our_nick.lower())
 
-                # Check if message already exists (using pre-loaded set)
-                if archive_id and archive_id in existing_stanza_ids:
-                    consecutive_duplicates += 1
-                    if consecutive_duplicates >= MAX_CONSECUTIVE_DUPLICATES:
+                    if is_our_message:
                         if self.logger:
-                            self.logger.info(f"Hit {MAX_CONSECUTIVE_DUPLICATES} consecutive duplicates for {room_jid}, stopping early (already synced)")
-                        break  # Stop early - we've caught up
-                    continue
-                else:
-                    consecutive_duplicates = 0  # Reset on new message
-
-                # Fallback: Check by timestamp+body if no archive_id
-                if not archive_id:
-                    existing = self.db.fetchone("""
-                        SELECT id FROM message
-                        WHERE account_id = ? AND counterpart_id = ? AND time = ? AND body = ?
-                    """, (self.account_id, jid_id, timestamp, body))
-                    if existing:
-                        if self.logger:
-                            self.logger.debug(f"MAM message already exists (by timestamp+body), skipping")
+                            self.logger.debug(f"Skipping own MAM message from {nick}")
                         continue
 
-                # Insert message
-                conversation_id = self.db.get_or_create_conversation(self.account_id, jid_id, 1)  # type=1 MUC
-                result = self.db.insert_message_atomic(
-                    account_id=self.account_id,
-                    counterpart_id=jid_id,
-                    conversation_id=conversation_id,
-                    direction=0,  # direction=0 (received)
-                    msg_type=1,  # type=1 (groupchat/MUC)
-                    time=timestamp,
-                    local_time=timestamp,
-                    body=body,
-                    encryption=1 if is_encrypted else 0,
-                    marked=0,  # marked=0 (MAM MUC messages not marked)
-                    is_carbon=0,  # MUC messages never carbons
-                    message_id=stanza_id,  # Sender's message ID (for reactions)
-                    origin_id=origin_id,  # Sender's origin-id (XEP-0359, for reactions)
-                    stanza_id=archive_id,  # MAM archive result ID (for dedup)
-                    counterpart_resource=nick  # MUC nickname
-                )
+                    # Check if message already exists (using pre-loaded set)
+                    if archive_id and archive_id in existing_stanza_ids:
+                        consecutive_duplicates += 1
+                        if consecutive_duplicates >= MAX_CONSECUTIVE_DUPLICATES:
+                            if self.logger:
+                                self.logger.info(f"Hit {MAX_CONSECUTIVE_DUPLICATES} consecutive duplicates for {room_jid}, stopping early (already synced)")
+                            break  # Stop early - we've caught up
+                        continue
+                    else:
+                        consecutive_duplicates = 0  # Reset on new message
 
-                if result != (None, None):
-                    inserted_count += 1
+                    # Fallback: Check by timestamp+body if no archive_id
+                    if not archive_id:
+                        existing = self.db.fetchone("""
+                            SELECT id FROM message
+                            WHERE account_id = ? AND counterpart_id = ? AND time = ? AND body = ?
+                        """, (self.account_id, jid_id, timestamp, body))
+                        if existing:
+                            if self.logger:
+                                self.logger.debug(f"MAM message already exists (by timestamp+body), skipping")
+                            continue
 
-            self.db.commit()
+                    # Insert message
+                    conversation_id = self.db.get_or_create_conversation(self.account_id, jid_id, 1)  # type=1 MUC
+                    result = self.db.insert_message_atomic(
+                        account_id=self.account_id,
+                        counterpart_id=jid_id,
+                        conversation_id=conversation_id,
+                        direction=0,  # direction=0 (received)
+                        msg_type=1,  # type=1 (groupchat/MUC)
+                        time=timestamp,
+                        local_time=timestamp,
+                        body=body,
+                        encryption=1 if is_encrypted else 0,
+                        marked=0,  # marked=0 (MAM MUC messages not marked)
+                        is_carbon=0,  # MUC messages never carbons
+                        message_id=stanza_id,  # Sender's message ID (for reactions)
+                        origin_id=origin_id,  # Sender's origin-id (XEP-0359, for reactions)
+                        stanza_id=archive_id,  # MAM archive result ID (for dedup)
+                        counterpart_resource=nick  # MUC nickname
+                    )
+
+                    if result != (None, None):
+                        inserted_count += 1
+
+                # Commit this page
+                self.db.commit()
+                total_inserted += inserted_count
+
+                if inserted_count > 0 and self.logger:
+                    self.logger.debug(f"Stored {inserted_count} messages from page {page_count}")
+
+                # Early exit if we hit too many duplicates
+                if consecutive_duplicates >= MAX_CONSECUTIVE_DUPLICATES:
+                    if self.logger:
+                        self.logger.info(f"Stopping MAM sync early for {room_jid} (hit duplicate threshold)")
+                    break
 
             if self.logger:
-                self.logger.info(f"Stored {inserted_count} new MAM messages for {room_jid}")
+                self.logger.info(f"Stored {total_inserted} new MAM messages for {room_jid} across {page_count} pages")
 
             # We do NOT emit message_received signal for MAM history
             # MAM messages are historical archives, not new messages

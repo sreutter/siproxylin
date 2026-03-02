@@ -6,10 +6,11 @@ XEP-0313: Message Archive Management
 Provides methods for retrieving message history from the server archive.
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, AsyncGenerator
 from datetime import datetime
 from slixmpp.jid import JID
 from slixmpp.exceptions import IqError, IqTimeout
+import asyncio
 
 
 class MAMMixin:
@@ -32,9 +33,10 @@ class MAMMixin:
         max_messages: Optional[int] = None,
         with_jid: Optional[str] = None,
         start_id: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> AsyncGenerator[List[Dict], None]:
         """
         Retrieve message history from server using MAM (XEP-0313).
+        Yields pages of messages with sleep between pages to keep app responsive.
 
         For MUC rooms: Queries the room's archive (room must support MAM).
         For 1-to-1 chats: Queries your account's archive.
@@ -47,8 +49,8 @@ class MAMMixin:
             with_jid: Optional filter - only messages with this JID (for 1-to-1 archive queries)
             start_id: Optional MAM archive ID to start after (for efficient catchup)
 
-        Returns:
-            List of dicts with keys:
+        Yields:
+            Pages (lists) of message dicts, each dict with keys:
                 - 'jid': Sender JID (bare)
                 - 'nick': Nickname (for MUC messages) or None
                 - 'body': Message body (decrypted if OMEMO)
@@ -70,11 +72,13 @@ class MAMMixin:
         query_jid = JID(jid) if is_muc else None  # For MUC, query the room; for 1-to-1, query our own server
 
         xep_0313 = self.plugin['xep_0313']
-        history = []
+        page_buffer = []  # Buffer for collecting messages into pages
+        PAGE_SIZE = 25  # Yield every 25 messages to keep app responsive
+        total_retrieved = 0
 
         try:
             # Build RSM parameters
-            rsm_params = {'max': 300}  # Page size: 300 messages per request (good for desktop)
+            rsm_params = {'max': 25}  # Network page size: 25 messages per MAM request (prevents blocking on large messages)
             if start_id:
                 rsm_params['after'] = start_id  # Start after this archive ID (efficient catchup)
 
@@ -186,7 +190,7 @@ class MAMMixin:
                 # Extract occupant-id if available (XEP-0421)
                 occupant_id = archived_msg['occupant-id']['id'] or None  # Empty string -> None
 
-                history.append({
+                page_buffer.append({
                     'jid': sender_bare,
                     'nick': nick,
                     'body': body,
@@ -197,10 +201,23 @@ class MAMMixin:
                     'message': archived_msg
                 })
 
+                total_retrieved += 1
                 self.logger.debug(f"Retrieved MAM message from {from_jid}: {body[:50] if body else '(no body)'}... (encrypted: {is_encrypted})")
 
-            self.logger.info(f"Retrieved {len(history)} messages from MAM archive")
-            return history
+                # Yield page when buffer is full
+                if len(page_buffer) >= PAGE_SIZE:
+                    self.logger.debug(f"Yielding page of {len(page_buffer)} messages (total so far: {total_retrieved})")
+                    yield page_buffer
+                    page_buffer = []  # Reset buffer
+                    # Sleep to let other tasks run (UI updates, incoming messages, etc.)
+                    await asyncio.sleep(1)
+
+            # Yield any remaining messages in buffer
+            if page_buffer:
+                self.logger.debug(f"Yielding final page of {len(page_buffer)} messages")
+                yield page_buffer
+
+            self.logger.info(f"Retrieved {total_retrieved} messages from MAM archive (across {(total_retrieved + PAGE_SIZE - 1) // PAGE_SIZE} pages)")
 
         except IqError as e:
             error_condition = e.iq['error']['condition']

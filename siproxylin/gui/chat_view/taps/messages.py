@@ -108,6 +108,9 @@ class MessageDisplayWidget(QObject):
         self.last_load_time = 0          # Timestamp of last load (for cooldown)
         self.last_separator_date = None  # Track last inserted separator date (for day changes)
 
+        # MAM loading state (prevent duplicate on-demand queries)
+        self.mam_loading_jids = set()    # Set of JIDs currently loading MAM history
+
         # Zone tracking for smart polling control (Phase 2)
         self.in_live_zone = True         # True = live zone (>50% scroll), False = history zone (<=50%)
         self.zone_locked = False         # When True, prevent auto-zone changes (e.g., during search)
@@ -315,6 +318,45 @@ class MessageDisplayWidget(QObject):
                 ORDER BY ci.time DESC
                 LIMIT 300
             """, (conversation_id,))
+
+            # Trigger on-demand MAM loading for empty 1:1 conversations
+            # MUC rooms load history automatically on join, but 1:1 chats need explicit MAM query
+            if not rows and not self.current_is_muc and self.account_manager:
+                # Check if we're already loading MAM for this JID (prevent duplicate queries)
+                if self.current_jid in self.mam_loading_jids:
+                    logger.debug(f"MAM already loading for {self.current_jid}, skipping duplicate query")
+                else:
+                    account = self.account_manager.get_account(self.current_account_id)
+                    if account and account.is_connected():
+                        # Capture JID in closure (current_jid may change if user switches conversations)
+                        loading_jid = self.current_jid
+
+                        # Mark as loading
+                        self.mam_loading_jids.add(loading_jid)
+                        logger.info(f"Empty 1:1 conversation detected, triggering on-demand MAM loading for {loading_jid}")
+
+                        # Trigger async MAM loading
+                        import asyncio
+                        async def load_history():
+                            try:
+                                await account.messages.load_private_chat_history_on_demand(
+                                    contact_jid=loading_jid,
+                                    max_messages=None  # Load all history (like Dino) - flag prevents duplicate queries
+                                )
+                                # After MAM completes, the message_received signal will auto-refresh the view
+                            except Exception as e:
+                                logger.error(f"Failed to load MAM history on-demand for {loading_jid}: {e}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                            finally:
+                                # Always remove from loading set when done (success or failure)
+                                self.mam_loading_jids.discard(loading_jid)
+                                logger.debug(f"MAM loading completed for {loading_jid}")
+
+                        # Schedule task (don't await - let it run in background)
+                        asyncio.create_task(load_history())
+                    else:
+                        logger.debug(f"Account not connected, skipping on-demand MAM loading for {self.current_jid}")
         else:
             # Load more: Get 300 items OLDER than before_time
             rows = self.db.fetchall("""
