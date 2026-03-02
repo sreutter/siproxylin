@@ -42,7 +42,7 @@
 
 ### 6. No print()
 - Always use logger instances
-- See: `app/utils/logger.py`
+- See: `siproxylin/utils/logger.py`
 
 ### 7. Codec Parameter Negotiation (Calls)
 - **DO**: Parse `a=fmtp:` from Pion's SDP answer → convert to Jingle `<parameter>` elements
@@ -77,7 +77,7 @@
 | Logging | `setup_account_logger()` or `setup_main_logger()` | Never `print()` |
 | Callbacks | Must be `async` | No blocking in callbacks |
 | Error handling | Specific exceptions, logger + traceback | Never bare `except:` |
-| DB migrations | Create `.sql` in `app/db/migrations/` | Auto-runs on startup |
+| DB migrations | Create `.sql` in `siproxylin/db/migrations/` | Auto-runs on startup |
 | Calls (media) | Go service via gRPC | Python = signaling, Go = media |
 
 **Development Paths** (from project root):
@@ -96,10 +96,8 @@
 - **File references** - "See `app/db/database.py` insert_message_atomic()" not code blocks
 
 **Dev Docs Structure:**
-- `../../xmpp-desktop/docs/ROADMAP.md` - Progress and next phases
-- `../../xmpp-desktop/docs/HISTORY/` - Completed work
-- `../../xmpp-desktop/docs/PHASE-CHATS/` - Current phase docs
-- `../../xmpp-desktop/docs/TECH-DEBT/` - Known issues
+- `/home/m/claude/siproxylin/docs/` - Current project documentation
+- History tracked in git commits
 
 ---
 
@@ -115,7 +113,7 @@
 | 7 | READ/DISPLAYED | ✔✔ |
 | 8 | ERROR (discarded) | ⚠ |
 
-Receipt handlers auto-update (XEP-0198/0184/0333). Insert with `marked=0`, let handlers update.
+**Note**: Values 3-6 reserved for future use (Dino compatibility). Receipt handlers auto-update (XEP-0198/0184/0333). Insert with `marked=0`, let handlers update.
 
 ---
 
@@ -181,5 +179,5 @@ Before implementing:
 
 ---
 
-**Last Updated**: 2026-02-02
+**Last Updated**: 2026-03-02
 **Remember**: This is THE reference. When in doubt, check the commandments.

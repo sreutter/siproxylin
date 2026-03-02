@@ -91,7 +91,7 @@ Siproxylin tries to follow a modular architecture that separates concerns betwee
 
 ### Account Brewery (Core Layer)
 
-**File**: `app/core/brewery.py`
+**File**: `siproxylin/core/brewery.py`
 
 **Purpose**: Central account manager that orchestrates multiple XMPP accounts
 
@@ -141,15 +141,15 @@ Each "barrel" handles one feature domain:
 
 ### Database Layer
 
-**File**: `app/db/database.py`
+**File**: `siproxylin/db/database.py`
 
 **Pattern**: Singleton with single shared connection
 
 **Critical Rule**: ALWAYS use `get_db()` - never create new SQLite connections
 
 **Schema Management**:
-- Base schema: `app/db/schema.sql`
-- Migrations: `app/db/migrations/*.sql` (auto-run on startup)
+- Base schema: `siproxylin/db/schema.sql`
+- Migrations: `siproxylin/db/migrations/*.sql` (auto-run on startup)
 - Version tracking in `db_version` table
 
 ### Call Architecture
@@ -248,7 +248,7 @@ Messages follow Dino-compatible state model:
 
 | Mode | Flag | Data Location |
 |------|------|---------------|
-| dev | (none) | `./app_dev_paths/` |
+| dev | (none) | `./sip_dev_paths/` |
 | xdg | `--xdg` | `~/.config/`, `~/.local/share/`, `~/.cache/` |
 | dot | `--dot-data-dir` | `~/.siproxylin/` (AppImage default) |
 
@@ -264,7 +264,7 @@ Messages follow Dino-compatible state model:
 ### Adding a New Feature
 
 1. Implement in DrunkXMPP if protocol-level
-2. Create or extend a barrel in `app/core/barrels/`
+2. Create or extend a barrel in `siproxylin/core/barrels/`
 3. Add Qt signal to `XMPPAccount` class
 4. Connect signal in `MainWindow.setup_accounts()`
 5. Update GUI widgets to handle signal
@@ -280,7 +280,7 @@ Messages follow Dino-compatible state model:
 
 1. **Use library APIs**: Avoid manual XML parsing (use slixmpp methods)
 2. **Make use of drunk_xmpp/slixmpp_patches** in case some method is missing or contains a bug
-3. **Use logger**: Never `print()` (see `app/utils/logger.py`)
+3. **Use logger**: Never `print()` (see `siproxylin/utils/logger.py`)
 4. **Use get_db()**: Never create new SQLite connections
 5. **Async callbacks**: All DrunkXMPP callbacks must be `async`
 6. **Let handlers update state**: Don't manually set message `marked` field
@@ -333,5 +333,5 @@ See `docs/TECH-DEBT/` for tracked architectural improvements.
 
 ---
 
-**Last Updated**: 2026-02-01
+**Last Updated**: 2026-03-02
 **Document Status**: Public Release Documentation
