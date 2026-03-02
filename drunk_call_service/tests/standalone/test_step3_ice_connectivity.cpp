@@ -185,8 +185,61 @@ int main(int argc, char *argv[]) {
 
     state.start_time = std::chrono::steady_clock::now();
 
+    // Parse command-line arguments for proxy
+    std::string proxy_url;
+    std::string proxy_host;
+    int proxy_port = 0;
+    std::string proxy_type;
+    std::string proxy_username;
+    std::string proxy_password;
+
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--proxy" && i + 1 < argc) {
+            proxy_url = argv[++i];
+            // Parse proxy URL: protocol://[user:pass@]host:port
+            size_t proto_end = proxy_url.find("://");
+            if (proto_end != std::string::npos) {
+                std::string proto = proxy_url.substr(0, proto_end);
+                if (proto == "socks5") {
+                    proxy_type = "SOCKS5";
+                } else if (proto == "http") {
+                    proxy_type = "HTTP";
+                }
+
+                std::string rest = proxy_url.substr(proto_end + 3);
+                size_t at_pos = rest.find('@');
+                if (at_pos != std::string::npos) {
+                    // Has credentials
+                    std::string creds = rest.substr(0, at_pos);
+                    size_t colon = creds.find(':');
+                    if (colon != std::string::npos) {
+                        proxy_username = creds.substr(0, colon);
+                        proxy_password = creds.substr(colon + 1);
+                    } else {
+                        proxy_username = creds;
+                    }
+                    rest = rest.substr(at_pos + 1);
+                }
+
+                // Parse host:port
+                size_t colon = rest.find(':');
+                if (colon != std::string::npos) {
+                    proxy_host = rest.substr(0, colon);
+                    proxy_port = std::stoi(rest.substr(colon + 1));
+                } else {
+                    proxy_host = rest;
+                    proxy_port = (proxy_type == "SOCKS5") ? 1080 : 3128;
+                }
+            }
+        }
+    }
+
     std::cout << "=== ICE Connectivity Test (Local Loopback) ===" << std::endl;
     std::cout << "Testing ICE candidate exchange and connectivity between two WebRTCSession instances" << std::endl;
+    if (!proxy_host.empty()) {
+        std::cout << "Proxy: " << proxy_type << " " << proxy_host << ":" << proxy_port << std::endl;
+    }
     std::cout << std::endl;
 
     // Create two sessions
@@ -195,7 +248,12 @@ int main(int argc, char *argv[]) {
     offerer_config.session_id = "offerer-ice";
     offerer_config.peer_jid = "answerer@example.com";
     offerer_config.relay_only = false;
-    offerer_config.stun_server = "stun://stun.l.google.com:19302";
+    offerer_config.stun_server = "stun://turn.jami.net:3478";
+    offerer_config.proxy_host = proxy_host;
+    offerer_config.proxy_port = proxy_port;
+    offerer_config.proxy_type = proxy_type;
+    offerer_config.proxy_username = proxy_username;
+    offerer_config.proxy_password = proxy_password;
     offerer_config.preferred_type = MediaSession::Type::WEBRTC;
 
     auto offerer = SessionFactory::create(offerer_config);
@@ -210,7 +268,12 @@ int main(int argc, char *argv[]) {
     answerer_config.session_id = "answerer-ice";
     answerer_config.peer_jid = "offerer@example.com";
     answerer_config.relay_only = false;
-    answerer_config.stun_server = "stun://stun.l.google.com:19302";
+    answerer_config.stun_server = "stun://turn.jami.net:3478";
+    answerer_config.proxy_host = proxy_host;
+    answerer_config.proxy_port = proxy_port;
+    answerer_config.proxy_type = proxy_type;
+    answerer_config.proxy_username = proxy_username;
+    answerer_config.proxy_password = proxy_password;
     answerer_config.preferred_type = MediaSession::Type::WEBRTC;
 
     auto answerer = SessionFactory::create(answerer_config);

@@ -97,6 +97,7 @@ private:
     // Helper methods
     bool create_pipeline();
     bool configure_webrtcbin();
+    bool configure_proxy();
     bool add_turn_servers();
     void connect_signals();
 

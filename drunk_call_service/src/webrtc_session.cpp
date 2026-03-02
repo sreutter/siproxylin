@@ -55,6 +55,11 @@ bool WebRTCSession::initialize(const SessionConfig &config) {
             return false;
         }
 
+        if (!configure_proxy()) {
+            std::cerr << "[WebRTCSession] Failed to configure proxy" << std::endl;
+            return false;
+        }
+
         if (!add_turn_servers()) {
             std::cerr << "[WebRTCSession] Failed to add TURN servers" << std::endl;
             return false;
@@ -445,6 +450,88 @@ bool WebRTCSession::configure_webrtcbin() {
 
     } catch (const std::exception &e) {
         std::cerr << "[WebRTCSession] configure_webrtcbin exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool WebRTCSession::configure_proxy() {
+    try {
+        if (config_.proxy_host.empty() || config_.proxy_port == 0) {
+            return true;  // No proxy configured
+        }
+
+        std::cout << "[WebRTCSession] Configuring proxy..." << std::endl;
+
+        if (config_.proxy_type == "HTTP") {
+            // Use webrtcbin's http-proxy property (GStreamer 1.22+)
+            std::string proxy_url = "http://";
+
+            if (!config_.proxy_username.empty()) {
+                proxy_url += config_.proxy_username;
+                if (!config_.proxy_password.empty()) {
+                    proxy_url += ":" + config_.proxy_password;
+                }
+                proxy_url += "@";
+            }
+
+            proxy_url += config_.proxy_host + ":" + std::to_string(config_.proxy_port);
+
+            g_object_set(webrtc_, "http-proxy", proxy_url.c_str(), nullptr);
+            std::cout << "[WebRTCSession] HTTP proxy configured: "
+                      << config_.proxy_host << ":" << config_.proxy_port << std::endl;
+
+        } else if (config_.proxy_type == "SOCKS5") {
+            // Access NiceAgent directly for SOCKS5 support
+            GObject *webrtc_ice = nullptr;
+            GObject *nice_agent = nullptr;
+
+            // First get the GstWebRTCICE object
+            g_object_get(webrtc_, "ice-agent", &webrtc_ice, nullptr);
+
+            if (!webrtc_ice) {
+                std::cerr << "[WebRTCSession] Failed to get ice-agent for SOCKS5 proxy" << std::endl;
+                return false;
+            }
+
+            // Then get the actual NiceAgent from GstWebRTCNice
+            g_object_get(webrtc_ice, "agent", &nice_agent, nullptr);
+
+            if (!nice_agent) {
+                std::cerr << "[WebRTCSession] Failed to get NiceAgent for SOCKS5 proxy" << std::endl;
+                g_object_unref(webrtc_ice);
+                return false;
+            }
+
+            // Set SOCKS5 proxy on the NiceAgent
+            // NiceProxyType: NICE_PROXY_TYPE_SOCKS5 = 1
+            g_object_set(nice_agent,
+                "proxy-type", 1,  // NICE_PROXY_TYPE_SOCKS5
+                "proxy-ip", config_.proxy_host.c_str(),
+                "proxy-port", static_cast<guint>(config_.proxy_port),
+                nullptr);
+
+            if (!config_.proxy_username.empty()) {
+                g_object_set(nice_agent,
+                    "proxy-username", config_.proxy_username.c_str(),
+                    "proxy-password", config_.proxy_password.c_str(),
+                    nullptr);
+            }
+
+            std::cout << "[WebRTCSession] SOCKS5 proxy configured: "
+                      << config_.proxy_host << ":" << config_.proxy_port << std::endl;
+
+            g_object_unref(nice_agent);
+            g_object_unref(webrtc_ice);
+
+        } else {
+            std::cerr << "[WebRTCSession] Unknown proxy type: " << config_.proxy_type << std::endl;
+            return false;
+        }
+
+        return true;
+
+    } catch (const std::exception &e) {
+        std::cerr << "[WebRTCSession] configure_proxy exception: " << e.what() << std::endl;
         return false;
     }
 }

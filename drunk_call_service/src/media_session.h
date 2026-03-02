@@ -100,6 +100,13 @@ struct SessionConfig {
     bool noise_suppression;
     bool gain_control;
 
+    // Proxy settings
+    std::string proxy_host;      // Empty = no proxy
+    int proxy_port;              // 0 = no proxy
+    std::string proxy_username;  // Optional
+    std::string proxy_password;  // Optional
+    std::string proxy_type;      // "HTTP" or "SOCKS5"
+
     // Implementation selection
     MediaSession::Type preferred_type;  // Hint for factory
 };
