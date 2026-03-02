@@ -11,6 +11,7 @@
 
 QWidget {
     background-color: #0c0c0c;
+    alternate-background-color: #404040;
     color: #33ff33;
     font-family: "Courier New", "Consolas", monospace;
     font-size: {{BASE_FONT_SIZE}}pt;
