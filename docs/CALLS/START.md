@@ -56,12 +56,18 @@
  
 
 ### Success Criteria:
-- Outgoing: CreateSession → CreateOffer → SetRemoteDescription → CONNECTED
-- Incoming: CreateSession → CreateAnswer → CONNECTED
-- ICE candidates streamed via StreamEvents
+**Library level (before gRPC):**
+- ✅ WebRTCSession: SDP negotiation, ICE connectivity
+- ⏳ **Proxy support** (CRITICAL - old Go service had this, check drunk_call_service_go/, test with local SOCKS5)
+- ⏳ Device enumeration (GStreamer GstDeviceMonitor API, see gst-plugins-good/ext/pulse/pulsesink.c)
+- ⏳ Statistics (get_stats() method)
+- ⏳ Video streams (add_video_stream() at library level, test in test_step3)
+
+**gRPC service level:**
+- CreateSession, CreateOffer, CreateAnswer, StreamEvents
 - Audio bidirectional, mute works, stats available
-- Binary size <10MB (stripped), startup <500ms
-- Works with Conversations.im + Dino (trickle ICE, bundle, rtcp-mux)
+- Binary <10MB, startup <500ms
+- Works with Conversations.im + Dino
 
 ### Build:
 - CMake 3.20+, C++17
@@ -73,10 +79,14 @@
 `NEW → CHECKING → CONNECTED → COMPLETED` (or `FAILED`/`DISCONNECTED`)
 Stream state changes to Python via ConnectionStateEvent.
 
-### Missing SDP Features (add to proto/handling):
-1. **rtcp-mux**: RTP+RTCP on same port (webrtcbin auto-handles if `a=rtcp-mux` in SDP)
-2. **bundle**: Single ICE connection for all media (set `bundle-policy=max-bundle` on webrtcbin)
-3. **trickle-only**: Conversations sends `a=ice-options:trickle` with NO candidates in SDP, they arrive via AddICECandidate later
+### WebRTC Features Status:
+1. ✅ **rtcp-mux**: RTP+RTCP on same port (webrtcbin auto-handles)
+2. ✅ **bundle**: Single ICE connection (`bundle-policy=max-bundle` set in webrtc_session.cpp:425)
+3. ✅ **trickle-ICE**: `a=ice-options:trickle` in SDP, candidates streamed via on_ice_candidate
+4. ⏳ **proxy**: MUST support SOCKS5/HTTP (old Go had it, check drunk_call_service_go/)
+5. ⏳ **devices**: GstDeviceMonitor (replace pactl)
+6. ⏳ **stats**: get_stats() method
+7. ⏳ **video**: add_video_stream() for future Qt integration
 
 ### Error Handling:
 - Try-catch all RPC handlers

@@ -11,7 +11,7 @@ GST_CFLAGS = $(shell $(PKG_CONFIG) --cflags $(GST_PACKAGES))
 GST_LIBS = $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES))
 
 # Targets (in order of complexity)
-TESTS = test_step0_gstreamer_basic test_step1_pipeline test_step2_sdp_negotiation test_audio_loopback
+TESTS = test_step0_gstreamer_basic test_step1_pipeline test_step2_sdp_negotiation test_step3_ice_connectivity test_audio_loopback
 
 all: $(TESTS)
 
@@ -25,6 +25,10 @@ test_step1_pipeline: test_step1_pipeline.cpp
 
 # Step 2: SDP offer/answer negotiation
 test_step2_sdp_negotiation: test_step2_sdp_negotiation.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+
+# Step 3: ICE candidate exchange and connectivity
+test_step3_ice_connectivity: test_step3_ice_connectivity.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
 
 # Audio loopback (based on GStreamer examples, for reference)
@@ -46,6 +50,9 @@ test: all
 	@echo ""
 	@echo "Step 2: SDP offer/answer negotiation"
 	./test_step2_sdp_negotiation
+	@echo ""
+	@echo "Step 3: ICE candidate exchange and connectivity"
+	./test_step3_ice_connectivity
 	@echo ""
 	@echo "Audio loopback test (manual - Ctrl+C to stop)"
 	@echo "Note: This test requires audio devices and user interaction"

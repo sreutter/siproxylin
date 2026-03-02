@@ -496,6 +496,9 @@ void WebRTCSession::connect_signals() {
         g_signal_connect(webrtc_, "notify::ice-connection-state",
                         G_CALLBACK(on_ice_connection_state_static), this);
 
+        g_signal_connect(webrtc_, "notify::ice-gathering-state",
+                        G_CALLBACK(on_ice_gathering_state_static), this);
+
         g_signal_connect(webrtc_, "notify::signaling-state",
                         G_CALLBACK(on_signaling_state_static), this);
 
@@ -535,6 +538,12 @@ void WebRTCSession::on_ice_connection_state_static(GstElement *webrtc, GParamSpe
                                                    gpointer user_data) {
     WebRTCSession *self = static_cast<WebRTCSession*>(user_data);
     self->on_ice_connection_state();
+}
+
+void WebRTCSession::on_ice_gathering_state_static(GstElement *webrtc, GParamSpec *pspec,
+                                                  gpointer user_data) {
+    WebRTCSession *self = static_cast<WebRTCSession*>(user_data);
+    self->on_ice_gathering_state();
 }
 
 void WebRTCSession::on_signaling_state_static(GstElement *webrtc, GParamSpec *pspec,
@@ -679,6 +688,17 @@ void WebRTCSession::on_offer_set_for_answer() {
 
 void WebRTCSession::on_ice_candidate(guint mlineindex, const char *candidate) {
     try {
+        // Candidate filtering for privacy (relay-only mode)
+        if (config_.relay_only) {
+            // In relay-only mode, only send relay candidates to prevent IP leaks
+            if (strstr(candidate, "typ host") != nullptr ||
+                strstr(candidate, "typ srflx") != nullptr) {
+                std::cout << "[WebRTCSession] Filtering non-relay candidate (relay-only mode): "
+                          << candidate << std::endl;
+                return;  // Skip this candidate
+            }
+        }
+
         std::cout << "[WebRTCSession] ICE candidate: mline=" << mlineindex
                   << " candidate=" << candidate << std::endl;
 
@@ -739,6 +759,31 @@ void WebRTCSession::on_ice_connection_state() {
 
     } catch (const std::exception &e) {
         std::cerr << "[WebRTCSession] on_ice_connection_state exception: " << e.what() << std::endl;
+    }
+}
+
+void WebRTCSession::on_ice_gathering_state() {
+    try {
+        GstWebRTCICEGatheringState gathering_state;
+        g_object_get(webrtc_, "ice-gathering-state", &gathering_state, nullptr);
+
+        const char *state_str = "";
+        switch (gathering_state) {
+            case GST_WEBRTC_ICE_GATHERING_STATE_NEW:
+                state_str = "NEW";
+                break;
+            case GST_WEBRTC_ICE_GATHERING_STATE_GATHERING:
+                state_str = "GATHERING";
+                break;
+            case GST_WEBRTC_ICE_GATHERING_STATE_COMPLETE:
+                state_str = "COMPLETE";
+                break;
+        }
+
+        std::cout << "[WebRTCSession] ICE gathering state: " << state_str << std::endl;
+
+    } catch (const std::exception &e) {
+        std::cerr << "[WebRTCSession] on_ice_gathering_state exception: " << e.what() << std::endl;
     }
 }
 

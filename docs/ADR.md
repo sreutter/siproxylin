@@ -141,10 +141,17 @@ main_window.py
 
 **Key Directories:**
 - `drunk_xmpp/calls/` - XEP-0353 Jingle Message Initiation (STABLE)
-- `drunk_call_hook/` - Python → Go bridge (gRPC)
-- `drunk_call_service/` - Go service (Pion + GStreamer)
+- `drunk_call_hook/` - Python → C++ bridge (gRPC)
+- `drunk_call_service/` - C++ service (GStreamer webrtcbin) [REWRITE IN PROGRESS]
+  - Old Go/Pion service: main branch - `drunk_call_service/`
 
 **Per-Account Isolation**: Separate CallBridge + JingleAdapter per account, no shared state.
+
+**Security Requirements (Call Service)**:
+- **Proxy enforcement**: MUST support SOCKS5/HTTP proxy for all network traffic (STUN/TURN)
+- **Leak prevention**: MUST fail calls if proxy configured but unavailable (no fallback to direct)
+- **Privacy modes**: relay-only ICE (no host/srflx candidates exposed) ✅ implemented
+- See: `docs/CALLS/START.md` for implementation requirements
 
 ---
 

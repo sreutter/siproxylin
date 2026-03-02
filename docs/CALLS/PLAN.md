@@ -1,8 +1,11 @@
 # GStreamer WebRTC Call Service - Architecture Plan
 
-**Status**: Draft
+**Status**: Step 3 (ICE) COMPLETED, Step 4 (gRPC) next
 **Date**: 2026-03-02
 **Approach**: webrtcbin-first design, then map to gRPC interface
+
+**See Also**:
+- docs/CALLS/START.md - Context, requirements, library features needed before gRPC
 
 ---
 
@@ -144,7 +147,7 @@ HAVE_REMOTE_OFFER ⇄ HAVE_LOCAL_ANSWER → STABLE
 
 ## Pipeline Architecture
 
-### Audio-Only Pipeline
+### Audio-Only Pipeline (Current Implementation)
 
 ```
 Outgoing:
@@ -162,6 +165,8 @@ Incoming (dynamic, via pad-added signal):
 - RTCP-MUX: automatic (`a=rtcp-mux`)
 
 **Implementation**: See `docs/CALLS/webrtcbin-reference.cpp` create_audio_pipeline()
+
+**Next**: Add proxy, devices, stats, video support at library level (see CORE-REQUIREMENTS.md)
 
 ---
 
