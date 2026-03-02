@@ -830,6 +830,109 @@ class MessageBarrel:
                 import traceback
                 self.logger.error(traceback.format_exc())
 
+    async def load_private_chat_history_on_demand(self, contact_jid: str, max_messages: Optional[int] = None):
+        """
+        Load MAM history for a specific private chat on-demand.
+        Used when opening a conversation that has no (or few) local messages.
+
+        Unlike catchup_private_chats(), this:
+        - Works for ANY contact (not just those with existing messages)
+        - Loads from server start time (not just since latest message)
+        - Is triggered when user opens a conversation
+
+        Args:
+            contact_jid: Contact's bare JID
+            max_messages: Maximum messages to retrieve (None = unlimited, default 300 from MAM)
+
+        Returns:
+            Number of messages inserted (0 if none)
+        """
+        if not self.client:
+            if self.logger:
+                self.logger.warning("Cannot load history on-demand: client not connected")
+            return 0
+
+        if self.logger:
+            self.logger.info(f"Loading history on-demand for {contact_jid}")
+
+        try:
+            # Get or create JID entry
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (contact_jid,))
+            if jid_row:
+                jid_id = jid_row['id']
+            else:
+                cursor = self.db.execute("INSERT INTO jid (bare_jid) VALUES (?)", (contact_jid,))
+                jid_id = cursor.lastrowid
+                self.db.commit()
+
+            # Check if we have any messages already
+            existing_msg_count = self.db.fetchone("""
+                SELECT COUNT(*) as count FROM message
+                WHERE account_id = ? AND counterpart_id = ?
+            """, (self.account_id, jid_id))
+
+            msg_count = existing_msg_count['count'] if existing_msg_count else 0
+
+            if msg_count > 0:
+                # We have messages - use catchup approach (from latest message)
+                latest_msg = self.db.fetchone("""
+                    SELECT MAX(time) as latest_time FROM message
+                    WHERE account_id = ? AND counterpart_id = ?
+                """, (self.account_id, jid_id))
+                latest_time = latest_msg['latest_time']
+
+                if self.logger:
+                    self.logger.debug(f"Found {msg_count} existing messages, catching up from latest")
+
+                await self._retrieve_private_chat_history(contact_jid, jid_id, latest_time, max_messages)
+            else:
+                # No messages - load full history from server
+                if self.logger:
+                    self.logger.debug(f"No existing messages, loading full history from server")
+
+                from datetime import datetime, timezone
+
+                # Query MAM from beginning (no start time) - yields pages
+                total_inserted = 0
+                page_count = 0
+                async for page in self.client.retrieve_history(
+                    jid=contact_jid,
+                    start=None,  # From beginning
+                    max_messages=max_messages,
+                    with_jid=contact_jid
+                ):
+                    page_count += 1
+                    if self.logger:
+                        self.logger.debug(f"Processing page {page_count} with {len(page)} messages for {contact_jid}")
+
+                    # Process and commit this page
+                    inserted_count = await self._process_and_store_mam_messages(
+                        page, contact_jid, jid_id
+                    )
+                    total_inserted += inserted_count
+
+                    # Emit signal after each page to update UI incrementally
+                    if inserted_count > 0:
+                        self.signals['message_received'].emit(self.account_id, contact_jid, False)
+
+                if total_inserted > 0:
+                    if self.logger:
+                        self.logger.info(f"Stored {total_inserted} new MAM messages for {contact_jid} across {page_count} pages")
+                else:
+                    if self.logger:
+                        self.logger.info(f"No MAM messages found for {contact_jid}")
+
+                return total_inserted
+
+            return 0
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to load history on-demand for {contact_jid}: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+            return 0
+
     async def catchup_private_chats(self, max_messages_per_chat: Optional[int] = None):
         """
         Catch up on missed private chat messages via MAM (XEP-0313).
@@ -892,44 +995,22 @@ class MessageBarrel:
                 import traceback
                 self.logger.error(traceback.format_exc())
 
-    async def _retrieve_private_chat_history(self, contact_jid: str, jid_id: int, latest_time: int, max_messages: Optional[int]):
+    async def _process_and_store_mam_messages(self, history: list, contact_jid: str, jid_id: int) -> int:
         """
-        Retrieve MAM history for a specific private chat and store in database.
-        Follows same pattern as MUC._retrieve_muc_history().
+        Process and store MAM messages in database.
+        Shared logic between _retrieve_private_chat_history() and load_private_chat_history_on_demand().
 
         Args:
+            history: List of MAM message data dictionaries
             contact_jid: Contact's bare JID
             jid_id: JID ID from database
-            latest_time: Unix timestamp of latest message in DB
-            max_messages: Maximum number of messages to retrieve (None = unlimited)
+
+        Returns:
+            Number of messages inserted
         """
         from datetime import datetime, timezone
 
-        # Start from 5 minutes before latest message for minimal overlap
-        # This handles clock skew and edge cases without excessive duplicate fetching
-        start_time = datetime.fromtimestamp(latest_time - 300, tz=timezone.utc)  # 5 min (was 1h)
-
-        if self.logger:
-            self.logger.debug(f"Querying MAM for {contact_jid} since {start_time} (5min overlap)")
-
-        # Retrieve history from MAM
-        history = await self.client.retrieve_history(
-            jid=contact_jid,
-            start=start_time,
-            max_messages=max_messages,
-            with_jid=contact_jid  # Filter to this specific contact
-        )
-
-        if not history:
-            if self.logger:
-                self.logger.debug(f"No new MAM messages for {contact_jid}")
-            return
-
-        if self.logger:
-            self.logger.info(f"Retrieved {len(history)} MAM messages for {contact_jid}")
-
         # Batch duplicate detection - check BOTH message and file_transfer tables
-        # (prevents duplicates when OMEMO encrypted files fail to decrypt on re-retrieval)
         archive_ids = [msg_data.get('archive_id') for msg_data in history if msg_data.get('archive_id')]
         existing_stanza_ids = set()
         if archive_ids:
@@ -954,7 +1035,6 @@ class MessageBarrel:
         our_jid = self.client.boundjid.bare if self.client else None
 
         # Early duplicate detection - stop if we hit 10 consecutive duplicates
-        # This means we've caught up to already-synced range
         consecutive_duplicates = 0
         MAX_CONSECUTIVE_DUPLICATES = 10
 
@@ -1010,7 +1090,6 @@ class MessageBarrel:
                     pass
 
             # Fallback: Check if body is an attachment URL (aesgcm:// or https://)
-            # Some servers/clients put URL in body without OOB extension in MAM archives
             if not has_attachment and body:
                 if body.startswith('aesgcm://') or (body.startswith('https://') and len(body.split()) == 1):
                     has_attachment = True
@@ -1059,10 +1138,52 @@ class MessageBarrel:
                     inserted_count += 1
 
         self.db.commit()
+        return inserted_count
 
-        if inserted_count > 0:
+    async def _retrieve_private_chat_history(self, contact_jid: str, jid_id: int, latest_time: int, max_messages: Optional[int]):
+        """
+        Retrieve MAM history for a specific private chat and store in database.
+        Follows same pattern as MUC._retrieve_muc_history().
+
+        Args:
+            contact_jid: Contact's bare JID
+            jid_id: JID ID from database
+            latest_time: Unix timestamp of latest message in DB
+            max_messages: Maximum number of messages to retrieve (None = unlimited)
+        """
+        from datetime import datetime, timezone
+
+        # Start from 5 minutes before latest message for minimal overlap
+        # This handles clock skew and edge cases without excessive duplicate fetching
+        start_time = datetime.fromtimestamp(latest_time - 300, tz=timezone.utc)  # 5 min (was 1h)
+
+        if self.logger:
+            self.logger.debug(f"Querying MAM for {contact_jid} since {start_time} (5min overlap)")
+
+        # Retrieve history from MAM - yields pages
+        total_inserted = 0
+        page_count = 0
+        async for page in self.client.retrieve_history(
+            jid=contact_jid,
+            start=start_time,
+            max_messages=max_messages,
+            with_jid=contact_jid  # Filter to this specific contact
+        ):
+            page_count += 1
             if self.logger:
-                self.logger.info(f"Stored {inserted_count} new MAM messages for {contact_jid}")
+                self.logger.debug(f"Processing catchup page {page_count} with {len(page)} messages for {contact_jid}")
 
-            # Emit signal to refresh chat view if open
-            self.signals['message_received'].emit(self.account_id, contact_jid, False)
+            # Process and commit this page
+            inserted_count = await self._process_and_store_mam_messages(page, contact_jid, jid_id)
+            total_inserted += inserted_count
+
+            # Emit signal after each page to update UI incrementally
+            if inserted_count > 0:
+                self.signals['message_received'].emit(self.account_id, contact_jid, False)
+
+        if total_inserted > 0:
+            if self.logger:
+                self.logger.info(f"Stored {total_inserted} new MAM messages for {contact_jid} across {page_count} pages")
+        else:
+            if self.logger:
+                self.logger.debug(f"No new MAM messages for {contact_jid}")
