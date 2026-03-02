@@ -77,6 +77,8 @@ private:
                                        gchar *candidate, gpointer user_data);
     static void on_ice_connection_state_static(GstElement *webrtc, GParamSpec *pspec,
                                               gpointer user_data);
+    static void on_signaling_state_static(GstElement *webrtc, GParamSpec *pspec,
+                                         gpointer user_data);
     static void on_incoming_stream_static(GstElement *webrtc, GstPad *pad,
                                          gpointer user_data);
 
@@ -86,6 +88,7 @@ private:
     void on_answer_created(GstPromise *promise);
     void on_ice_candidate(guint mlineindex, const char *candidate);
     void on_ice_connection_state();
+    void on_signaling_state();
     void on_incoming_stream(GstPad *pad);
 
     // Helper methods

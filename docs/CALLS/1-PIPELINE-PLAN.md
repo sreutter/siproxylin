@@ -497,8 +497,9 @@ Once pipeline is running, proceed to **2-SDP-PLAN.md** for offer/answer creation
   ```
 
 - **Known Issues & Resolutions**:
-  - ⚠️ SDP warning "ignoring stream without payload type" - Non-fatal, webrtcbin still generates valid SDP
-  - ⚠️ No ICE candidates in standalone test - Expected, requires actual remote peer
+  - ✅ **FIXED**: Original ERROR "ignoring stream without payload type" - Fixed by adding capsfilter with explicit clock-rate
+  - ⚠️ New WARN "Caps are missing ssrc" - Normal, SSRC generated dynamically during media flow
+  - ✅ ICE candidates now working - 15 candidates gathered with STUN server
   - ✅ Mute originally tried to use audio_src.volume (doesn't exist) - Fixed by adding volume element
 
 **Test Log Excerpt** (2026-03-02 17:05):

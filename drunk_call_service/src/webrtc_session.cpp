@@ -496,6 +496,9 @@ void WebRTCSession::connect_signals() {
         g_signal_connect(webrtc_, "notify::ice-connection-state",
                         G_CALLBACK(on_ice_connection_state_static), this);
 
+        g_signal_connect(webrtc_, "notify::signaling-state",
+                        G_CALLBACK(on_signaling_state_static), this);
+
         std::cout << "[WebRTCSession] Signals connected" << std::endl;
 
     } catch (const std::exception &e) {
@@ -532,6 +535,12 @@ void WebRTCSession::on_ice_connection_state_static(GstElement *webrtc, GParamSpe
                                                    gpointer user_data) {
     WebRTCSession *self = static_cast<WebRTCSession*>(user_data);
     self->on_ice_connection_state();
+}
+
+void WebRTCSession::on_signaling_state_static(GstElement *webrtc, GParamSpec *pspec,
+                                             gpointer user_data) {
+    WebRTCSession *self = static_cast<WebRTCSession*>(user_data);
+    self->on_signaling_state();
 }
 
 void WebRTCSession::on_incoming_stream_static(GstElement *webrtc, GstPad *pad,
@@ -730,6 +739,40 @@ void WebRTCSession::on_ice_connection_state() {
 
     } catch (const std::exception &e) {
         std::cerr << "[WebRTCSession] on_ice_connection_state exception: " << e.what() << std::endl;
+    }
+}
+
+void WebRTCSession::on_signaling_state() {
+    try {
+        GstWebRTCSignalingState state;
+        g_object_get(webrtc_, "signaling-state", &state, nullptr);
+
+        const char *state_str = "UNKNOWN";
+        switch (state) {
+            case GST_WEBRTC_SIGNALING_STATE_STABLE:
+                state_str = "STABLE";
+                break;
+            case GST_WEBRTC_SIGNALING_STATE_CLOSED:
+                state_str = "CLOSED";
+                break;
+            case GST_WEBRTC_SIGNALING_STATE_HAVE_LOCAL_OFFER:
+                state_str = "HAVE_LOCAL_OFFER";
+                break;
+            case GST_WEBRTC_SIGNALING_STATE_HAVE_REMOTE_OFFER:
+                state_str = "HAVE_REMOTE_OFFER";
+                break;
+            case GST_WEBRTC_SIGNALING_STATE_HAVE_LOCAL_PRANSWER:
+                state_str = "HAVE_LOCAL_PRANSWER";
+                break;
+            case GST_WEBRTC_SIGNALING_STATE_HAVE_REMOTE_PRANSWER:
+                state_str = "HAVE_REMOTE_PRANSWER";
+                break;
+        }
+
+        std::cout << "[WebRTCSession] Signaling state: " << state_str << std::endl;
+
+    } catch (const std::exception &e) {
+        std::cerr << "[WebRTCSession] on_signaling_state exception: " << e.what() << std::endl;
     }
 }
 

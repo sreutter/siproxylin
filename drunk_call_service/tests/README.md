@@ -4,23 +4,23 @@
 
 ## Test Levels
 
-### Level 1: GStreamer Standalone Tests (No gRPC)
+### Level 1: GStreamer Standalone Tests (No gRPC) ✅ IMPLEMENTED
 
 **Purpose**: Validate webrtcbin flow without gRPC complexity
 
 **Location**: `tests/standalone/`
 
-**Tests**:
-- `test_pipeline.cpp` - Pipeline creation, element linking, PLAYING state
-- `test_sdp_local.cpp` - Create offer/answer locally (two webrtcbins in one process)
-- `test_ice_loopback.cpp` - ICE candidates, local connectivity
-- `test_audio_loopback.cpp` - Full call loopback (mic → speaker)
+**Tests** (in order of implementation):
+- `test_step0_gstreamer_basic.cpp` ✅ - GStreamer version, plugin availability, basic pipeline
+- `test_step1_pipeline.cpp` ✅ - WebRTCSession class, pipeline creation, offer generation (Step 1)
+- `test_step2_sdp_negotiation.cpp` ✅ - Full offer/answer negotiation, signaling states (Step 2)
+- `test_audio_loopback.cpp` - Reference implementation from GStreamer examples
 
 **Run**:
 ```bash
 cd drunk_call_service/tests/standalone
-./test_pipeline
-./test_audio_loopback
+make test              # Run all tests in sequence
+./test_step1_pipeline  # Run specific test
 ```
 
 **Benefits**:

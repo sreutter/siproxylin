@@ -649,15 +649,73 @@ Once SDP negotiation works, proceed to **3-ICE-PLAN.md** for ICE candidate handl
 
 ## STATUS
 
-**Current**: Not started (depends on 1-PIPELINE-PLAN.md completion)
+**Current**: ✅ COMPLETED
 
-**Done**: []
+**Done**: All tasks (2.1 through 2.9)
 
-**Next**: Task 2.1 - Trigger offer creation
+**Implementation Details**:
+- **Signaling State Monitoring** (Task 2.7):
+  - Added `on_signaling_state_static` handler (webrtc_session.cpp:540)
+  - Logs all state transitions: STABLE, HAVE_LOCAL_OFFER, HAVE_REMOTE_OFFER, etc.
+  - Verified correct transitions in test
+
+- **Test Results** (test_sdp_local):
+  - ✓ **Offer creation**: 501 bytes SDP, contains BUNDLE, trickle ICE, fingerprint
+  - ✓ **Answer creation**: 646 bytes SDP created in response to offer
+  - ✓ **Signaling states**: Correct transitions observed
+    - Offerer: STABLE → HAVE_LOCAL_OFFER → STABLE
+    - Answerer: STABLE → HAVE_REMOTE_OFFER → STABLE
+  - ✓ **ICE candidates**: Both sessions gathered 15 candidates each (host + srflx)
+  - ✓ **SDP validation**: All required attributes present:
+    - `a=group:BUNDLE audio` ✓
+    - `a=ice-options:trickle` ✓
+    - `a=fingerprint:sha-256` ✓
+    - `m=audio` media line ✓
+
+- **Signaling Flow Verified**:
+  ```
+  Offerer:
+    create_offer() → on_offer_created → set-local-description → offer ready
+
+  Answerer:
+    create_answer(offer) → set-remote-description → on_offer_set_for_answer
+    → create-answer → on_answer_created → set-local-description → answer ready
+
+  Offerer:
+    set_remote_description(answer) → negotiation complete
+  ```
+
+**Test Log Excerpt** (2026-03-02 17:31):
+```
+[OFFERER] Offer SDP created (501 bytes)
+[OFFERER] ✓ SDP contains BUNDLE
+[OFFERER] ✓ SDP contains trickle ICE
+[OFFERER] ✓ SDP contains DTLS fingerprint
+[WebRTCSession] Signaling state: HAVE_LOCAL_OFFER
+
+[ANSWERER] Answer SDP created (646 bytes)
+[WebRTCSession] Signaling state: HAVE_REMOTE_OFFER
+[WebRTCSession] Signaling state: STABLE
+
+Offerer ICE candidates: 15 ✓
+Answerer ICE candidates: 15 ✓
+
+=== All critical tests PASSED ===
+```
+
+**Files Modified**:
+- `drunk_call_service/src/webrtc_session.{h,cpp}` - Added signaling state monitoring
+- `drunk_call_service/tests/standalone/test_sdp_local.cpp` - Comprehensive loopback test
+
+**Known Non-Issues**:
+- gssdp-client warnings about multicast - Normal, libnice trying UPnP discovery
+- "Can't determine running time" - Expected without actual media flow between peers
+
+**Next**: Step 3 - ICE candidate exchange and connectivity (docs/CALLS/3-ICE-PLAN.md)
 
 **Blockers**: None
 
-**Last updated**: 2026-03-02
+**Last updated**: 2026-03-02 17:32
 
 ---
 
