@@ -1,831 +1,962 @@
-# Step 4: gRPC Service Integration & Threading
+# Step 4: gRPC Integration Plan
 
 **Status**: Planning
-**Depends on**: 1-PIPELINE-PLAN.md, 2-SDP-PLAN.md, 3-ICE-PLAN.md
-**Leads to**: 5-STATS-PLAN.md (final step)
+**Date**: 2026-03-02
+**Prerequisites**: Steps 1-3 completed (WebRTCSession, devices, stats working at library level)
+
+**See Also**:
+- docs/CALLS/PLAN.md - Overall architecture
+- docs/CALLS/START.md - Requirements and context
+- drunk_call_service/proto/call.proto - gRPC interface contract
 
 ---
 
-## Goal
+## Current State
 
-Integrate GStreamer WebRTC implementation with gRPC service, handle threading correctly, manage session lifecycle, implement service startup/shutdown.
+### What Works (Library Level)
+- ✅ WebRTCSession: SDP negotiation, ICE, stats, mute
+- ✅ Device enumeration (audio + video, cross-platform)
+- ✅ Proxy support (HTTP + SOCKS5 via libnice properties)
+- ✅ Logger (spdlog with rotation)
+- ✅ Tests: test_device_enumeration, test_stats, test_logger passing
 
-**Success**: Python can create/manage multiple concurrent sessions, gRPC calls don't block, events stream correctly, no deadlocks or race conditions.
-
----
-
-## Threading Architecture
-
-### Thread Model
-
-**Three thread domains**:
-
-1. **GLib Main Loop Thread** (single, long-lived)
-   - Runs `g_main_loop_run()`
-   - All GStreamer signals fire here
-   - Handles GstPromise callbacks
-   - Must NOT block
-
-2. **gRPC Thread Pool** (multiple threads, managed by gRPC)
-   - Handles incoming gRPC requests (CreateSession, CreateOffer, etc.)
-   - Can block waiting for results
-   - Must be thread-safe when accessing sessions
-
-3. **Event Streaming Threads** (one per session)
-   - Dedicated thread for `StreamEvents` per session
-   - Polls event queue
-   - Writes to gRPC stream
-
-**Critical rule**: GStreamer objects (GstElement, etc.) can ONLY be accessed from main loop thread or with proper locking.
-
-**Reference**: `docs/CALLS/PLAN.md` (Threading Model section)
+### What's Missing (gRPC Service Level)
+- ⏳ gRPC service implementation (main.cpp with RPC handlers)
+- ⏳ Threading model (GLib main loop + gRPC thread pool)
+- ⏳ Event streaming (C++ → Python bidirectional)
+- ⏳ Session lifecycle management (create/destroy, cleanup)
+- ⏳ Error propagation (C++ exceptions → Python via ErrorEvent)
 
 ---
 
-## Task 4.1: Service Initialization
+## Philosophy: Don't Fight the Frameworks
 
-**What**: Start gRPC server, initialize GStreamer, create main loop
+**CRITICAL RULE**: Let each framework do what it does best.
 
-**Implementation** (`src/main.cpp`):
-```c++
-int main(int argc, char **argv) {
-    // Initialize GStreamer
-    gst_init(&argc, &argv);
+### GStreamer/webrtcbin Requirements
+- **GLib main loop MUST run** in a dedicated thread (blocks forever with g_main_loop_run)
+- **All GStreamer callbacks** fire in main loop thread
+- **Thread-safe access** to GStreamer elements requires locks or main loop context invocation
 
-    // Check required plugins (from 1-PIPELINE-PLAN.md task 1.2)
-    if (!check_required_plugins()) {
-        return EXIT_FAILURE;
-    }
+### gRPC Requirements
+- **gRPC handlers** run in gRPC thread pool (configurable size)
+- **Bidirectional streaming** (StreamEvents) needs dedicated thread per stream
+- **Synchronous calls** (CreateOffer, CreateAnswer) block caller thread until complete
 
-    // Create and start GLib main loop thread
-    GMainLoop *main_loop = g_main_loop_new(NULL, FALSE);
-    std::thread main_loop_thread([main_loop]() {
-        g_main_loop_run(main_loop);
-    });
-
-    // Create gRPC service
-    CallServiceImpl service;
-    grpc::ServerBuilder builder;
-    builder.AddListeningPort("127.0.0.1:50051",
-        grpc::InsecureServerCredentials());
-    builder.RegisterService(&service);
-    std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
-
-    std::cout << "Call service listening on 127.0.0.1:50051" << std::endl;
-
-    // Wait for shutdown signal
-    server->Wait();
-
-    // Cleanup
-    g_main_loop_quit(main_loop);
-    main_loop_thread.join();
-    g_main_loop_unref(main_loop);
-    gst_deinit();
-
-    return EXIT_SUCCESS;
-}
+### The Integration Challenge
+```
+Python (asyncio)
+    ↓ gRPC async client
+gRPC C++ Server (thread pool)
+    ↓ needs to call
+GStreamer (GLib main loop thread)
+    ↓ callbacks fire
+gRPC Event Stream (back to Python)
 ```
 
-**Reference**: `docs/CALLS/webrtcbin-reference.cpp` lines 416-431
-
-**Test**:
-```bash
-./drunk-call-service
-# Expected output:
-# "GStreamer 1.22.x initialized"
-# "Call service listening on 127.0.0.1:50051"
-# (no errors, process stays running)
-
-# In another terminal:
-grpcurl -plaintext localhost:50051 list
-# Should show: call.CallService
-```
+**Anti-pattern we're AVOIDING**: Trying to patch both ends simultaneously led to async timing races in Go implementation.
 
 ---
 
-## Task 4.2: Session Management
+## Threading Model
 
-**What**: Store and manage multiple concurrent sessions
+### Thread Architecture
 
-**Data structure**:
-```c++
-class CallServiceImpl : public CallService::Service {
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Main Thread (short-lived)                │
+│  - Parse CLI args                                           │
+│  - Initialize GStreamer (gst_init)                          │
+│  - Initialize spdlog logger                                 │
+│  - Start GLib thread                                        │
+│  - Start gRPC server                                        │
+│  - Wait for SIGINT/SIGTERM → cleanup → exit                 │
+└─────────────────────────────────────────────────────────────┘
+                         │
+         ┌───────────────┴────────────────┐
+         ↓                                ↓
+┌────────────────────────┐    ┌──────────────────────────────┐
+│  GLib Main Loop Thread │    │  gRPC Server Thread Pool     │
+│  (1 thread, dedicated) │    │  (N threads, configurable)   │
+├────────────────────────┤    ├──────────────────────────────┤
+│ - g_main_loop_run()    │    │ RPC Handlers:                │
+│   (blocks forever)     │    │  - CreateSession             │
+│                        │    │  - CreateOffer               │
+│ GStreamer callbacks:   │    │  - CreateAnswer              │
+│  - on_ice_candidate    │    │  - SetRemoteDescription      │
+│  - on_negotiation_...  │    │  - AddICECandidate           │
+│  - on_ice_conn_state   │    │  - GetStats                  │
+│  - pad-added           │    │  - SetMute                   │
+│                        │    │  - EndSession                │
+│ Pushes events to →     │    │  - StreamEvents (streaming)  │
+│ thread-safe queue      │    │  - Heartbeat                 │
+└────────────────────────┘    │  - Shutdown                  │
+                              └──────────────────────────────┘
+                                      ↓
+                          ┌──────────────────────────────────┐
+                          │ Per-Session Event Stream Threads │
+                          │ (1 thread per active StreamEvents│
+                          │  RPC call, managed by gRPC)      │
+                          ├──────────────────────────────────┤
+                          │ - Polls thread-safe event queue  │
+                          │ - Sends CallEvent to Python      │
+                          │ - Blocks on queue.pop() until    │
+                          │   event available or cancelled   │
+                          └──────────────────────────────────┘
+```
+
+### Thread Responsibilities
+
+| Thread | Runs | Responsibilities | Blocking? |
+|--------|------|------------------|-----------|
+| **Main** | main() | Startup, signal handling, shutdown coordination | Yes (waits for signals) |
+| **GLib loop** | g_main_loop_run() | GStreamer callbacks, webrtcbin signals | Yes (event loop) |
+| **gRPC pool** | grpc::Server | RPC handlers, session management | No (thread pool) |
+| **StreamEvents** | grpc streaming | Event queue polling, Python streaming | Yes (blocking read from queue) |
+
+---
+
+## Session Management
+
+### Session Structure
+
+```cpp
+struct CallSession {
+    std::string session_id;           // Jingle session ID (from Python)
+    std::string peer_jid;             // Remote peer JID
+
+    // WebRTC session (library layer)
+    std::unique_ptr<WebRTCSession> webrtc;
+
+    // Event streaming
+    std::shared_ptr<ThreadSafeQueue<CallEvent>> event_queue;
+    grpc::ServerWriter<CallEvent>* event_writer;  // Set when StreamEvents RPC active
+    std::mutex event_writer_lock;                 // Protect event_writer access
+
+    // State
+    std::atomic<bool> active;         // Session is active (not ended)
+    std::chrono::steady_clock::time_point created_at;
+};
+```
+
+### Session Lifecycle
+
+```
+Python                          gRPC Handler (C++)                GLib Thread
+  |                                    |                                 |
+  |--CreateSession(session_id)------→ |                                 |
+  |                                    | Create CallSession              |
+  |                                    | Create WebRTCSession            |
+  |                                    | webrtc->initialize(config)      |
+  |                                    | Store in sessions map           |
+  |←--------success/error------------- |                                 |
+  |                                    |                                 |
+  |--StreamEvents(session_id)-------→ |                                 |
+  |                                    | Set event_writer in session     |
+  |                                    | [BLOCKS streaming events]       |
+  |                                    |                                 |
+  |--CreateOffer(session_id)--------→ |                                 |
+  |                                    | webrtc->create_offer(callback)  |
+  |                                    | [WAIT on promise/callback]      |
+  |                                    |                          webrtc fires
+  |                                    |                          on_offer_created
+  |                                    |                          → cv.notify()
+  |                                    | [RESUME with SDP]               |
+  |←--------SDP offer----------------- |                                 |
+  |                                    |                                 |
+  |                                    |                          on_ice_candidate
+  |←--------ICECandidateEvent--------- |← queue.push(event) ------------ |
+  |                                    |                                 |
+  |                                    |                          on_ice_connection_state
+  |←--------ConnectionStateEvent------ |← queue.push(event) ------------ |
+  |                                    |                                 |
+  |--EndSession(session_id)----------→|                                 |
+  |                                    | webrtc->stop()                  |
+  |                                    | event_writer->WritesDone()      |
+  |                                    | Delete from sessions map        |
+  |←--------ok------------------------ |                                 |
+```
+
+### Thread-Safe Session Access
+
+**Problem**: gRPC handlers (thread pool) need to access sessions that GStreamer callbacks (GLib thread) also access.
+
+**Solution**: Mutex-protected session map + reference counting.
+
+```cpp
+class CallServiceImpl {
 private:
-    std::map<std::string, std::unique_ptr<CallSession>> sessions_;
-    std::mutex sessions_mutex_;
+    std::mutex sessions_lock_;
+    std::map<std::string, std::shared_ptr<CallSession>> sessions_;
 
 public:
-    CallSession* find_session(const std::string &session_id) {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
+    std::shared_ptr<CallSession> get_session(const std::string& session_id) {
+        std::lock_guard<std::mutex> lock(sessions_lock_);
         auto it = sessions_.find(session_id);
-        if (it == sessions_.end()) {
-            return nullptr;
-        }
-        return it->second.get();
+        if (it == sessions_.end()) return nullptr;
+        return it->second;  // shared_ptr keeps session alive during use
     }
 
-    void add_session(const std::string &session_id,
-                    std::unique_ptr<CallSession> session) {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        sessions_[session_id] = std::move(session);
+    void add_session(const std::string& session_id, std::shared_ptr<CallSession> session) {
+        std::lock_guard<std::mutex> lock(sessions_lock_);
+        sessions_[session_id] = session;
     }
 
-    void remove_session(const std::string &session_id) {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
+    void remove_session(const std::string& session_id) {
+        std::lock_guard<std::mutex> lock(sessions_lock_);
         sessions_.erase(session_id);
     }
 };
 ```
 
-**Thread safety**: Always hold `sessions_mutex_` when accessing map
-
-**Test**:
-```bash
-# Create 3 sessions concurrently (Python):
-import concurrent.futures
-def create_session(n):
-    stub.CreateSession(CreateSessionRequest(session_id=f"session-{n}"))
-
-with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-    executor.map(create_session, [1, 2, 3])
-
-# Verify: 3 sessions created, no crashes
+**Usage**:
+```cpp
+// In RPC handler (gRPC thread)
+auto session = service->get_session(request->session_id());
+if (!session) {
+    return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+}
+// session is now ref-counted - won't be deleted until shared_ptr goes out of scope
+session->webrtc->set_mute(request->muted());
 ```
 
 ---
 
-## Task 4.3: Implement CreateSession RPC
+## Event Streaming (C++ → Python)
 
-**What**: Create new call session, build pipeline, configure properties
+### The Challenge
 
-**Implementation**:
-```c++
-Status CreateSession(ServerContext* context,
-                    const CreateSessionRequest* request,
-                    CreateSessionResponse* response) {
-    try {
-        // Create session object
-        auto session = std::make_unique<CallSession>();
-        session->session_id = request->session_id();
-        session->peer_jid = request->peer_jid();
-        session->relay_only = request->relay_only();
-        session->stun_server = request->turn_server().empty() ?
-            "stun://stun.l.google.com:19302" : "";
-        session->turn_server = request->turn_server();
-        session->microphone_device = request->microphone_device();
-        session->speakers_device = request->speakers_device();
+GStreamer callbacks fire in GLib thread:
+```cpp
+// This runs in GLib thread!
+void on_ice_candidate(GstElement* webrtc, guint mlineindex, gchar* candidate, gpointer user_data) {
+    // How do we get this to Python?
+}
+```
 
-        // Create pipeline (from 1-PIPELINE-PLAN.md)
-        create_audio_pipeline(session.get());
+Python expects events via `StreamEvents` RPC:
+```python
+async for event in stub.StreamEvents(request):
+    # Handle event
+```
 
-        // Configure TURN/STUN (from 1-PIPELINE-PLAN.md task 1.6)
-        configure_turn_stun(session.get());
+### The Solution: Thread-Safe Event Queue
 
-        // Set pipeline to PLAYING
-        GstStateChangeReturn ret =
-            gst_element_set_state(session->pipeline, GST_STATE_PLAYING);
-        if (ret == GST_STATE_CHANGE_FAILURE) {
-            response->set_success(false);
-            response->set_error("Failed to start pipeline");
-            return Status::OK;
+```cpp
+template<typename T>
+class ThreadSafeQueue {
+private:
+    std::queue<T> queue_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool shutdown_ = false;
+
+public:
+    void push(const T& item) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.push(item);
+        cv_.notify_one();  // Wake up StreamEvents thread
+    }
+
+    bool pop(T& item, std::chrono::milliseconds timeout = std::chrono::milliseconds(1000)) {
+        std::unique_lock<std::mutex> lock(mutex_);
+
+        // Wait for item or shutdown
+        if (!cv_.wait_for(lock, timeout, [this] {
+            return !queue_.empty() || shutdown_;
+        })) {
+            return false;  // Timeout
         }
 
-        // Store session
-        add_session(request->session_id(), std::move(session));
+        if (shutdown_ && queue_.empty()) {
+            return false;  // Shutting down
+        }
 
-        response->set_success(true);
-        return Status::OK;
-
-    } catch (const std::exception &e) {
-        response->set_success(false);
-        response->set_error(e.what());
-        return Status::OK;
+        item = std::move(queue_.front());
+        queue_.pop();
+        return true;
     }
-}
+
+    void shutdown() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        shutdown_ = true;
+        cv_.notify_all();  // Wake all waiting threads
+    }
+};
 ```
 
-**Error handling**: Catch all exceptions, return structured error
+### Event Flow
 
-**Test**:
-```bash
-# Python:
-response = stub.CreateSession(CreateSessionRequest(
-    session_id="test-1",
-    peer_jid="peer@example.com",
-    relay_only=True,
-    turn_server="turn://user:pass@turn.example.com:3478"
-))
-assert response.success == True
-
-# Service logs:
-# - "Created session: test-1"
-# - "Pipeline PLAYING"
+```
+GLib Thread                        Event Queue              StreamEvents Thread (gRPC)
+     |                                   |                              |
+on_ice_candidate()                       |                              |
+     | CallEvent event;                  |                              |
+     | event.set_session_id(sid);        |                              |
+     | event.mutable_ice_candidate()->   |                              |
+     |   set_candidate(cand);            |                              |
+     |                                   |                              |
+     | queue->push(event); -----------→ | store event                  |
+     |                                   | cv.notify_one() -----------→ | wake up!
+     |                                   |                              |
+     |                                   |                  T item;     |
+     |                                   | ←--------------- | queue.pop(item)
+     |                                   | return item --→  |           |
+     |                                   |                  | writer->Write(item)
+     |                                   |                              | → Python
 ```
 
----
+### StreamEvents RPC Implementation
 
-## Task 4.4: Implement CreateOffer RPC
+```cpp
+grpc::Status CallServiceImpl::StreamEvents(
+    grpc::ServerContext* context,
+    const StreamEventsRequest* request,
+    grpc::ServerWriter<CallEvent>* writer) {
 
-**What**: Generate SDP offer, block until ready
+    std::string session_id = request->session_id();
+    LOG_INFO("StreamEvents started for session: {}", session_id);
 
-**Implementation**:
-```c++
-Status CreateOffer(ServerContext* context,
-                  const CreateOfferRequest* request,
-                  SDPResponse* response) {
-    CallSession *session = find_session(request->session_id());
+    // Get session
+    auto session = get_session(session_id);
     if (!session) {
-        response->set_error("Session not found");
-        return Status::OK;
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
     }
 
-    session->is_outgoing = true;
-
-    // on-negotiation-needed signal should fire automatically
-    // Wait for offer to be created (signaled by promise callback)
-    std::unique_lock<std::mutex> lock(session->sdp_mutex);
-    bool timeout = !session->offer_ready.wait_for(lock,
-        std::chrono::seconds(10));
-
-    if (timeout) {
-        response->set_error("Timeout waiting for offer");
-        return Status::OK;
-    }
-
-    response->set_sdp(session->local_sdp);
-    return Status::OK;
-}
-```
-
-**Reference**: See 2-SDP-PLAN.md task 2.3
-
-**Thread coordination**:
-- gRPC thread: blocks on condition variable
-- Main loop thread (promise callback): signals condition variable
-
-**Test**:
-```bash
-# Python:
-sdp_response = stub.CreateOffer(CreateOfferRequest(session_id="test-1"))
-assert len(sdp_response.sdp) > 100  # Valid SDP
-assert "m=audio" in sdp_response.sdp
-assert "a=fingerprint" in sdp_response.sdp
-```
-
-**Timeout**: 10 seconds (should normally complete in <1 second)
-
----
-
-## Task 4.5: Implement CreateAnswer RPC
-
-**What**: Set remote offer, generate answer
-
-**Implementation**:
-```c++
-Status CreateAnswer(ServerContext* context,
-                   const CreateAnswerRequest* request,
-                   SDPResponse* response) {
-    CallSession *session = find_session(request->session_id());
-    if (!session) {
-        response->set_error("Session not found");
-        return Status::OK;
-    }
-
-    session->is_outgoing = false;
-
-    // Parse and set remote SDP (from 2-SDP-PLAN.md task 2.4)
-    GstSDPMessage *sdp_msg;
-    gst_sdp_message_new(&sdp_msg);
-    GstSDPResult result = gst_sdp_message_parse_buffer(
-        (guint8*)request->remote_sdp().c_str(),
-        request->remote_sdp().size(),
-        sdp_msg);
-
-    if (result != GST_SDP_OK) {
-        response->set_error("Invalid SDP");
-        gst_sdp_message_free(sdp_msg);
-        return Status::OK;
-    }
-
-    GstWebRTCSessionDescription *offer =
-        gst_webrtc_session_description_new(GST_WEBRTC_SDP_TYPE_OFFER, sdp_msg);
-
-    // Set remote description (triggers promise chain)
-    GstPromise *promise = gst_promise_new_with_change_func(
-        on_offer_set_for_answer, session, nullptr);
-    g_signal_emit_by_name(session->webrtc, "set-remote-description",
-        offer, promise);
-
-    gst_webrtc_session_description_free(offer);
-
-    // Wait for answer
-    std::unique_lock<std::mutex> lock(session->sdp_mutex);
-    bool timeout = !session->answer_ready.wait_for(lock,
-        std::chrono::seconds(10));
-
-    if (timeout) {
-        response->set_error("Timeout creating answer");
-        return Status::OK;
-    }
-
-    response->set_sdp(session->local_sdp);
-    return Status::OK;
-}
-```
-
-**Reference**: 2-SDP-PLAN.md tasks 2.4, 2.5
-
-**Test**: Same as CreateOffer, but provide remote offer SDP
-
----
-
-## Task 4.6: Implement SetRemoteDescription RPC
-
-**What**: Apply remote answer (for outgoing calls)
-
-**Implementation**:
-```c++
-Status SetRemoteDescription(ServerContext* context,
-                           const SetRemoteDescriptionRequest* request,
-                           Empty* response) {
-    CallSession *session = find_session(request->session_id());
-    if (!session) {
-        return Status(StatusCode::NOT_FOUND, "Session not found");
-    }
-
-    // Parse SDP
-    GstSDPMessage *sdp_msg;
-    gst_sdp_message_new(&sdp_msg);
-    gst_sdp_message_parse_buffer(
-        (guint8*)request->remote_sdp().c_str(),
-        request->remote_sdp().size(),
-        sdp_msg);
-
-    // Determine type
-    GstWebRTCSDPType type = (request->sdp_type() == "offer") ?
-        GST_WEBRTC_SDP_TYPE_OFFER : GST_WEBRTC_SDP_TYPE_ANSWER;
-
-    GstWebRTCSessionDescription *remote_desc =
-        gst_webrtc_session_description_new(type, sdp_msg);
-
-    // Set remote description
-    GstPromise *promise = gst_promise_new();
-    g_signal_emit_by_name(session->webrtc, "set-remote-description",
-        remote_desc, promise);
-    gst_promise_interrupt(promise);
-    gst_promise_unref(promise);
-
-    gst_webrtc_session_description_free(remote_desc);
-
-    return Status::OK;
-}
-```
-
-**Reference**: 2-SDP-PLAN.md task 2.6
-
----
-
-## Task 4.7: Implement AddICECandidate RPC
-
-**What**: Apply remote ICE candidates
-
-**Implementation**:
-```c++
-Status AddICECandidate(ServerContext* context,
-                      const AddICECandidateRequest* request,
-                      Empty* response) {
-    CallSession *session = find_session(request->session_id());
-    if (!session) {
-        return Status(StatusCode::NOT_FOUND, "Session not found");
-    }
-
-    // Add candidate to webrtcbin
-    g_signal_emit_by_name(session->webrtc, "add-ice-candidate",
-        request->sdp_mline_index(), request->candidate().c_str());
-
-    return Status::OK;
-}
-```
-
-**Reference**: 3-ICE-PLAN.md task 3.4
-
-**Thread safety**: `g_signal_emit_by_name` is thread-safe
-
----
-
-## Task 4.8: Implement StreamEvents RPC
-
-**What**: Stream ICE candidates and state changes to Python
-
-**Challenge**: Long-lived streaming RPC, must handle backpressure
-
-**Implementation**:
-```c++
-Status StreamEvents(ServerContext* context,
-                   const StreamEventsRequest* request,
-                   ServerWriter<CallEvent>* writer) {
-    CallSession *session = find_session(request->session_id());
-    if (!session) {
-        return Status(StatusCode::NOT_FOUND, "Session not found");
-    }
-
-    // Store writer in session for signal handlers to use
+    // Set event writer (protected by lock)
     {
-        std::lock_guard<std::mutex> lock(session->event_mutex);
+        std::lock_guard<std::mutex> lock(session->event_writer_lock);
+        if (session->event_writer) {
+            // Already streaming - only one StreamEvents per session allowed
+            return grpc::Status(grpc::StatusCode::ALREADY_EXISTS,
+                               "Event stream already active for this session");
+        }
         session->event_writer = writer;
     }
 
-    // Keep connection open until session ends
-    while (!context->IsCancelled() && session->pipeline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Stream events from queue until session ends or client cancels
+    while (session->active && !context->IsCancelled()) {
+        CallEvent event;
+
+        // Block waiting for event (1s timeout for cancellation check)
+        if (session->event_queue->pop(event, std::chrono::milliseconds(1000))) {
+            // Send event to Python
+            if (!writer->Write(event)) {
+                // Client disconnected
+                LOG_WARNING("Failed to write event for {}, client disconnected", session_id);
+                break;
+            }
+        }
+        // Timeout - check session->active and context->IsCancelled() again
     }
 
-    // Clear writer
+    // Cleanup
     {
-        std::lock_guard<std::mutex> lock(session->event_mutex);
+        std::lock_guard<std::mutex> lock(session->event_writer_lock);
         session->event_writer = nullptr;
     }
 
-    return Status::OK;
+    LOG_INFO("StreamEvents ended for session: {}", session_id);
+    return grpc::Status::OK;
 }
 ```
 
-**Signal handlers use writer**:
-```c++
-void on_ice_candidate(...) {
-    CallSession *session = (CallSession*)user_data;
+### Callback Wrappers (GLib → Queue)
 
+```cpp
+// Static callback (called by GStreamer in GLib thread)
+void WebRTCSession::on_ice_candidate_static(GstElement* webrtc, guint mlineindex,
+                                           gchar* candidate, gpointer user_data) {
+    auto* session = static_cast<WebRTCSession*>(user_data);
+    session->on_ice_candidate(mlineindex, candidate);
+}
+
+// Instance method (has access to callbacks)
+void WebRTCSession::on_ice_candidate(guint mlineindex, const char* candidate) {
+    LOG_DEBUG("ICE candidate: mline={} candidate={}", mlineindex, candidate);
+
+    if (ice_callback_) {
+        ICECandidate ice_cand;
+        ice_cand.candidate = candidate;
+        ice_cand.sdp_mid = std::to_string(mlineindex);  // Or actual mid from SDP
+        ice_cand.sdp_mline_index = mlineindex;
+
+        ice_callback_(ice_cand);  // Call callback (pushes to queue)
+    }
+}
+
+// In main.cpp (gRPC service creates WebRTCSession):
+webrtc->set_ice_candidate_callback([session](const ICECandidate& cand) {
+    // This runs in GLib thread!
     CallEvent event;
     event.set_session_id(session->session_id);
-    auto *ice_event = event.mutable_ice_candidate();
-    ice_event->set_candidate(candidate);
-    ice_event->set_sdp_mline_index(mlineindex);
+    auto* ice_event = event.mutable_ice_candidate();
+    ice_event->set_candidate(cand.candidate);
+    ice_event->set_sdp_mid(cand.sdp_mid);
+    ice_event->set_sdp_mline_index(cand.sdp_mline_index);
 
-    std::lock_guard<std::mutex> lock(session->event_mutex);
-    if (session->event_writer) {
-        session->event_writer->Write(event);
-    }
-}
-```
-
-**Reference**: 3-ICE-PLAN.md task 3.1, `docs/CALLS/webrtcbin-reference.cpp` lines 276-292
-
-**Test**:
-```bash
-# Python (async):
-for event in stub.StreamEvents(StreamEventsRequest(session_id="test-1")):
-    if event.HasField("ice_candidate"):
-        print(f"ICE candidate: {event.ice_candidate.candidate}")
-    elif event.HasField("connection_state"):
-        print(f"State: {event.connection_state.state}")
+    session->event_queue->push(event);  // Thread-safe push
+});
 ```
 
 ---
 
-## Task 4.9: Implement EndSession RPC
+## RPC Handler Implementations
 
-**What**: Stop pipeline, cleanup resources, remove session
+### CreateSession
 
-**Implementation**:
-```c++
-Status EndSession(ServerContext* context,
-                 const EndSessionRequest* request,
-                 Empty* response) {
-    CallSession *session = find_session(request->session_id());
-    if (!session) {
-        return Status(StatusCode::NOT_FOUND, "Session not found");
-    }
+```cpp
+grpc::Status CallServiceImpl::CreateSession(
+    grpc::ServerContext* context,
+    const CreateSessionRequest* request,
+    CreateSessionResponse* response) {
 
-    // Stop pipeline
-    if (session->pipeline) {
-        gst_element_set_state(session->pipeline, GST_STATE_NULL);
-        gst_object_unref(session->pipeline);
-        session->pipeline = nullptr;
-    }
-
-    // Remove from map (destructor cleans up)
-    remove_session(request->session_id());
-
-    return Status::OK;
-}
-```
-
-**Reference**: `docs/CALLS/webrtcbin-reference.cpp` lines 436-445
-
-**Test**:
-```bash
-# After EndSession:
-# - StreamEvents stream should close
-# - Pipeline stopped (check logs)
-# - No memory leaks (run with valgrind)
-```
-
----
-
-## Task 4.10: Implement Heartbeat RPC
-
-**What**: Keep service alive, check health
-
-**Implementation**:
-```c++
-Status Heartbeat(ServerContext* context,
-                const Empty* request,
-                Empty* response) {
-    // Just return OK (service is alive)
-    return Status::OK;
-}
-```
-
-**Purpose**: Python calls every 5 seconds to ensure service is responsive
-
-**Test**:
-```bash
-# Python:
-stub.Heartbeat(Empty())
-# Should return immediately, no error
-```
-
----
-
-## Task 4.11: Implement Shutdown RPC
-
-**What**: Graceful service shutdown
-
-**Implementation**:
-```c++
-Status Shutdown(ServerContext* context,
-               const Empty* request,
-               Empty* response) {
-    // End all sessions
-    {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        for (auto &pair : sessions_) {
-            if (pair.second->pipeline) {
-                gst_element_set_state(pair.second->pipeline, GST_STATE_NULL);
-            }
-        }
-        sessions_.clear();
-    }
-
-    // Trigger server shutdown
-    // (Implementation depends on how server reference is stored)
-    // server_->Shutdown();
-
-    return Status::OK;
-}
-```
-
-**Test**:
-```bash
-# Python:
-stub.Shutdown(Empty())
-# Service should exit cleanly
-```
-
----
-
-## Session Lifecycle Summary
-
-**Full flow**:
-```
-Python                          C++ Service                     GStreamer
-------                          -----------                     ---------
-CreateSession      →            create pipeline                 → PLAYING
-                                start main loop thread
-
-CreateOffer/       →            wait on condition var
-CreateAnswer
-                                                                → negotiation-needed signal
-                                ← promise callback fires        ← offer/answer created
-                                notify condition var
-                   ← return SDP
-
-StreamEvents       →            store writer pointer
-                                loop until cancelled
-                                                                → on-ice-candidate signal
-                                ← write to stream               ← candidates generated
-                   ← ICE events
-
-AddICECandidate    →            add to webrtcbin                → ICE checks
-                                                                → ICE connected
-
-SetRemoteDescription →          set remote SDP                  → DTLS handshake
-                                                                → media flows
-
-EndSession         →            stop pipeline                   → NULL state
-                                destroy session
-```
-
----
-
-## Error Handling Strategy
-
-### Task 4.12: Structured Error Returns
-
-**What**: Always return gRPC Status::OK, use response fields for errors
-
-**Pattern**:
-```c++
-// For RPCs with response message:
-Status CreateSession(..., CreateSessionResponse* response) {
     try {
-        // ... operation ...
+        std::string session_id = request->session_id();
+        LOG_INFO("CreateSession: {}", session_id);
+
+        // Create session
+        auto session = std::make_shared<CallSession>();
+        session->session_id = session_id;
+        session->peer_jid = request->peer_jid();
+        session->event_queue = std::make_shared<ThreadSafeQueue<CallEvent>>();
+        session->active = true;
+        session->created_at = std::chrono::steady_clock::now();
+
+        // Create WebRTC session
+        session->webrtc = std::make_unique<WebRTCSession>();
+
+        // Configure session
+        SessionConfig config;
+        config.session_id = session_id;
+        config.microphone_device = request->microphone_device();
+        config.speakers_device = request->speakers_device();
+        config.relay_only = request->relay_only();
+
+        // Proxy config
+        if (!request->proxy_host().empty()) {
+            config.proxy_host = request->proxy_host();
+            config.proxy_port = request->proxy_port();
+            config.proxy_username = request->proxy_username();
+            config.proxy_password = request->proxy_password();
+            config.proxy_type = request->proxy_type();  // "SOCKS5" or "HTTP"
+        }
+
+        // TURN config
+        if (!request->turn_server().empty()) {
+            config.turn_server = request->turn_server();
+            config.turn_username = request->turn_username();
+            config.turn_password = request->turn_password();
+        }
+
+        // Audio processing
+        config.echo_cancel = request->echo_cancel();
+        config.noise_suppression = request->noise_suppression();
+        config.gain_control = request->gain_control();
+
+        // Set callbacks (BEFORE initialize to avoid race)
+        session->webrtc->set_ice_candidate_callback([session](const ICECandidate& cand) {
+            CallEvent event;
+            event.set_session_id(session->session_id);
+            auto* ice_event = event.mutable_ice_candidate();
+            ice_event->set_candidate(cand.candidate);
+            ice_event->set_sdp_mid(cand.sdp_mid);
+            ice_event->set_sdp_mline_index(cand.sdp_mline_index);
+            session->event_queue->push(event);
+        });
+
+        session->webrtc->set_state_callback([session](ConnectionState state,
+                                                       ICEConnectionState ice_state,
+                                                       ICEGatheringState gathering_state) {
+            // Map to proto enum
+            CallEvent event;
+            event.set_session_id(session->session_id);
+            auto* state_event = event.mutable_connection_state();
+
+            // Map ICE connection state (this is what Python cares about)
+            switch (ice_state) {
+                case ICEConnectionState::NEW:
+                    state_event->set_state(ConnectionStateEvent::NEW);
+                    break;
+                case ICEConnectionState::CHECKING:
+                    state_event->set_state(ConnectionStateEvent::CHECKING);
+                    break;
+                case ICEConnectionState::CONNECTED:
+                case ICEConnectionState::COMPLETED:
+                    state_event->set_state(ConnectionStateEvent::CONNECTED);
+                    break;
+                case ICEConnectionState::FAILED:
+                    state_event->set_state(ConnectionStateEvent::FAILED);
+                    break;
+                case ICEConnectionState::DISCONNECTED:
+                    state_event->set_state(ConnectionStateEvent::DISCONNECTED);
+                    break;
+                case ICEConnectionState::CLOSED:
+                    state_event->set_state(ConnectionStateEvent::CLOSED);
+                    break;
+            }
+
+            session->event_queue->push(event);
+        });
+
+        // Initialize WebRTC session
+        if (!session->webrtc->initialize(config)) {
+            response->set_success(false);
+            response->set_error("Failed to initialize WebRTC session");
+            return grpc::Status::OK;
+        }
+
+        // Start pipeline
+        if (!session->webrtc->start()) {
+            response->set_success(false);
+            response->set_error("Failed to start WebRTC pipeline");
+            return grpc::Status::OK;
+        }
+
+        // Store session
+        add_session(session_id, session);
+
         response->set_success(true);
-        return Status::OK;
-    } catch (const std::exception &e) {
+        LOG_INFO("Session created: {}", session_id);
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("CreateSession exception: {}", e.what());
         response->set_success(false);
         response->set_error(e.what());
-        return Status::OK;  // gRPC transport succeeded
+        return grpc::Status::OK;
     }
 }
+```
 
-// For RPCs with Empty response:
-Status AddICECandidate(..., Empty* response) {
+### CreateOffer
+
+**Challenge**: Asynchronous operation (webrtcbin uses GstPromise callbacks).
+
+**Solution**: Condition variable + timeout.
+
+```cpp
+grpc::Status CallServiceImpl::CreateOffer(
+    grpc::ServerContext* context,
+    const CreateOfferRequest* request,
+    SDPResponse* response) {
+
     try {
-        // ... operation ...
-        return Status::OK;
-    } catch (const std::exception &e) {
-        return Status(StatusCode::INTERNAL, e.what());
-    }
-}
-```
+        std::string session_id = request->session_id();
+        LOG_INFO("CreateOffer: {}", session_id);
 
-**Rationale**: Python can check `response.success` instead of catching gRPC exceptions
-
----
-
-## Resource Limits
-
-### Task 4.13: Prevent Resource Exhaustion
-
-**What**: Limit concurrent sessions, reject if over limit
-
-**Implementation**:
-```c++
-const size_t MAX_SESSIONS = 10;
-
-Status CreateSession(...) {
-    {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        if (sessions_.size() >= MAX_SESSIONS) {
-            response->set_success(false);
-            response->set_error("Maximum concurrent sessions reached");
-            return Status::OK;
+        auto session = get_session(session_id);
+        if (!session) {
+            response->set_error("Session not found");
+            return grpc::Status::OK;
         }
+
+        // Synchronization for async SDP creation
+        std::mutex sdp_mutex;
+        std::condition_variable sdp_cv;
+        std::string sdp_result;
+        std::string error_result;
+        bool sdp_done = false;
+
+        // Call create_offer with callback
+        session->webrtc->create_offer([&](const SDPMessage& sdp, const std::string& error) {
+            std::lock_guard<std::mutex> lock(sdp_mutex);
+            if (!error.empty()) {
+                error_result = error;
+            } else {
+                sdp_result = sdp.sdp;
+            }
+            sdp_done = true;
+            sdp_cv.notify_one();
+        });
+
+        // Wait for callback (with timeout)
+        std::unique_lock<std::mutex> lock(sdp_mutex);
+        if (!sdp_cv.wait_for(lock, std::chrono::seconds(10), [&] { return sdp_done; })) {
+            response->set_error("Timeout waiting for offer");
+            LOG_ERROR("CreateOffer timeout for {}", session_id);
+            return grpc::Status::OK;
+        }
+
+        if (!error_result.empty()) {
+            response->set_error(error_result);
+            return grpc::Status::OK;
+        }
+
+        response->set_sdp(sdp_result);
+        LOG_INFO("Offer created for {}", session_id);
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("CreateOffer exception: {}", e.what());
+        response->set_error(e.what());
+        return grpc::Status::OK;
     }
-    // ... proceed with creation ...
 }
 ```
 
-**Rationale**: Prevent DoS by creating unlimited sessions
+**Note**: CreateAnswer follows same pattern.
 
-**Test**:
-```bash
-# Try creating 11 sessions:
-for i in range(15):
-    response = stub.CreateSession(CreateSessionRequest(session_id=f"s-{i}"))
-    if i < 10:
-        assert response.success
-    else:
-        assert not response.success
-        assert "Maximum concurrent" in response.error
-```
+### SetRemoteDescription
 
----
+```cpp
+grpc::Status CallServiceImpl::SetRemoteDescription(
+    grpc::ServerContext* context,
+    const SetRemoteDescriptionRequest* request,
+    Empty* response) {
 
-## Logging Strategy
+    try {
+        std::string session_id = request->session_id();
+        LOG_INFO("SetRemoteDescription: {} (type={})", session_id, request->sdp_type());
 
-### Task 4.14: Structured Logging
+        auto session = get_session(session_id);
+        if (!session) {
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+        }
 
-**What**: Log all gRPC calls and GStreamer events
+        SDPMessage remote_sdp;
+        remote_sdp.sdp = request->remote_sdp();
+        remote_sdp.type = request->sdp_type();  // "offer" or "answer"
 
-**Implementation**:
-```c++
-#include <spdlog/spdlog.h>
+        if (!session->webrtc->set_remote_description(remote_sdp)) {
+            return grpc::Status(grpc::StatusCode::INTERNAL,
+                               "Failed to set remote description");
+        }
 
-// In each RPC handler:
-Status CreateSession(...) {
-    spdlog::info("CreateSession: session_id={}, peer_jid={}",
-        request->session_id(), request->peer_jid());
+        LOG_INFO("Remote description set for {}", session_id);
+        return grpc::Status::OK;
 
-    // ... operation ...
-
-    if (response->success()) {
-        spdlog::info("CreateSession: success, session_id={}",
-            request->session_id());
-    } else {
-        spdlog::error("CreateSession: failed, session_id={}, error={}",
-            request->session_id(), response->error());
+    } catch (const std::exception& e) {
+        LOG_ERROR("SetRemoteDescription exception: {}", e.what());
+        return grpc::Status(grpc::StatusCode::INTERNAL, e.what());
     }
-
-    return Status::OK;
 }
 ```
 
-**Log file**: `~/.siproxylin/logs/drunk-call-service.log`
+### AddICECandidate
 
-**Rotation**: 10MB per file, keep 5 files
+```cpp
+grpc::Status CallServiceImpl::AddICECandidate(
+    grpc::ServerContext* context,
+    const AddICECandidateRequest* request,
+    Empty* response) {
 
----
+    try {
+        std::string session_id = request->session_id();
 
-## Milestone: gRPC Service Complete
+        auto session = get_session(session_id);
+        if (!session) {
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+        }
 
-**Definition of done**:
-- [x] Service starts, listens on port 50051
-- [x] All RPC methods implemented
-- [x] Thread-safe session management
-- [x] Event streaming works
-- [x] Graceful shutdown
-- [x] Error handling comprehensive
-- [x] Resource limits enforced
-- [x] Logging in place
+        ICECandidate candidate;
+        candidate.candidate = request->candidate();
+        candidate.sdp_mid = request->sdp_mid();
+        candidate.sdp_mline_index = request->sdp_mline_index();
 
-**Integration test**:
-```bash
-# Run service:
-./drunk-call-service
+        if (!session->webrtc->add_remote_ice_candidate(candidate)) {
+            LOG_WARNING("Failed to add ICE candidate for {}", session_id);
+            // Don't fail - ICE candidates can arrive late or be duplicates
+        }
 
-# Python full call flow:
-# 1. CreateSession → success
-# 2. StreamEvents → async listening
-# 3. CreateOffer → valid SDP
-# 4. Receive ICE candidates via StreamEvents
-# 5. SetRemoteDescription (answer) → success
-# 6. AddICECandidate (multiple) → success
-# 7. Wait for CONNECTED state in StreamEvents
-# 8. EndSession → success
-#
-# Service logs:
-# - All operations logged
-# - No errors
-# - Clean shutdown
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("AddICECandidate exception: {}", e.what());
+        return grpc::Status(grpc::StatusCode::INTERNAL, e.what());
+    }
+}
+```
+
+### EndSession
+
+```cpp
+grpc::Status CallServiceImpl::EndSession(
+    grpc::ServerContext* context,
+    const EndSessionRequest* request,
+    Empty* response) {
+
+    try {
+        std::string session_id = request->session_id();
+        LOG_INFO("EndSession: {}", session_id);
+
+        auto session = get_session(session_id);
+        if (!session) {
+            // Session already ended - not an error
+            LOG_WARNING("EndSession called for non-existent session: {}", session_id);
+            return grpc::Status::OK;
+        }
+
+        // Mark inactive (stops StreamEvents loop)
+        session->active = false;
+
+        // Stop WebRTC session (GStreamer pipeline)
+        if (session->webrtc) {
+            session->webrtc->stop();
+        }
+
+        // Shutdown event queue (wakes StreamEvents thread)
+        if (session->event_queue) {
+            session->event_queue->shutdown();
+        }
+
+        // Remove from sessions map
+        remove_session(session_id);
+
+        LOG_INFO("Session ended: {}", session_id);
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("EndSession exception: {}", e.what());
+        return grpc::Status(grpc::StatusCode::INTERNAL, e.what());
+    }
+}
 ```
 
 ---
 
-## Performance Considerations
+## Error Handling
 
-### Task 4.15: Async Operations
+### Principles
 
-**What**: Ensure gRPC handlers don't block excessively
+1. **C++ exceptions → gRPC Status codes** for RPC errors
+2. **GStreamer errors → ErrorEvent** streamed to Python
+3. **PROPAGATE errors to Python** - GUI must show user feedback
 
-**Pattern**: Use condition variables with timeouts
+### Error Event Flow
 
-**Timeout values**:
-- CreateOffer: 10 seconds
-- CreateAnswer: 10 seconds
-- ICE gathering: 30 seconds (implicit, GStreamer handles)
+```cpp
+// In WebRTCSession::on_pipeline_error (called from GLib thread)
+void WebRTCSession::on_pipeline_error(const std::string& message, const std::string& debug) {
+    LOG_ERROR("Pipeline error: {} (debug: {})", message, debug);
 
-**Monitor**: If timeouts occur frequently, investigate GStreamer state
+    if (error_callback_) {
+        error_callback_(message, debug);  // Callback pushes to queue
+    }
+}
 
----
+// In main.cpp CreateSession:
+session->webrtc->set_error_callback([session](const std::string& message,
+                                               const std::string& debug) {
+    CallEvent event;
+    event.set_session_id(session->session_id);
+    auto* error_event = event.mutable_error();
+    error_event->set_message(message);
+    // Future: Add error_type enum (ICE_FAILED, DTLS_FAILED, etc.)
 
-### Task 4.16: Memory Management
-
-**What**: Prevent memory leaks
-
-**Tools**:
-```bash
-# Run with AddressSanitizer:
-ASAN_OPTIONS=detect_leaks=1 ./drunk-call-service
-
-# Or valgrind:
-valgrind --leak-check=full --show-leak-kinds=all ./drunk-call-service
+    session->event_queue->push(event);
+});
 ```
 
-**Common leaks**:
-- GStreamer objects not unref'd
-- GstPromise not unref'd after use
-- SDP messages not freed
+### Common Error Scenarios
+
+| Error | Where Detected | How Reported | Python Action |
+|-------|---------------|--------------|---------------|
+| Session not found | RPC handler | grpc::Status NOT_FOUND | Log warning |
+| Pipeline creation failed | WebRTCSession::initialize() | CreateSessionResponse.error | Show error dialog |
+| ICE failed | on_ice_connection_state (FAILED) | ConnectionStateEvent | Show "Connection failed" |
+| DTLS handshake failed | on_pipeline_error | ErrorEvent | Show "Encryption failed" |
+| Proxy unreachable | libnice (via bus message) | ErrorEvent | Show "Proxy error" |
+| Offer creation timeout | CreateOffer handler | SDPResponse.error | Retry or abort call |
 
 ---
 
-## Next Step
+## File Structure
 
-Once gRPC service is integrated, proceed to **5-STATS-PLAN.md** for statistics and monitoring.
+```
+drunk_call_service/
+├── src/
+│   ├── main.cpp                    # gRPC service entry point, main() function
+│   ├── call_service_impl.{h,cpp}  # CallServiceImpl class (RPC handlers)
+│   ├── thread_safe_queue.h        # ThreadSafeQueue template
+│   ├── session_manager.{h,cpp}    # Session map, thread-safe access
+│   ├── webrtc_session.{h,cpp}     # (existing) WebRTCSession implementation
+│   ├── media_session.h            # (existing) Interface
+│   ├── device_enumerator.cpp      # (existing) Device enumeration
+│   └── logger.{h,cpp}             # (existing) spdlog wrapper
+│
+├── proto/
+│   └── call.proto                 # gRPC interface definition
+│
+├── tests/standalone/
+│   ├── test_grpc_service.cpp      # NEW: Full end-to-end gRPC test
+│   ├── test_event_streaming.cpp   # NEW: Event queue test
+│   └── (existing tests)
+│
+└── CMakeLists.txt                 # Build configuration
+```
 
 ---
 
-**Status Document**: Create `4-GRPC-STATUS.md` when implementing to track:
-- RPC call latencies (typical and worst-case)
-- Concurrent session testing results
-- Thread safety testing (run with ThreadSanitizer)
-- Memory leak testing results
+## Implementation Steps
+
+### Step 4.1: Thread Infrastructure
+
+**Files**: `src/thread_safe_queue.h`, `src/session_manager.{h,cpp}`
+
+**Tasks**:
+1. Implement ThreadSafeQueue template
+2. Create SessionManager class (mutex-protected session map)
+3. Write unit tests for queue (blocking pop, timeout, shutdown)
+
+**Test**: Compile, run test_thread_safe_queue
+
+### Step 4.2: gRPC Service Skeleton
+
+**Files**: `src/main.cpp`, `src/call_service_impl.{h,cpp}`
+
+**Tasks**:
+1. Implement main() with GLib thread startup
+2. Create CallServiceImpl class stub (all RPCs return UNIMPLEMENTED)
+3. Start gRPC server, join GLib thread
+
+**Test**: Start service, call Heartbeat RPC from Python
+
+### Step 4.3: CreateSession + Event Streaming
+
+**Files**: `src/call_service_impl.cpp`
+
+**Tasks**:
+1. Implement CreateSession RPC (create WebRTCSession, set callbacks)
+2. Implement StreamEvents RPC (poll event queue, stream to Python)
+3. Wire ICE candidate callback to event queue
+
+**Test**: Create session from Python, verify StreamEvents receives ICE candidates
+
+### Step 4.4: SDP Operations (Offer/Answer)
+
+**Files**: `src/call_service_impl.cpp`
+
+**Tasks**:
+1. Implement CreateOffer RPC (async with cv.wait_for)
+2. Implement CreateAnswer RPC (same pattern)
+3. Implement SetRemoteDescription RPC
+
+**Test**: Full offer/answer exchange from Python, verify SDP negotiation
+
+### Step 4.5: ICE + State Callbacks
+
+**Files**: `src/call_service_impl.cpp`
+
+**Tasks**:
+1. Implement AddICECandidate RPC
+2. Wire connection state callback to event queue
+3. Map ICE states to proto enums
+
+**Test**: Verify ICE state transitions stream to Python (NEW → CHECKING → CONNECTED)
+
+### Step 4.6: GetStats, SetMute, EndSession
+
+**Files**: `src/call_service_impl.cpp`
+
+**Tasks**:
+1. Implement GetStats RPC (read from WebRTCSession::get_stats())
+2. Implement SetMute RPC
+3. Implement EndSession RPC (cleanup, queue shutdown)
+4. Implement Shutdown RPC (graceful service exit)
+
+**Test**: Call operations from Python, verify behavior
+
+### Step 4.7: Error Handling
+
+**Files**: `src/call_service_impl.cpp`, `src/webrtc_session.cpp`
+
+**Tasks**:
+1. Add error callback to WebRTCSession
+2. Stream ErrorEvent for pipeline errors
+3. Add try-catch to all RPC handlers
+
+**Test**: Trigger errors (invalid SDP, missing session), verify ErrorEvent
+
+### Step 4.8: Integration Testing
+
+**Files**: `tests/standalone/test_grpc_service.cpp`
+
+**Tasks**:
+1. Write full call flow test (C++ client → gRPC service)
+2. Test concurrent sessions (multiple calls simultaneously)
+3. Test session cleanup (memory leaks, dangling pointers)
+
+**Test**: Run test suite, verify no crashes or leaks (valgrind)
 
 ---
 
-## STATUS
+## Testing Strategy
 
-**Current**: Not started (depends on 1-3 completion)
+### Unit Tests (C++, standalone)
 
-**Done**: []
+- `test_thread_safe_queue`: Queue operations, threading, shutdown
+- `test_session_manager`: Concurrent access, session lifecycle
 
-**Next**: Task 4.1 - Service initialization
+### Integration Tests (C++, with GStreamer)
 
-**Blockers**: None
+- `test_grpc_service`: Full RPC flow (CreateSession → CreateOffer → StreamEvents → EndSession)
+- `test_event_streaming`: Verify events reach Python correctly
 
-**Last updated**: 2026-03-02
+### End-to-End Tests (Python → C++)
+
+- Create session from Python CallBridge
+- Verify events stream back
+- Test concurrent calls (multiple accounts)
+
+### Interoperability Tests (Real XMPP)
+
+- Call Conversations.im (Android)
+- Call Dino (Linux)
+- Verify audio bidirectional, stats accurate
+
+---
+
+## Known Issues from Go Implementation
+
+### Issues We're Fixing:
+
+1. **No separation of ICE/peer connection state** - Fixed: proto will have both fields
+2. **rtcp-mux voodoo** - Fixed: webrtcbin handles transparently
+3. **Trickle ICE race conditions** - Fixed: proper candidate queuing in Jingle layer (see JINGLE-REFACTOR-PLAN.md)
+4. **Component 1/2 confusion** - Fixed: webrtcbin auto-handles with bundle-policy=max-bundle
+
+### Issues We're Keeping:
+
+- **Heartbeat to keep service alive** - Prevents Go GC from killing idle service (same issue in C++? No, but keep for compatibility)
+
+---
+
+## Success Criteria
+
+### Functional Requirements
+
+- ✅ CreateSession creates WebRTCSession, starts pipeline
+- ✅ CreateOffer returns valid SDP with bundle, rtcp-mux, trickle ICE
+- ✅ StreamEvents receives ICE candidates in real-time
+- ✅ Connection state transitions stream to Python (NEW → CHECKING → CONNECTED)
+- ✅ GetStats returns accurate bandwidth, connection type, candidates
+- ✅ SetMute works without audio glitches
+- ✅ EndSession cleans up pipeline, no leaks
+- ✅ Concurrent sessions work (multiple calls simultaneously)
+
+### Non-Functional Requirements
+
+- ✅ Binary size < 10MB (stripped)
+- ✅ Startup time < 500ms
+- ✅ No crashes under load (tested with valgrind)
+- ✅ Thread-safe (no race conditions under tsan)
+
+### Interoperability
+
+- ✅ Works with Conversations.im (trickle ICE, relay mode)
+- ✅ Works with Dino (standard WebRTC)
+- ✅ Audio bidirectional, no echo/noise with default settings
+
+---
+
+**Next Steps**:
+1. Review this plan with user
+2. Create JINGLE-REFACTOR-PLAN.md (Python side cleanup)
+3. Create PROTO-IMPROVEMENTS.md (proto changes needed)
+4. Begin implementation (Step 4.1)
 
 ---
 
 **Last Updated**: 2026-03-02
+**Status**: Ready for review
