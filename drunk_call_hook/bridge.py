@@ -82,10 +82,20 @@ class GoCallService:
             # Go writes structured logs to file via -log-path (stdout disabled in Go logger)
             stderr_file = open(go_err_file, 'a')
 
+            # Enable GStreamer debug logging for webrtcbin
+            import os
+            env = os.environ.copy()
+            env['GST_DEBUG'] = 'rtpbin:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4'
+            env['G_MESSAGES_DEBUG'] = 'libnice,libnice-stun,libnice-socket,libnice-pseudotcp'
+            env['NICE_DEBUG'] = 'all'
+
+            stdout_file = open(go_log_file.parent / "drunk-call-service-stdout.log", 'a')
+
             self._process = subprocess.Popen(
                 [binary_path, "-log-level", "DEBUG", "-log-path", str(go_log_file)],
-                stdout=subprocess.DEVNULL,  # Go logger doesn't use stdout
+                stdout=stdout_file,  # Capture libnice debug output!
                 stderr=stderr_file,
+                env=env,
             )
 
             # Wait for service to be ready (health check)
