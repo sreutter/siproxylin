@@ -92,9 +92,21 @@ grpc::Status CallServiceImpl::CreateSession(
         config.gain_control = request->gain_control();
 
         // Set callbacks (BEFORE initialize to avoid race)
+        // CRITICAL: Use weak_ptr to avoid circular reference leak!
+        // session owns webrtc (unique_ptr), webrtc stores callback (std::function),
+        // callback captures session → circular reference → memory leak
+        // Solution: Capture weak_ptr, lock() in callback to get shared_ptr
+        std::weak_ptr<CallSession> weak_session = session;
+
         // ICE candidate callback - fires in GLib thread, pushes to queue
-        session->webrtc->set_ice_candidate_callback([session](const ICECandidate& cand) {
+        session->webrtc->set_ice_candidate_callback([weak_session](const ICECandidate& cand) {
             // THIS RUNS IN GLIB THREAD!
+            auto session = weak_session.lock();
+            if (!session) {
+                // Session destroyed, ignore callback
+                return;
+            }
+
             call::CallEvent event;
             event.set_session_id(session->session_id);
             auto* ice_event = event.mutable_ice_candidate();
@@ -106,8 +118,14 @@ grpc::Status CallServiceImpl::CreateSession(
         });
 
         // State callback - fires in GLib thread, pushes to queue
-        session->webrtc->set_state_callback([session](MediaSession::ConnectionState state) {
+        session->webrtc->set_state_callback([weak_session](MediaSession::ConnectionState state) {
             // THIS RUNS IN GLIB THREAD!
+            auto session = weak_session.lock();
+            if (!session) {
+                // Session destroyed, ignore callback
+                return;
+            }
+
             call::CallEvent event;
             event.set_session_id(session->session_id);
             auto* state_event = event.mutable_connection_state();
@@ -263,6 +281,7 @@ grpc::Status CallServiceImpl::CreateOffer(
         auto state = std::make_shared<SDPCallbackState>();
 
         // Set SDP callback (will be called from GLib thread)
+        // Note: Capturing session_id (copy) is safe, no circular reference
         session->webrtc->create_offer([state, session_id](bool success, const SDPMessage& sdp, const std::string& error) {
             // THIS RUNS IN GLIB THREAD!
             std::lock_guard<std::mutex> lock(state->mutex);

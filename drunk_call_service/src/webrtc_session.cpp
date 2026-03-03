@@ -33,6 +33,13 @@ WebRTCSession::WebRTCSession()
 
 WebRTCSession::~WebRTCSession() {
     try {
+        // CRITICAL: Disconnect all signals BEFORE stopping pipeline
+        // If GStreamer fires a signal during/after destruction, the callback
+        // receives a 'this' pointer to a partially-destroyed object → crash
+        if (webrtc_) {
+            g_signal_handlers_disconnect_by_data(webrtc_, this);
+        }
+
         stop();
     } catch (...) {
         // Suppress exceptions in destructor
@@ -212,19 +219,25 @@ bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
         }
 
         // Set remote description with promise
+        // CRITICAL: Do NOT interrupt/unref promise immediately after emitting!
+        // The promise callback may execute asynchronously, and we'd cause use-after-free.
+        // GStreamer will unref the promise when done.
         GstPromise *promise;
         if (!is_outgoing_ && remote_sdp.type == SDPMessage::Type::OFFER) {
             // Answerer receiving offer - need to create answer afterward
             promise = gst_promise_new_with_change_func(
                 on_offer_set_for_answer_static, this, nullptr);
         } else {
-            // Offerer receiving answer - just set it
+            // Offerer receiving answer - just set it (no callback needed)
             promise = gst_promise_new();
         }
 
         g_signal_emit_by_name(webrtc_, "set-remote-description", desc, promise);
-        gst_promise_interrupt(promise);
-        gst_promise_unref(promise);
+
+        // FIXED: Don't interrupt/unref here - GStreamer owns the promise now
+        // Old buggy code was:
+        //   gst_promise_interrupt(promise);  // ❌ BAD!
+        //   gst_promise_unref(promise);      // ❌ BAD!
 
         std::cout << "[WebRTCSession] Remote description set" << std::endl;
         return true;
@@ -722,7 +735,17 @@ void WebRTCSession::on_offer_created(GstPromise *promise) {
     try {
         std::cout << "[WebRTCSession] on_offer_created" << std::endl;
 
-        g_assert(gst_promise_wait(promise) == GST_PROMISE_RESULT_REPLIED);
+        // FIXED: Don't use g_assert (can be compiled out in release builds)
+        // Use proper error handling instead
+        GstPromiseResult result = gst_promise_wait(promise);
+        if (result != GST_PROMISE_RESULT_REPLIED) {
+            std::cerr << "[WebRTCSession] Promise did not reply: " << result << std::endl;
+            gst_promise_unref(promise);
+            if (sdp_callback_) {
+                sdp_callback_(false, SDPMessage(), "Promise failed to reply");
+            }
+            return;
+        }
 
         const GstStructure *reply = gst_promise_get_reply(promise);
         GstWebRTCSessionDescription *offer = nullptr;
@@ -738,10 +761,10 @@ void WebRTCSession::on_offer_created(GstPromise *promise) {
         }
 
         // Set local description
+        // FIXED: Don't interrupt/unref after emitting - GStreamer owns the promise
         GstPromise *local_promise = gst_promise_new();
         g_signal_emit_by_name(webrtc_, "set-local-description", offer, local_promise);
-        gst_promise_interrupt(local_promise);
-        gst_promise_unref(local_promise);
+        // Promise is now owned by GStreamer - don't touch it!
 
         // Convert SDP to text
         gchar *sdp_text = gst_sdp_message_as_text(offer->sdp);
@@ -770,7 +793,17 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
     try {
         std::cout << "[WebRTCSession] on_answer_created" << std::endl;
 
-        g_assert(gst_promise_wait(promise) == GST_PROMISE_RESULT_REPLIED);
+        // FIXED: Don't use g_assert (can be compiled out in release builds)
+        // Use proper error handling instead
+        GstPromiseResult result = gst_promise_wait(promise);
+        if (result != GST_PROMISE_RESULT_REPLIED) {
+            std::cerr << "[WebRTCSession] Promise did not reply: " << result << std::endl;
+            gst_promise_unref(promise);
+            if (sdp_callback_) {
+                sdp_callback_(false, SDPMessage(), "Promise failed to reply");
+            }
+            return;
+        }
 
         const GstStructure *reply = gst_promise_get_reply(promise);
         GstWebRTCSessionDescription *answer = nullptr;
@@ -786,10 +819,10 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
         }
 
         // Set local description
+        // FIXED: Don't interrupt/unref after emitting - GStreamer owns the promise
         GstPromise *local_promise = gst_promise_new();
         g_signal_emit_by_name(webrtc_, "set-local-description", answer, local_promise);
-        gst_promise_interrupt(local_promise);
-        gst_promise_unref(local_promise);
+        // Promise is now owned by GStreamer - don't touch it!
 
         // Convert SDP to text
         gchar *sdp_text = gst_sdp_message_as_text(answer->sdp);
