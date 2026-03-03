@@ -18,7 +18,7 @@ import logging
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional
 
-from .features import RtcpMuxHandler
+from .features import RtcpMuxHandler, SSRCHandler
 
 
 class JingleSDPConverter:
@@ -196,25 +196,9 @@ class JingleSDPConverter:
                                 param_elem.set('name', param_name)
                                 param_elem.set('value', param_value)
 
-            # Parse SSRC info from SDP (lines 1454-1472 from original jingle.py)
+            # Parse SSRC info from SDP using SSRCHandler
             # IMPORTANT: Add SSRC *before* rtcp-mux to match Conversations' element ordering
-            ssrc_info = {}  # {ssrc: {attr_name: attr_value}}
-            for line in media_lines:
-                if line.startswith('a=ssrc:'):
-                    # Format: a=ssrc:2485877649 cname:pion-audio
-                    parts = line.split(':', 1)
-                    if len(parts) >= 2:
-                        rest = parts[1].strip()
-                        # Split by space: "2485877649 cname:pion-audio" → ["2485877649", "cname:pion-audio"]
-                        ssrc_parts = rest.split(' ', 1)
-                        if len(ssrc_parts) >= 2:
-                            ssrc = ssrc_parts[0]
-                            # ssrc_parts[1] = "cname:pion-audio"
-                            if ':' in ssrc_parts[1]:
-                                attr_name, attr_value = ssrc_parts[1].split(':', 1)
-                                if ssrc not in ssrc_info:
-                                    ssrc_info[ssrc] = {}
-                                ssrc_info[ssrc][attr_name] = attr_value
+            ssrc_info = SSRCHandler.parse_ssrc_from_sdp(media_lines)
 
             # Add SSRC elements with filtering based on role and offer_context
             # For offers: include all SSRC params
@@ -232,18 +216,11 @@ class JingleSDPConverter:
                     allowed_params = offer_context.get('ssrc_params', [])
 
                 if should_add_ssrc:
-                    for ssrc, attrs in ssrc_info.items():
-                        source_el = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:ssma:0}source')
-                        source_el.set('ssrc', ssrc)
-
-                        # Filter attributes: only include what was in the offer (for answers)
-                        for attr_name, attr_value in attrs.items():
-                            if role == 'offer' or (not allowed_params or attr_name in allowed_params):
-                                param_el = ET.SubElement(source_el, '{urn:xmpp:jingle:apps:rtp:ssma:0}parameter')
-                                param_el.set('name', attr_name)
-                                param_el.set('value', attr_value)
-
-                        self.logger.debug(f"Added SSRC {ssrc} to Jingle (role={role})")
+                    # Build Jingle <source> elements with SSRCHandler
+                    count = SSRCHandler.build_jingle_ssrc_elements(
+                        ssrc_info, description, role, allowed_params
+                    )
+                    self.logger.debug(f"Added {count} SSRC source(s) to Jingle (role={role})")
 
             # Add rtcp-mux AFTER source (matches Conversations' element ordering)
             # Use RtcpMuxHandler to determine if we should include rtcp-mux
@@ -545,13 +522,9 @@ class JingleSDPConverter:
                 }
                 context['codecs'].append(codec)
 
-            # Extract SSRC parameter names (XEP-0294)
-            source = description.find('{urn:xmpp:jingle:apps:rtp:ssma:0}source')
-            if source is not None:
-                for param in source.findall('{urn:xmpp:jingle:apps:rtp:ssma:0}parameter'):
-                    param_name = param.get('name')
-                    if param_name and param_name not in context['ssrc_params']:
-                        context['ssrc_params'].append(param_name)
+            # Extract SSRC parameter names (XEP-0294) using SSRCHandler
+            ssrc_params = SSRCHandler.extract_ssrc_params(description)
+            context['ssrc_params'].extend(ssrc_params)
 
         self.logger.debug(f"Extracted offer context: bundle={context['bundle']}, "
                          f"rtcp_mux={context['rtcp_mux']}, "
