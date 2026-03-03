@@ -11,6 +11,7 @@
 
 #include "call_service_impl.h"
 #include "logger.h"
+#include "media_session.h"  // For DeviceEnumerator
 
 // Global shutdown flag (defined in main.cpp, global namespace)
 extern std::atomic<bool> g_shutdown_requested;
@@ -537,15 +538,40 @@ grpc::Status CallServiceImpl::ListAudioDevices(
     call::ListAudioDevicesResponse* response) {
 
     LOG_DEBUG("gRPC: ListAudioDevices");
-    LOG_WARN("Method not implemented: ListAudioDevices (Phase 4.6)");
+    LOG_INFO("ListAudioDevices: Enumerating audio devices");
 
-    // Phase 4.6: Implement device enumeration
-    // - Call DeviceEnumerator::list_audio_inputs()
-    // - Call DeviceEnumerator::list_audio_outputs()
-    // - Populate response with device list
+    try {
+        // Get audio input devices (microphones)
+        auto inputs = DeviceEnumerator::list_audio_inputs();
+        LOG_DEBUG("ListAudioDevices: Found {} input device(s)", inputs.size());
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "ListAudioDevices not yet implemented (Phase 4.6)");
+        for (const auto& device : inputs) {
+            auto* proto_device = response->add_devices();
+            proto_device->set_name(device.id);
+            proto_device->set_description(device.description);
+            proto_device->set_device_class("Audio/Source");
+        }
+
+        // Get audio output devices (speakers)
+        auto outputs = DeviceEnumerator::list_audio_outputs();
+        LOG_DEBUG("ListAudioDevices: Found {} output device(s)", outputs.size());
+
+        for (const auto& device : outputs) {
+            auto* proto_device = response->add_devices();
+            proto_device->set_name(device.id);
+            proto_device->set_description(device.description);
+            proto_device->set_device_class("Audio/Sink");
+        }
+
+        LOG_INFO("ListAudioDevices: Success, total devices: {}",
+                 inputs.size() + outputs.size());
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception in ListAudioDevices: {}", e.what());
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                          std::string("Exception: ") + e.what());
+    }
 }
 
 grpc::Status CallServiceImpl::SetMute(
@@ -553,17 +579,34 @@ grpc::Status CallServiceImpl::SetMute(
     const call::SetMuteRequest* request,
     call::Empty* response) {
 
-    LOG_DEBUG("gRPC: SetMute - session_id={}, muted={}",
-              request->session_id(), request->muted());
-    LOG_WARN("Method not implemented: SetMute (Phase 4.6)");
+    std::string session_id = request->session_id();
+    bool muted = request->muted();
+    LOG_DEBUG("gRPC: SetMute - session_id={}, muted={}", session_id, muted);
+    LOG_INFO("SetMute: session_id={}, muted={}", session_id, muted);
 
-    // Phase 4.6: Implement mute control
-    // - Get session from SessionManager
-    // - Call webrtc->set_mute(muted)
-    // - Return success/error
+    try {
+        // Get session from SessionManager
+        auto session = session_manager_.get_session(session_id);
+        if (!session) {
+            LOG_ERROR("SetMute: Session not found: {}", session_id);
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+        }
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "SetMute not yet implemented (Phase 4.6)");
+        // Set mute state on WebRTC session
+        if (!session->webrtc->set_mute(muted)) {
+            LOG_ERROR("SetMute: Failed to set mute state: {}", session_id);
+            return grpc::Status(grpc::StatusCode::INTERNAL,
+                              "Failed to set mute state");
+        }
+
+        LOG_INFO("SetMute: Success, session={}, muted={}", session_id, muted);
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception in SetMute: {}", e.what());
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                          std::string("Exception: ") + e.what());
+    }
 }
 
 // ============================================================================
@@ -575,16 +618,49 @@ grpc::Status CallServiceImpl::GetStats(
     const call::GetStatsRequest* request,
     call::GetStatsResponse* response) {
 
-    LOG_DEBUG("gRPC: GetStats - session_id={}", request->session_id());
-    LOG_WARN("Method not implemented: GetStats (Phase 4.6)");
+    std::string session_id = request->session_id();
+    LOG_DEBUG("gRPC: GetStats - session_id={}", session_id);
+    LOG_INFO("GetStats: session_id={}", session_id);
 
-    // Phase 4.6: Implement statistics retrieval
-    // - Get session from SessionManager
-    // - Call webrtc->get_stats()
-    // - Populate response with stats
+    try {
+        // Get session from SessionManager
+        auto session = session_manager_.get_session(session_id);
+        if (!session) {
+            LOG_ERROR("GetStats: Session not found: {}", session_id);
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+        }
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "GetStats not yet implemented (Phase 4.6)");
+        // Get statistics from WebRTC session
+        auto stats = session->webrtc->get_stats();
+
+        // Populate response with stats
+        response->set_connection_state(stats.connection_state);
+        response->set_ice_connection_state(stats.ice_connection_state);
+        response->set_ice_gathering_state(stats.ice_gathering_state);
+        response->set_bytes_sent(stats.bytes_sent);
+        response->set_bytes_received(stats.bytes_received);
+        response->set_bandwidth_kbps(stats.bandwidth_kbps);
+        response->set_connection_type(stats.connection_type);
+
+        // Copy local candidates
+        for (const auto& candidate : stats.local_candidates) {
+            response->add_local_candidates(candidate);
+        }
+
+        // Copy remote candidates
+        for (const auto& candidate : stats.remote_candidates) {
+            response->add_remote_candidates(candidate);
+        }
+
+        LOG_DEBUG("GetStats: Success, session={}, ice_state={}, bandwidth={}kbps",
+                 session_id, stats.ice_connection_state, stats.bandwidth_kbps);
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception in GetStats: {}", e.what());
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                          std::string("Exception: ") + e.what());
+    }
 }
 
 // ============================================================================

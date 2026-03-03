@@ -158,24 +158,19 @@ std::vector<AudioDevice> DeviceEnumerator::enumerate_devices(const char *classes
         std::cout << "[DeviceEnumerator] Enumerating " << (is_input ? "input" : "output")
                   << " devices on " << OS_FAMILY << "..." << std::endl;
 
-        // Create device monitor
+        // Create device monitor - but DON'T start/stop it
+        // Per GStreamer docs: get_devices() will probe hardware even if not started
         GstDeviceMonitor *monitor = gst_device_monitor_new();
         if (!monitor) {
             std::cerr << "[DeviceEnumerator] Failed to create device monitor" << std::endl;
             return devices;
         }
 
-        // Add filter for audio sources or sinks
+        // Add filter for this specific device class
         gst_device_monitor_add_filter(monitor, classes, nullptr);
 
-        // Start monitoring
-        if (!gst_device_monitor_start(monitor)) {
-            std::cerr << "[DeviceEnumerator] Failed to start device monitor" << std::endl;
-            gst_object_unref(monitor);
-            return devices;
-        }
-
-        // Get devices
+        // Get devices WITHOUT start/stop - avoids PipeWire double-free bug
+        // Docs say: "may actually probe the hardware if the monitor is not currently started"
         GList *device_list = gst_device_monitor_get_devices(monitor);
 
         for (GList *l = device_list; l != nullptr; l = l->next) {
@@ -213,8 +208,7 @@ std::vector<AudioDevice> DeviceEnumerator::enumerate_devices(const char *classes
 
         g_list_free(device_list);
 
-        // Stop monitor
-        gst_device_monitor_stop(monitor);
+        // Cleanup - no start/stop needed, just unref
         gst_object_unref(monitor);
 
         std::cout << "[DeviceEnumerator] Found " << devices.size() << " devices" << std::endl;
@@ -285,7 +279,7 @@ std::vector<VideoDevice> DeviceEnumerator::enumerate_video_devices(const char *c
     try {
         std::cout << "[DeviceEnumerator] Enumerating video devices on " << OS_FAMILY << "..." << std::endl;
 
-        // Create device monitor
+        // Create device monitor - but DON'T start/stop it
         GstDeviceMonitor *monitor = gst_device_monitor_new();
         if (!monitor) {
             std::cerr << "[DeviceEnumerator] Failed to create device monitor" << std::endl;
@@ -295,14 +289,7 @@ std::vector<VideoDevice> DeviceEnumerator::enumerate_video_devices(const char *c
         // Add filter for video sources
         gst_device_monitor_add_filter(monitor, classes, nullptr);
 
-        // Start monitoring
-        if (!gst_device_monitor_start(monitor)) {
-            std::cerr << "[DeviceEnumerator] Failed to start device monitor" << std::endl;
-            gst_object_unref(monitor);
-            return devices;
-        }
-
-        // Get devices
+        // Get devices WITHOUT start/stop - avoids PipeWire double-free bug
         GList *device_list = gst_device_monitor_get_devices(monitor);
 
         for (GList *l = device_list; l != nullptr; l = l->next) {
@@ -353,8 +340,7 @@ std::vector<VideoDevice> DeviceEnumerator::enumerate_video_devices(const char *c
 
         g_list_free(device_list);
 
-        // Stop monitor
-        gst_device_monitor_stop(monitor);
+        // Cleanup - no start/stop needed, just unref
         gst_object_unref(monitor);
 
         std::cout << "[DeviceEnumerator] Found " << devices.size() << " video devices" << std::endl;

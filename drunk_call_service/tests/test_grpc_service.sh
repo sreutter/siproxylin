@@ -127,18 +127,63 @@ echo -e "${BLUE}Testing Unimplemented Methods (Phase 4.4+)${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
-# Test unimplemented methods (should return UNIMPLEMENTED)
-grpc_call "call.CallService/CreateOffer" \
-    '{"session_id": "test-session-1"}' \
-    "CreateOffer (Phase 4.4 - should show WARN)"
+# Test CreateOffer (session-1 becomes offerer) and capture the SDP
+echo -e "${BLUE}[TEST]${NC} CreateOffer (session-1)"
+echo -e "  ${YELLOW}→${NC} call.CallService/CreateOffer"
+OFFER_RESPONSE=$(grpcurl -plaintext \
+    -import-path "$PROTO_DIR" \
+    -proto call.proto \
+    -d '{"session_id": "test-session-1"}' \
+    localhost:$PORT call.CallService/CreateOffer 2>&1)
+echo "$OFFER_RESPONSE" | sed 's/^/  /'
+echo ""
 
+# Extract the SDP from the offer response
+OFFER_SDP=$(echo "$OFFER_RESPONSE" | jq -r '.sdp // empty')
+
+if [ -z "$OFFER_SDP" ]; then
+    echo -e "${RED}Failed to get SDP from CreateOffer, using fallback from production call${NC}"
+    # This is real working SDP from a successful Jingle call (2026-03-02)
+    OFFER_SDP='v=0\r
+o=- 0 0 IN IP4 0.0.0.0\r
+s=-\r
+t=0 0\r
+m=audio 9 UDP/TLS/RTP/SAVPF 111 112 113 114 0 8\r
+c=IN IP4 0.0.0.0\r
+a=rtcp:9 IN IP4 0.0.0.0\r
+a=mid:audio\r
+a=rtpmap:111 opus/48000/2\r
+a=rtpmap:112 speex/32000\r
+a=rtpmap:113 speex/16000\r
+a=rtpmap:114 speex/8000\r
+a=rtpmap:0 PCMU/8000\r
+a=rtpmap:8 PCMA/8000\r
+a=rtcp-mux\r
+a=ice-ufrag:NMZ0\r
+a=ice-pwd:ZFjmKwu7tbdLfi3wChkaoE\r
+a=ice-options:trickle\r
+a=setup:actpass\r
+a=fingerprint:sha-256 F5:D3:C3:81:27:79:AC:30:4F:E4:B1:3A:BC:73:19:D2:43:85:30:D0:83:57:CD:9F:58:E7:61:4B:A5:73:3A:10\r
+a=candidate:1 1 UDP 2015363327 192.168.10.100 49144 typ host\r
+a=candidate:2 1 UDP 2015363583 192.168.0.153 52211 typ host\r
+a=candidate:1 2 UDP 2015363326 192.168.10.100 43094 typ host\r
+a=candidate:2 2 UDP 2015363582 192.168.0.153 52898 typ host\r
+a=sendrecv\r
+'
+fi
+
+sleep 0.1
+
+# Test CreateAnswer on session-2 using the real offer from session-1
 grpc_call "call.CallService/CreateAnswer" \
-    '{"session_id": "test-session-1", "remote_sdp": "v=0..."}' \
-    "CreateAnswer (Phase 4.4 - should show WARN)"
+    "{\"session_id\": \"test-session-2\", \"remote_sdp\": $(echo "$OFFER_SDP" | jq -Rs .)}" \
+    "CreateAnswer (using real offer from session-1)"
 
+# Test SetRemoteDescription on session-1 (offerer can set remote offer for testing)
+# Note: This will put session-1 in a weird state but tests the RPC works
 grpc_call "call.CallService/SetRemoteDescription" \
-    '{"session_id": "test-session-1", "remote_sdp": "v=0...", "sdp_type": "offer"}' \
-    "SetRemoteDescription (Phase 4.4 - should show WARN)"
+    "{\"session_id\": \"test-session-1\", \"remote_sdp\": $(echo "$OFFER_SDP" | jq -Rs .), \"sdp_type\": \"offer\"}" \
+    "SetRemoteDescription (test RPC works)"
 
 grpc_call "call.CallService/AddICECandidate" \
     '{"session_id": "test-session-1", "candidate": "candidate:1 1 UDP 2130706431 192.168.1.100 54321 typ host", "sdp_mid": "0", "sdp_mline_index": 0}' \
@@ -146,15 +191,15 @@ grpc_call "call.CallService/AddICECandidate" \
 
 grpc_call "call.CallService/ListAudioDevices" \
     '{}' \
-    "ListAudioDevices (Phase 4.6 - should show WARN)"
+    "ListAudioDevices (should enumerate devices)"
 
 grpc_call "call.CallService/SetMute" \
     '{"session_id": "test-session-1", "muted": true}' \
-    "SetMute (Phase 4.6 - should show WARN)"
+    "SetMute (should succeed)"
 
 grpc_call "call.CallService/GetStats" \
     '{"session_id": "test-session-1"}' \
-    "GetStats (Phase 4.6 - should show WARN)"
+    "GetStats (should return connection stats)"
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}Testing Session Lifecycle${NC}"

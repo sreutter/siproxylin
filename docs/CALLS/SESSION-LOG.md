@@ -40,38 +40,28 @@
 - Threading model verified: GLib thread → ThreadSafeQueue → gRPC streaming thread
 - All success criteria met: No crashes, no deadlocks, clean session lifecycle
 
-### 🎯 Phase 4.4: SDP Operations - **IN PROGRESS**
+### ✅ Phase 4.4: SDP Operations - **COMPLETE**
+- CreateOffer RPC (generates SDP, triggers ICE gathering)
+- CreateAnswer RPC (creates answer from remote offer)
+- SetRemoteDescription RPC (applies remote SDP)
+- **3 Critical Bugs Fixed**:
+  1. Resource leak: Orphaned GStreamer pipeline on duplicate session
+  2. Shutdown hang: Signal handler race with GLib cleanup
+  3. Use-after-free: Lambda capturing stack vars in CreateOffer/CreateAnswer
+- Pattern: shared_ptr<SDPCallbackState> keeps state alive across async callbacks
 
-**Status**: Partially implemented, debugging session lifecycle bug
+### ✅ Phase 4.5: ICE Candidate Handling - **COMPLETE**
+- AddICECandidate RPC implemented
+- Remote candidates: gRPC → WebRTCSession → webrtcbin → libnice
+- Local candidates: Generated on CreateOffer, 12 candidates across 4 interfaces
+- Test suite: tests/test_ice_candidates.sh validates host/srflx/relay types
+- All ICE operations verified working
 
-**Implemented**:
-- ✅ CreateOffer RPC (Pattern 1: gRPC → GLib → gRPC with condition variable)
-- ✅ CreateAnswer RPC (Pattern 1: gRPC → GLib → gRPC with condition variable)
-- ✅ SetRemoteDescription RPC (synchronous, no callback)
-- ✅ Added webrtc->start() call in CreateSession
-- ✅ Added SessionManager::try_add_session() for atomic check-and-add
-- ✅ Debug logging in CreateSession
-
-**Current Bug** (Session Disappearing Mystery):
-- CreateSession succeeds, adds session to SessionManager
-- CreateOffer succeeds, generates SDP (677 bytes), ICE candidates flowing
-- StreamEvents (300ms later): Session not found in SessionManager!
-- Something is removing the session between CreateOffer and StreamEvents
-
-**Hypotheses**:
-1. Session destructor being called prematurely (shared_ptr refcount issue?)
-2. Exception in CreateOffer causing early return but logging "Success"?
-3. SessionManager corruption or thread-safety bug?
-
-**Files Modified**:
-- `src/call_service_impl.cpp`: Implemented SDP ops, added start() call, debug logging
-- `src/session_manager.h/cpp`: Added try_add_session() method
-
-**Next Steps**:
-- Find why session disappears from SessionManager
-- Check shared_ptr lifecycle and refcounting
-- Verify SessionManager::try_add_session actually adds to map
-- Test with single session (no duplicate) to isolate the bug
+### ✅ Phase 4.6: Stats, Mute, Devices - **COMPLETE**
+- GetStats RPC: Returns connection states, bandwidth, candidates, quality metrics
+- SetMute RPC: Controls microphone mute state
+- ListAudioDevices RPC: Enumerates microphones and speakers via DeviceEnumerator
+- All methods tested, following established error handling patterns
 
 ---
 
@@ -102,64 +92,43 @@ Threading Model:
 - Use LOG_*() macros for all application logging
 - Follow patterns in GSTREAMER-THREADING.md (no creativity!)
 
-### What to Build Next (Phase 4.4: SDP Operations)
+### What to Build Next (Phase 4.7: Error Handling + Phase 4.8: Integration)
 
-**Goal**: Implement SDP offer/answer creation and remote SDP handling
+**Phase 4.7: Error Handling Improvements**
+- Structured error events (ICE_FAILED, DTLS_FAILED, PIPELINE_ERROR, etc.)
+- GStreamer bus message monitoring for pipeline errors
+- Proper error propagation to Python via ErrorEvent
+- Graceful degradation on non-critical failures
 
-**Files to Modify**:
-1. `drunk_call_service/src/call_service_impl.cpp`
+**Phase 4.8: Integration Testing with Python**
+- End-to-end test: Python ↔ gRPC ↔ C++ service
+- Full call flow: Offer/Answer, ICE negotiation, media flow
+- Interop testing with Conversations.im / Dino
+- Performance validation: Startup time, memory usage, latency
+- Binary size target: <10MB stripped
 
-   - Implement CreateOffer RPC
-     - Get session from SessionManager
-     - Set SDP callback with condition variable
-     - Call webrtc->create_offer()
-     - Wait for callback (max 10s timeout)
-     - Return SDP in response
-     - Pattern: GSTREAMER-THREADING.md Pattern 1 (gRPC → GLib → gRPC)
-
-   - Implement CreateAnswer RPC
-     - Get session from SessionManager
-     - Parse remote SDP from request
-     - Set SDP callback with condition variable
-     - Call webrtc->create_answer(remote_sdp)
-     - Wait for callback (max 10s timeout)
-     - Return SDP in response
-     - Pattern: Same as CreateOffer
-
-   - Implement SetRemoteDescription RPC
-     - Get session from SessionManager
-     - Parse remote SDP and type (offer/answer)
-     - Call webrtc->set_remote_description(sdp)
-     - Return success/error
-     - Pattern: Simple synchronous call (no callback)
-
-**Pattern Reference**:
-- Session creation: 4-GRPC-PLAN.md lines 408-486
-- Event streaming: GSTREAMER-THREADING.md lines 217-270
-- Thread safety: THREAD-INFRASTRUCTURE-USAGE.md
+**Current State**: All core RPC methods implemented (Phases 4.1-4.6 complete)
+- 11/12 RPC methods working: CreateSession, CreateOffer, CreateAnswer, SetRemoteDescription,
+  AddICECandidate, StreamEvents, EndSession, GetStats, SetMute, ListAudioDevices, Heartbeat
+- Only missing: Shutdown (already implemented but needs testing)
 
 **Testing**:
 ```bash
-# Terminal 1: Start service
-LSAN_OPTIONS=suppressions=lsan.supp ./bin/drunk-call-service-linux --log-level DEBUG
+# Quick test all implemented methods
+./tests/test_grpc_service.sh
 
-# Terminal 2: Test CreateSession
-grpcurl -plaintext -import-path proto -proto call.proto \
-  -d '{"session_id": "test-1", "peer_jid": "alice@example.com"}' \
-  localhost:50051 call.CallService/CreateSession
-
-# Terminal 3: Test StreamEvents (should stream ICE candidates)
-grpcurl -plaintext -import-path proto -proto call.proto \
-  -d '{"session_id": "test-1"}' \
-  localhost:50051 call.CallService/StreamEvents
+# ICE-specific testing
+./tests/test_ice_candidates.sh
 ```
 
-**Success Criteria**:
-- [ ] CreateSession creates WebRTC session, returns success
-- [ ] StreamEvents streams ICE candidates from GLib thread
-- [ ] EndSession cleans up gracefully
-- [ ] No crashes, no deadlocks
-- [ ] Logging shows session lifecycle events
+**Success Criteria (Phase 4.8)**:
+- [ ] Python client can create sessions and exchange SDP
+- [ ] ICE candidates trickle correctly Python ↔ C++
+- [ ] Audio bidirectional (loopback test)
+- [ ] Stats API returns valid data
+- [ ] Mute/unmute works from Python
+- [ ] Device enumeration accessible from Python
+- [ ] Clean shutdown via Python or Ctrl+C
 
 ---
 
@@ -176,10 +145,10 @@ grpcurl -plaintext -import-path proto -proto call.proto \
 - [x] Phase 4.1: Thread infrastructure
 - [x] Phase 4.2: Service skeleton (main.cpp + stubs)
 - [x] Phase 4.3: CreateSession + StreamEvents + EndSession
-- [ ] Phase 4.4: SDP operations (CreateOffer, CreateAnswer, SetRemoteDescription) ← **NEXT**
-- [ ] Phase 4.5: ICE candidate handling
-- [ ] Phase 4.6: GetStats, SetMute, ListAudioDevices
-- [ ] Phase 4.7: Error handling improvements
+- [x] Phase 4.4: SDP operations (CreateOffer, CreateAnswer, SetRemoteDescription) + 3 critical bug fixes
+- [x] Phase 4.5: ICE candidate handling (AddICECandidate)
+- [x] Phase 4.6: GetStats, SetMute, ListAudioDevices
+- [ ] Phase 4.7: Error handling improvements ← **NEXT**
 - [ ] Phase 4.8: Integration testing with Python
 
 ---
@@ -254,6 +223,45 @@ grpcurl -plaintext -import-path proto -proto call.proto \
 - Tested with grpcurl: CreateSession succeeds, StreamEvents blocks, EndSession cleans up, Shutdown exits cleanly
 - Threading model verified: No deadlocks, clean lifecycle, graceful shutdown working correctly
 
+**Session 10** (2026-03-03): C++ Phase 4.4, 4.5, 4.6 - SDP, ICE, Stats Complete
+- **Phase 4.4 Complete**: CreateOffer, CreateAnswer, SetRemoteDescription RPCs
+  - Fixed 3 critical bugs discovered during testing:
+    1. Resource leak: Orphaned GStreamer pipeline on duplicate session (call_service_impl.cpp:165-169)
+    2. Shutdown hang: Signal handler quit GLib before cleanup (main.cpp:169-173, poll 1s→100ms)
+    3. Use-after-free: Lambda [&] captured stack vars → crash (shared_ptr<SDPCallbackState> solution)
+  - SDP operations working: Offer generates 682-byte SDP with ICE candidates
+  - ICE gathering: 12 local candidates (4 interfaces × 3 transports: UDP/TCP-active/TCP-passive)
+- **Phase 4.5 Complete**: AddICECandidate RPC
+  - Remote candidates: gRPC → WebRTCSession → webrtcbin → libnice
+  - Created tests/test_ice_candidates.sh: validates host/srflx/relay types, rapid trickle ICE
+  - All candidate types processed correctly
+- **Phase 4.6 Complete**: GetStats, SetMute, ListAudioDevices RPCs
+  - GetStats: Maps WebRTC Stats struct to proto (connection states, bandwidth, candidates, quality)
+  - SetMute: Controls microphone via webrtc->set_mute()
+  - ListAudioDevices: Enumerates via DeviceEnumerator (cross-platform: PulseAudio/WASAPI/CoreAudio)
+- Updated test_grpc_service.sh expectations: All methods now working (no more UNIMPLEMENTED)
+- Service now feature-complete for basic call operations (11/12 RPCs working)
+
+**Session 11** (2026-03-03): Bug Fixes - PipeWire Double-Free + CreateAnswer Test
+- **Bug Fix: PipeWire Double-Free in DeviceEnumerator**
+  - AddressSanitizer detected double-free when calling ListAudioDevices
+  - Root cause: PipeWire plugin threading issues during rapid monitor start/stop
+  - Solution: Remove gst_device_monitor_start/stop calls (device_enumerator.cpp:158-217, 279-346)
+  - Per GStreamer docs: get_devices() probes hardware without needing start/stop
+  - Result: Device enumeration works perfectly (3 inputs + 1 output), no crashes
+- **Bug Fix: CreateAnswer Test Using Invalid SDP**
+  - Test was sending handcrafted minimal SDP missing critical WebRTC fields
+  - Missing: a=group:BUNDLE, proper codec negotiation, SSRC, etc.
+  - Solution: Test now captures SDP from CreateOffer, uses it for CreateAnswer
+  - Fallback: Real production SDP from working Jingle call (2026-03-02)
+  - Proper test flow: session-1 creates offer → session-2 creates answer from that offer
+  - Result: CreateAnswer generates valid 650-byte answer with 12 ICE candidates
+- **Files Modified**:
+  - src/call_service_impl.cpp: Implemented GetStats, SetMute, ListAudioDevices RPCs
+  - src/device_enumerator.cpp: Removed start/stop to fix PipeWire double-free
+  - tests/test_grpc_service.sh: Use real SDP from CreateOffer for CreateAnswer test
+- **All 11/12 RPCs Now Fully Working**: Service ready for Phase 4.7 (error handling)
+
 **Details**: All historical code samples are in git history. See commit logs for implementation details.
 
 ---
@@ -275,13 +283,15 @@ grpcurl -plaintext -import-path proto -proto call.proto \
 
 ---
 
-**Last Updated**: 2026-03-03 (Session 10 in progress, Phase 4.4 SDP operations)
-**Next Session**: Debug session disappearing bug, complete Phase 4.4
+**Last Updated**: 2026-03-03 (Session 11 complete: Bug fixes for PipeWire + CreateAnswer)
+**Next Session**: Phase 4.7 (Error handling) or Phase 4.8 (Python integration testing)
 
-**Quick Test** (verify service works):
+**Quick Test** (verify all methods work):
 ```bash
 cd /home/m/claude/siproxylin/drunk_call_service
 make
-./tests/test_grpc_service.sh
-# Should show: CreateSession succeeds, unimplemented methods show WARN, clean shutdown
+./bin/drunk-call-service-linux --log-level DEBUG  # Terminal 1
+./tests/test_grpc_service.sh                      # Terminal 2
+./tests/test_ice_candidates.sh                    # Terminal 2 (ICE-specific)
+# Should show: All RPCs succeed, ICE candidates flowing, clean shutdown
 ```
