@@ -6,12 +6,32 @@
  */
 
 #include "webrtc_session.h"
+#include "logger.h"
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
-#include <iostream>
 #include <stdexcept>
+#include <cstring>
 
 namespace drunk_call {
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Extract ICE candidate type without exposing IP addresses (privacy-safe).
+ * Returns: "host", "srflx", "relay", "prflx", or "unknown"
+ */
+static std::string extract_candidate_type(const char* candidate) {
+    if (!candidate) return "unknown";
+
+    if (strstr(candidate, "typ host")) return "host";
+    if (strstr(candidate, "typ srflx")) return "srflx";
+    if (strstr(candidate, "typ relay")) return "relay";
+    if (strstr(candidate, "typ prflx")) return "prflx";
+
+    return "unknown";
+}
 
 // ============================================================================
 // Constructor / Destructor
@@ -55,32 +75,32 @@ bool WebRTCSession::initialize(const SessionConfig &config) {
         config_ = config;
 
         if (!create_pipeline()) {
-            std::cerr << "[WebRTCSession] Failed to create pipeline" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to create pipeline");
             return false;
         }
 
         if (!configure_webrtcbin()) {
-            std::cerr << "[WebRTCSession] Failed to configure webrtcbin" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to configure webrtcbin");
             return false;
         }
 
         if (!configure_proxy()) {
-            std::cerr << "[WebRTCSession] Failed to configure proxy" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to configure proxy");
             return false;
         }
 
         if (!add_turn_servers()) {
-            std::cerr << "[WebRTCSession] Failed to add TURN servers" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to add TURN servers");
             return false;
         }
 
         connect_signals();
 
-        std::cout << "[WebRTCSession] Initialized session: " << config_.session_id << std::endl;
+        LOG_INFO("[WebRTCSession] Initialized session: {}", config_.session_id);
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] Initialize failed: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] Initialize failed: {}", e.what());
         return false;
     }
 }
@@ -88,23 +108,23 @@ bool WebRTCSession::initialize(const SessionConfig &config) {
 bool WebRTCSession::start() {
     try {
         if (!pipeline_) {
-            std::cerr << "[WebRTCSession] Pipeline not initialized" << std::endl;
+            LOG_ERROR("[WebRTCSession] Pipeline not initialized");
             return false;
         }
 
-        std::cout << "[WebRTCSession] Starting pipeline..." << std::endl;
+        LOG_INFO("[WebRTCSession] Starting pipeline...");
         GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
 
         if (ret == GST_STATE_CHANGE_FAILURE) {
-            std::cerr << "[WebRTCSession] Failed to set pipeline to PLAYING" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to set pipeline to PLAYING");
             return false;
         }
 
-        std::cout << "[WebRTCSession] Pipeline PLAYING" << std::endl;
+        LOG_INFO("[WebRTCSession] Pipeline PLAYING");
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] Start failed: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] Start failed: {}", e.what());
         return false;
     }
 }
@@ -115,7 +135,7 @@ bool WebRTCSession::stop() {
             return true;  // Already stopped
         }
 
-        std::cout << "[WebRTCSession] Stopping pipeline..." << std::endl;
+        LOG_INFO("[WebRTCSession] Stopping pipeline...");
         gst_element_set_state(pipeline_, GST_STATE_NULL);
         gst_object_unref(pipeline_);
 
@@ -124,11 +144,11 @@ bool WebRTCSession::stop() {
         audio_src_ = nullptr;
         audio_sink_ = nullptr;
 
-        std::cout << "[WebRTCSession] Pipeline stopped and cleaned up" << std::endl;
+        LOG_INFO("[WebRTCSession] Pipeline stopped and cleaned up");
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] Stop failed: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] Stop failed: {}", e.what());
         return false;
     }
 }
@@ -142,7 +162,7 @@ void WebRTCSession::create_offer(SDPCallback callback) {
         is_outgoing_ = true;
         sdp_callback_ = callback;
 
-        std::cout << "[WebRTCSession] Creating offer..." << std::endl;
+        LOG_INFO("[WebRTCSession] Creating offer...");
 
         // Create promise for async SDP generation
         GstPromise *promise = gst_promise_new_with_change_func(
@@ -152,7 +172,7 @@ void WebRTCSession::create_offer(SDPCallback callback) {
         g_signal_emit_by_name(webrtc_, "create-offer", nullptr, promise);
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] create_offer failed: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] create_offer failed: {}", e.what());
         if (callback) {
             callback(false, SDPMessage(), std::string("Exception: ") + e.what());
         }
@@ -164,11 +184,11 @@ void WebRTCSession::create_answer(const SDPMessage &remote_offer, SDPCallback ca
         is_outgoing_ = false;
         sdp_callback_ = callback;
 
-        std::cout << "[WebRTCSession] Creating answer..." << std::endl;
+        LOG_INFO("[WebRTCSession] Creating answer...");
 
         // First set remote description (the offer)
         if (!set_remote_description(remote_offer)) {
-            std::cerr << "[WebRTCSession] Failed to set remote offer" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to set remote offer");
             if (callback) {
                 callback(false, SDPMessage(), "Failed to set remote offer");
             }
@@ -179,7 +199,7 @@ void WebRTCSession::create_answer(const SDPMessage &remote_offer, SDPCallback ca
         // This will be triggered by on_offer_set_for_answer callback
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] create_answer failed: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] create_answer failed: {}", e.what());
         if (callback) {
             callback(false, SDPMessage(), std::string("Exception: ") + e.what());
         }
@@ -188,12 +208,12 @@ void WebRTCSession::create_answer(const SDPMessage &remote_offer, SDPCallback ca
 
 bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
     try {
-        std::cout << "[WebRTCSession] Setting remote description..." << std::endl;
+        LOG_INFO("[WebRTCSession] Setting remote description...");
 
         // Parse SDP text
         GstSDPMessage *sdp_msg;
         if (gst_sdp_message_new(&sdp_msg) != GST_SDP_OK) {
-            std::cerr << "[WebRTCSession] Failed to create SDP message" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to create SDP message");
             return false;
         }
 
@@ -201,7 +221,7 @@ bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
                 (const guint8*)remote_sdp.sdp_text.c_str(),
                 remote_sdp.sdp_text.length(),
                 sdp_msg) != GST_SDP_OK) {
-            std::cerr << "[WebRTCSession] Failed to parse SDP" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to parse SDP");
             gst_sdp_message_free(sdp_msg);
             return false;
         }
@@ -214,7 +234,7 @@ bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
             sdp_type, sdp_msg);
 
         if (!desc) {
-            std::cerr << "[WebRTCSession] Failed to create session description" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to create session description");
             return false;
         }
 
@@ -239,11 +259,11 @@ bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
         //   gst_promise_interrupt(promise);  // ❌ BAD!
         //   gst_promise_unref(promise);      // ❌ BAD!
 
-        std::cout << "[WebRTCSession] Remote description set" << std::endl;
+        LOG_INFO("[WebRTCSession] Remote description set");
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] set_remote_description failed: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] set_remote_description failed: {}", e.what());
         return false;
     }
 }
@@ -258,8 +278,7 @@ void WebRTCSession::set_ice_candidate_callback(ICECandidateCallback callback) {
 
 bool WebRTCSession::add_remote_ice_candidate(const ICECandidate &candidate) {
     try {
-        std::cout << "[WebRTCSession] Adding remote ICE candidate: mline="
-                  << candidate.sdp_mline_index << std::endl;
+        LOG_TRACE("[WebRTCSession] Adding remote ICE candidate: mline={}", candidate.sdp_mline_index);
 
         g_signal_emit_by_name(webrtc_, "add-ice-candidate",
                              candidate.sdp_mline_index,
@@ -268,7 +287,7 @@ bool WebRTCSession::add_remote_ice_candidate(const ICECandidate &candidate) {
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] add_remote_ice_candidate failed: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] add_remote_ice_candidate failed: {}", e.what());
         return false;
     }
 }
@@ -292,13 +311,13 @@ bool WebRTCSession::set_mute(bool muted) {
         if (volume_) {
             // Mute by setting volume to 0 on the volume element
             g_object_set(volume_, "volume", muted ? 0.0 : 1.0, nullptr);
-            std::cout << "[WebRTCSession] Audio " << (muted ? "muted" : "unmuted") << std::endl;
+            LOG_INFO("[WebRTCSession] Audio {}", muted ? "muted" : "unmuted");
         }
 
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] set_mute failed: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] set_mute failed: {}", e.what());
         return false;
     }
 }
@@ -372,7 +391,7 @@ MediaSession::Stats WebRTCSession::get_stats() const {
         last_bytes_received_ = stats.bytes_received;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] get_stats failed: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] get_stats failed: {}", e.what());
     }
 
     return stats;
@@ -384,20 +403,20 @@ MediaSession::Stats WebRTCSession::get_stats() const {
 
 bool WebRTCSession::create_pipeline() {
     try {
-        std::cout << "[WebRTCSession] Creating pipeline..." << std::endl;
+        LOG_DEBUG("[WebRTCSession] Creating pipeline...");
 
         // Create pipeline
         std::string pipeline_name = "call-pipeline-" + config_.session_id;
         pipeline_ = gst_pipeline_new(pipeline_name.c_str());
         if (!pipeline_) {
-            std::cerr << "[WebRTCSession] Failed to create pipeline" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to create pipeline");
             return false;
         }
 
         // Create webrtcbin element
         webrtc_ = gst_element_factory_make("webrtcbin", "webrtc");
         if (!webrtc_) {
-            std::cerr << "[WebRTCSession] Failed to create webrtcbin element" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to create webrtcbin element");
             return false;
         }
 
@@ -413,14 +432,14 @@ bool WebRTCSession::create_pipeline() {
         GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "rtp_payloader");
 
         if (!audio_src_ || !volume_ || !queue || !opusenc || !rtpopuspay) {
-            std::cerr << "[WebRTCSession] Failed to create audio source elements" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to create audio source elements");
             return false;
         }
 
         // Configure audio device if specified
         if (!config_.microphone_device.empty() && audio_src_name == std::string("pulsesrc")) {
             g_object_set(audio_src_, "device", config_.microphone_device.c_str(), nullptr);
-            std::cout << "[WebRTCSession] Microphone device: " << config_.microphone_device << std::endl;
+            LOG_INFO("[WebRTCSession] Microphone device: {}", config_.microphone_device);
         }
 
         // Configure opus encoder for VoIP
@@ -434,7 +453,7 @@ bool WebRTCSession::create_pipeline() {
 
         // Link audio source chain
         if (!gst_element_link_many(audio_src_, volume_, queue, opusenc, rtpopuspay, nullptr)) {
-            std::cerr << "[WebRTCSession] Failed to link audio source chain" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to link audio source chain");
             return false;
         }
 
@@ -442,7 +461,7 @@ bool WebRTCSession::create_pipeline() {
         // Use capsfilter to specify exact RTP caps
         GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_caps");
         if (!capsfilter) {
-            std::cerr << "[WebRTCSession] Failed to create capsfilter" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to create capsfilter");
             return false;
         }
 
@@ -458,7 +477,7 @@ bool WebRTCSession::create_pipeline() {
         gst_bin_add(GST_BIN(pipeline_), capsfilter);
 
         if (!gst_element_link_many(rtpopuspay, capsfilter, nullptr)) {
-            std::cerr << "[WebRTCSession] Failed to link payloader to capsfilter" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to link payloader to capsfilter");
             return false;
         }
 
@@ -467,7 +486,7 @@ bool WebRTCSession::create_pipeline() {
         GstPad *webrtc_sink = gst_element_request_pad_simple(webrtc_, "sink_%u");
 
         if (!caps_src || !webrtc_sink) {
-            std::cerr << "[WebRTCSession] Failed to get pads for linking" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to get pads for linking");
             return false;
         }
 
@@ -477,15 +496,15 @@ bool WebRTCSession::create_pipeline() {
         gst_object_unref(webrtc_sink);
 
         if (link_ret != GST_PAD_LINK_OK) {
-            std::cerr << "[WebRTCSession] Failed to link capsfilter to webrtcbin: " << link_ret << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to link capsfilter to webrtcbin: {}", link_ret);
             return false;
         }
 
-        std::cout << "[WebRTCSession] Pipeline created successfully" << std::endl;
+        LOG_DEBUG("[WebRTCSession] Pipeline created successfully");
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] create_pipeline exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] create_pipeline exception: {}", e.what());
         return false;
     }
 }
@@ -496,7 +515,7 @@ bool WebRTCSession::create_pipeline() {
 
 bool WebRTCSession::configure_webrtcbin() {
     try {
-        std::cout << "[WebRTCSession] Configuring webrtcbin..." << std::endl;
+        LOG_DEBUG("[WebRTCSession] Configuring webrtcbin...");
 
         // Set bundle policy to max-bundle (required for modern clients)
         g_object_set(webrtc_, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
@@ -505,23 +524,23 @@ bool WebRTCSession::configure_webrtcbin() {
         if (config_.relay_only) {
             g_object_set(webrtc_, "ice-transport-policy",
                         GST_WEBRTC_ICE_TRANSPORT_POLICY_RELAY, nullptr);
-            std::cout << "[WebRTCSession] ICE policy: RELAY only" << std::endl;
+            LOG_INFO("[WebRTCSession] ICE policy: RELAY only");
         } else {
             g_object_set(webrtc_, "ice-transport-policy",
                         GST_WEBRTC_ICE_TRANSPORT_POLICY_ALL, nullptr);
-            std::cout << "[WebRTCSession] ICE policy: ALL" << std::endl;
+            LOG_INFO("[WebRTCSession] ICE policy: ALL");
         }
 
         // Set STUN server
         if (!config_.stun_server.empty()) {
             g_object_set(webrtc_, "stun-server", config_.stun_server.c_str(), nullptr);
-            std::cout << "[WebRTCSession] STUN server: " << config_.stun_server << std::endl;
+            LOG_INFO("[WebRTCSession] STUN server: {}", config_.stun_server);
         }
 
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] configure_webrtcbin exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] configure_webrtcbin exception: {}", e.what());
         return false;
     }
 }
@@ -532,7 +551,7 @@ bool WebRTCSession::configure_proxy() {
             return true;  // No proxy configured
         }
 
-        std::cout << "[WebRTCSession] Configuring proxy..." << std::endl;
+        LOG_DEBUG("[WebRTCSession] Configuring proxy...");
 
         if (config_.proxy_type == "HTTP") {
             // Use webrtcbin's http-proxy property (GStreamer 1.22+)
@@ -549,8 +568,7 @@ bool WebRTCSession::configure_proxy() {
             proxy_url += config_.proxy_host + ":" + std::to_string(config_.proxy_port);
 
             g_object_set(webrtc_, "http-proxy", proxy_url.c_str(), nullptr);
-            std::cout << "[WebRTCSession] HTTP proxy configured: "
-                      << config_.proxy_host << ":" << config_.proxy_port << std::endl;
+            LOG_INFO("[WebRTCSession] HTTP proxy configured: {}:{}", config_.proxy_host, config_.proxy_port);
 
         } else if (config_.proxy_type == "SOCKS5") {
             // Access NiceAgent directly for SOCKS5 support
@@ -561,7 +579,7 @@ bool WebRTCSession::configure_proxy() {
             g_object_get(webrtc_, "ice-agent", &webrtc_ice, nullptr);
 
             if (!webrtc_ice) {
-                std::cerr << "[WebRTCSession] Failed to get ice-agent for SOCKS5 proxy" << std::endl;
+                LOG_ERROR("[WebRTCSession] Failed to get ice-agent for SOCKS5 proxy");
                 return false;
             }
 
@@ -569,7 +587,7 @@ bool WebRTCSession::configure_proxy() {
             g_object_get(webrtc_ice, "agent", &nice_agent, nullptr);
 
             if (!nice_agent) {
-                std::cerr << "[WebRTCSession] Failed to get NiceAgent for SOCKS5 proxy" << std::endl;
+                LOG_ERROR("[WebRTCSession] Failed to get NiceAgent for SOCKS5 proxy");
                 g_object_unref(webrtc_ice);
                 return false;
             }
@@ -589,21 +607,20 @@ bool WebRTCSession::configure_proxy() {
                     nullptr);
             }
 
-            std::cout << "[WebRTCSession] SOCKS5 proxy configured: "
-                      << config_.proxy_host << ":" << config_.proxy_port << std::endl;
+            LOG_INFO("[WebRTCSession] SOCKS5 proxy configured: {}:{}", config_.proxy_host, config_.proxy_port);
 
             g_object_unref(nice_agent);
             g_object_unref(webrtc_ice);
 
         } else {
-            std::cerr << "[WebRTCSession] Unknown proxy type: " << config_.proxy_type << std::endl;
+            LOG_ERROR("[WebRTCSession] Unknown proxy type: {}", config_.proxy_type);
             return false;
         }
 
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] configure_proxy exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] configure_proxy exception: {}", e.what());
         return false;
     }
 }
@@ -614,23 +631,23 @@ bool WebRTCSession::add_turn_servers() {
             return true;  // No TURN servers to add
         }
 
-        std::cout << "[WebRTCSession] Adding TURN servers..." << std::endl;
+        LOG_DEBUG("[WebRTCSession] Adding TURN servers...");
 
         for (const auto &turn_uri : config_.turn_servers) {
             gboolean success = FALSE;
             g_signal_emit_by_name(webrtc_, "add-turn-server", turn_uri.c_str(), &success);
 
             if (success) {
-                std::cout << "[WebRTCSession] Added TURN server: " << turn_uri << std::endl;
+                LOG_INFO("[WebRTCSession] Added TURN server: {}", turn_uri);
             } else {
-                std::cerr << "[WebRTCSession] Failed to add TURN server: " << turn_uri << std::endl;
+                LOG_ERROR("[WebRTCSession] Failed to add TURN server: {}", turn_uri);
             }
         }
 
         return true;
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] add_turn_servers exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] add_turn_servers exception: {}", e.what());
         return false;
     }
 }
@@ -641,7 +658,7 @@ bool WebRTCSession::add_turn_servers() {
 
 void WebRTCSession::connect_signals() {
     try {
-        std::cout << "[WebRTCSession] Connecting signals..." << std::endl;
+        LOG_DEBUG("[WebRTCSession] Connecting signals...");
 
         g_signal_connect(webrtc_, "on-negotiation-needed",
                         G_CALLBACK(on_negotiation_needed_static), this);
@@ -661,10 +678,10 @@ void WebRTCSession::connect_signals() {
         g_signal_connect(webrtc_, "notify::signaling-state",
                         G_CALLBACK(on_signaling_state_static), this);
 
-        std::cout << "[WebRTCSession] Signals connected" << std::endl;
+        LOG_DEBUG("[WebRTCSession] Signals connected");
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] connect_signals exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] connect_signals exception: {}", e.what());
     }
 }
 
@@ -727,19 +744,19 @@ void WebRTCSession::on_offer_set_for_answer_static(GstPromise *promise, gpointer
 // ============================================================================
 
 void WebRTCSession::on_negotiation_needed() {
-    std::cout << "[WebRTCSession] on_negotiation_needed" << std::endl;
+    LOG_INFO("[WebRTCSession] on_negotiation_needed");
     // This will be handled by explicit create_offer call
 }
 
 void WebRTCSession::on_offer_created(GstPromise *promise) {
     try {
-        std::cout << "[WebRTCSession] on_offer_created" << std::endl;
+        LOG_INFO("[WebRTCSession] on_offer_created");
 
         // FIXED: Don't use g_assert (can be compiled out in release builds)
         // Use proper error handling instead
         GstPromiseResult result = gst_promise_wait(promise);
         if (result != GST_PROMISE_RESULT_REPLIED) {
-            std::cerr << "[WebRTCSession] Promise did not reply: " << result << std::endl;
+            LOG_ERROR("[WebRTCSession] Promise did not reply: {}", result);
             gst_promise_unref(promise);
             if (sdp_callback_) {
                 sdp_callback_(false, SDPMessage(), "Promise failed to reply");
@@ -753,7 +770,7 @@ void WebRTCSession::on_offer_created(GstPromise *promise) {
         gst_promise_unref(promise);
 
         if (!offer) {
-            std::cerr << "[WebRTCSession] Failed to get offer from promise" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to get offer from promise");
             if (sdp_callback_) {
                 sdp_callback_(false, SDPMessage(), "Failed to create offer");
             }
@@ -771,7 +788,7 @@ void WebRTCSession::on_offer_created(GstPromise *promise) {
         std::string sdp_str(sdp_text);
         g_free(sdp_text);
 
-        std::cout << "[WebRTCSession] Offer SDP created (" << sdp_str.length() << " bytes)" << std::endl;
+        LOG_INFO("[WebRTCSession] Offer SDP created ({} bytes)", sdp_str.length());
 
         // Call user callback
         if (sdp_callback_) {
@@ -782,7 +799,7 @@ void WebRTCSession::on_offer_created(GstPromise *promise) {
         gst_webrtc_session_description_free(offer);
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] on_offer_created exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] on_offer_created exception: {}", e.what());
         if (sdp_callback_) {
             sdp_callback_(false, SDPMessage(), std::string("Exception: ") + e.what());
         }
@@ -791,13 +808,13 @@ void WebRTCSession::on_offer_created(GstPromise *promise) {
 
 void WebRTCSession::on_answer_created(GstPromise *promise) {
     try {
-        std::cout << "[WebRTCSession] on_answer_created" << std::endl;
+        LOG_INFO("[WebRTCSession] on_answer_created");
 
         // FIXED: Don't use g_assert (can be compiled out in release builds)
         // Use proper error handling instead
         GstPromiseResult result = gst_promise_wait(promise);
         if (result != GST_PROMISE_RESULT_REPLIED) {
-            std::cerr << "[WebRTCSession] Promise did not reply: " << result << std::endl;
+            LOG_ERROR("[WebRTCSession] Promise did not reply: {}", result);
             gst_promise_unref(promise);
             if (sdp_callback_) {
                 sdp_callback_(false, SDPMessage(), "Promise failed to reply");
@@ -811,7 +828,7 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
         gst_promise_unref(promise);
 
         if (!answer) {
-            std::cerr << "[WebRTCSession] Failed to get answer from promise" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to get answer from promise");
             if (sdp_callback_) {
                 sdp_callback_(false, SDPMessage(), "Failed to create answer");
             }
@@ -829,7 +846,7 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
         std::string sdp_str(sdp_text);
         g_free(sdp_text);
 
-        std::cout << "[WebRTCSession] Answer SDP created (" << sdp_str.length() << " bytes)" << std::endl;
+        LOG_INFO("[WebRTCSession] Answer SDP created ({} bytes)", sdp_str.length());
 
         // Call user callback
         if (sdp_callback_) {
@@ -840,7 +857,7 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
         gst_webrtc_session_description_free(answer);
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] on_answer_created exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] on_answer_created exception: {}", e.what());
         if (sdp_callback_) {
             sdp_callback_(false, SDPMessage(), std::string("Exception: ") + e.what());
         }
@@ -849,7 +866,7 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
 
 void WebRTCSession::on_offer_set_for_answer() {
     try {
-        std::cout << "[WebRTCSession] Offer set, creating answer..." << std::endl;
+        LOG_INFO("[WebRTCSession] Offer set, creating answer...");
 
         // Now create answer
         GstPromise *promise = gst_promise_new_with_change_func(
@@ -858,7 +875,7 @@ void WebRTCSession::on_offer_set_for_answer() {
         g_signal_emit_by_name(webrtc_, "create-answer", nullptr, promise);
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] on_offer_set_for_answer exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] on_offer_set_for_answer exception: {}", e.what());
         if (sdp_callback_) {
             sdp_callback_(false, SDPMessage(), std::string("Exception: ") + e.what());
         }
@@ -872,14 +889,17 @@ void WebRTCSession::on_ice_candidate(guint mlineindex, const char *candidate) {
             // In relay-only mode, only send relay candidates to prevent IP leaks
             if (strstr(candidate, "typ host") != nullptr ||
                 strstr(candidate, "typ srflx") != nullptr) {
-                std::cout << "[WebRTCSession] Filtering non-relay candidate (relay-only mode): "
-                          << candidate << std::endl;
+                // PRIVACY: Don't log IP addresses! Only log candidate type.
+                LOG_DEBUG("[WebRTCSession] Filtering non-relay candidate (relay-only mode): type={}",
+                         extract_candidate_type(candidate));
                 return;  // Skip this candidate
             }
         }
 
-        std::cout << "[WebRTCSession] ICE candidate: mline=" << mlineindex
-                  << " candidate=" << candidate << std::endl;
+        // PRIVACY: Don't log full candidate string (contains IP addresses)
+        // Only log mline index and candidate type
+        LOG_TRACE("[WebRTCSession] ICE candidate: mline={} type={}",
+                 mlineindex, extract_candidate_type(candidate));
 
         if (ice_callback_) {
             ICECandidate ice_cand(candidate, mlineindex);
@@ -887,7 +907,7 @@ void WebRTCSession::on_ice_candidate(guint mlineindex, const char *candidate) {
         }
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] on_ice_candidate exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] on_ice_candidate exception: {}", e.what());
     }
 }
 
@@ -930,14 +950,14 @@ void WebRTCSession::on_ice_connection_state() {
                 break;
         }
 
-        std::cout << "[WebRTCSession] ICE connection state: " << state_str << std::endl;
+        LOG_INFO("[WebRTCSession] ICE connection state: {}", state_str);
 
         if (state_callback_) {
             state_callback_(mapped_state);
         }
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] on_ice_connection_state exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] on_ice_connection_state exception: {}", e.what());
     }
 }
 
@@ -959,10 +979,10 @@ void WebRTCSession::on_ice_gathering_state() {
                 break;
         }
 
-        std::cout << "[WebRTCSession] ICE gathering state: " << state_str << std::endl;
+        LOG_TRACE("[WebRTCSession] ICE gathering state: {}", state_str);
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] on_ice_gathering_state exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] on_ice_gathering_state exception: {}", e.what());
     }
 }
 
@@ -993,16 +1013,16 @@ void WebRTCSession::on_signaling_state() {
                 break;
         }
 
-        std::cout << "[WebRTCSession] Signaling state: " << state_str << std::endl;
+        LOG_INFO("[WebRTCSession] Signaling state: {}", state_str);
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] on_signaling_state exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] on_signaling_state exception: {}", e.what());
     }
 }
 
 void WebRTCSession::on_incoming_stream(GstPad *pad) {
     try {
-        std::cout << "[WebRTCSession] Incoming stream on pad: " << GST_PAD_NAME(pad) << std::endl;
+        LOG_DEBUG("[WebRTCSession] Incoming stream on pad: {}", GST_PAD_NAME(pad));
 
         // Only handle src pads (incoming media)
         if (GST_PAD_DIRECTION(pad) != GST_PAD_SRC) {
@@ -1019,7 +1039,7 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
         audio_sink_ = gst_element_factory_make(sink_name, "audio_sink");
 
         if (!depay || !decoder || !queue || !audio_sink_) {
-            std::cerr << "[WebRTCSession] Failed to create audio sink elements" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to create audio sink elements");
             return;
         }
 
@@ -1033,7 +1053,7 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
 
         // Link elements
         if (!gst_element_link_many(depay, decoder, queue, audio_sink_, nullptr)) {
-            std::cerr << "[WebRTCSession] Failed to link audio sink chain" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to link audio sink chain");
             return;
         }
 
@@ -1046,14 +1066,14 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
         // Link webrtcbin pad to depay
         GstPad *sink_pad = gst_element_get_static_pad(depay, "sink");
         if (gst_pad_link(pad, sink_pad) != GST_PAD_LINK_OK) {
-            std::cerr << "[WebRTCSession] Failed to link incoming pad to depay" << std::endl;
+            LOG_ERROR("[WebRTCSession] Failed to link incoming pad to depay");
         } else {
-            std::cout << "[WebRTCSession] Incoming stream linked successfully" << std::endl;
+            LOG_DEBUG("[WebRTCSession] Incoming stream linked successfully");
         }
         gst_object_unref(sink_pad);
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] on_incoming_stream exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] on_incoming_stream exception: {}", e.what());
     }
 }
 
@@ -1080,7 +1100,7 @@ void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) 
                 const gchar *field_name = g_quark_to_string(field_id);
 
                 if (!GST_VALUE_HOLDS_STRUCTURE(value)) {
-                    std::cout << "[parse_stats] Field " << field_name << " is not a structure" << std::endl;
+                    LOG_DEBUG("[WebRTCSession] parse_stats: Field {} is not a structure", field_name);
                     return TRUE;  // Continue
                 }
 
@@ -1215,7 +1235,7 @@ void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) 
         }
 
     } catch (const std::exception &e) {
-        std::cerr << "[WebRTCSession] parse_stats exception: " << e.what() << std::endl;
+        LOG_ERROR("[WebRTCSession] parse_stats exception: {}", e.what());
     }
 }
 

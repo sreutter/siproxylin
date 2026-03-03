@@ -6,8 +6,8 @@
  */
 
 #include "media_session.h"
+#include "logger.h"
 #include <gst/gst.h>
-#include <iostream>
 #include <algorithm>
 
 #ifdef _WIN32
@@ -155,14 +155,14 @@ std::vector<AudioDevice> DeviceEnumerator::enumerate_devices(const char *classes
     std::vector<AudioDevice> devices;
 
     try {
-        std::cout << "[DeviceEnumerator] Enumerating " << (is_input ? "input" : "output")
-                  << " devices on " << OS_FAMILY << "..." << std::endl;
+        LOG_INFO("[DeviceEnumerator] Enumerating {} devices on {}",
+                 is_input ? "input" : "output", OS_FAMILY);
 
         // Create device monitor - but DON'T start/stop it
         // Per GStreamer docs: get_devices() will probe hardware even if not started
         GstDeviceMonitor *monitor = gst_device_monitor_new();
         if (!monitor) {
-            std::cerr << "[DeviceEnumerator] Failed to create device monitor" << std::endl;
+            LOG_ERROR("[DeviceEnumerator] Failed to create device monitor");
             return devices;
         }
 
@@ -199,8 +199,8 @@ std::vector<AudioDevice> DeviceEnumerator::enumerate_devices(const char *classes
             // Check if default
             audio_dev.is_default = is_default_device(device);
 
-            std::cout << "[DeviceEnumerator]   " << (audio_dev.is_default ? "✓ " : "  ")
-                      << audio_dev.name << " (id: " << audio_dev.id << ")" << std::endl;
+            LOG_INFO("[DeviceEnumerator]   {}{} (id: {})",
+                     audio_dev.is_default ? "✓ " : "  ", audio_dev.name, audio_dev.id);
 
             devices.push_back(audio_dev);
             gst_object_unref(device);
@@ -211,10 +211,10 @@ std::vector<AudioDevice> DeviceEnumerator::enumerate_devices(const char *classes
         // Cleanup - no start/stop needed, just unref
         gst_object_unref(monitor);
 
-        std::cout << "[DeviceEnumerator] Found " << devices.size() << " devices" << std::endl;
+        LOG_INFO("[DeviceEnumerator] Found {} devices", devices.size());
 
     } catch (const std::exception &e) {
-        std::cerr << "[DeviceEnumerator] Exception: " << e.what() << std::endl;
+        LOG_ERROR("[DeviceEnumerator] Exception: {}", e.what());
     }
 
     return devices;
@@ -241,11 +241,11 @@ AudioDevice DeviceEnumerator::get_default_input() {
 
     // Fallback: return first device or empty
     if (!devices.empty()) {
-        std::cout << "[DeviceEnumerator] No default input found, using first device" << std::endl;
+        LOG_INFO("[DeviceEnumerator] No default input found, using first device");
         return devices[0];
     }
 
-    std::cerr << "[DeviceEnumerator] No input devices found!" << std::endl;
+    LOG_ERROR("[DeviceEnumerator] No input devices found!");
     return AudioDevice();
 }
 
@@ -262,11 +262,11 @@ AudioDevice DeviceEnumerator::get_default_output() {
 
     // Fallback: return first device or empty
     if (!devices.empty()) {
-        std::cout << "[DeviceEnumerator] No default output found, using first device" << std::endl;
+        LOG_INFO("[DeviceEnumerator] No default output found, using first device");
         return devices[0];
     }
 
-    std::cerr << "[DeviceEnumerator] No output devices found!" << std::endl;
+    LOG_ERROR("[DeviceEnumerator] No output devices found!");
     return AudioDevice();
 }
 
@@ -277,12 +277,12 @@ std::vector<VideoDevice> DeviceEnumerator::enumerate_video_devices(const char *c
     std::vector<VideoDevice> devices;
 
     try {
-        std::cout << "[DeviceEnumerator] Enumerating video devices on " << OS_FAMILY << "..." << std::endl;
+        LOG_INFO("[DeviceEnumerator] Enumerating video devices on {}", OS_FAMILY);
 
         // Create device monitor - but DON'T start/stop it
         GstDeviceMonitor *monitor = gst_device_monitor_new();
         if (!monitor) {
-            std::cerr << "[DeviceEnumerator] Failed to create device monitor" << std::endl;
+            LOG_ERROR("[DeviceEnumerator] Failed to create device monitor");
             return devices;
         }
 
@@ -327,12 +327,13 @@ std::vector<VideoDevice> DeviceEnumerator::enumerate_video_devices(const char *c
             // Check if default
             video_dev.is_default = is_default_device(device);
 
-            std::cout << "[DeviceEnumerator]   " << (video_dev.is_default ? "✓ " : "  ")
-                      << video_dev.name << " (id: " << video_dev.id;
             if (!video_dev.device_path.empty()) {
-                std::cout << ", path: " << video_dev.device_path;
+                LOG_INFO("[DeviceEnumerator]   {}{} (id: {}, path: {})",
+                         video_dev.is_default ? "✓ " : "  ", video_dev.name, video_dev.id, video_dev.device_path);
+            } else {
+                LOG_INFO("[DeviceEnumerator]   {}{} (id: {})",
+                         video_dev.is_default ? "✓ " : "  ", video_dev.name, video_dev.id);
             }
-            std::cout << ")" << std::endl;
 
             devices.push_back(video_dev);
             gst_object_unref(device);
@@ -343,10 +344,10 @@ std::vector<VideoDevice> DeviceEnumerator::enumerate_video_devices(const char *c
         // Cleanup - no start/stop needed, just unref
         gst_object_unref(monitor);
 
-        std::cout << "[DeviceEnumerator] Found " << devices.size() << " video devices" << std::endl;
+        LOG_INFO("[DeviceEnumerator] Found {} video devices", devices.size());
 
     } catch (const std::exception &e) {
-        std::cerr << "[DeviceEnumerator] Exception: " << e.what() << std::endl;
+        LOG_ERROR("[DeviceEnumerator] Exception: {}", e.what());
     }
 
     return devices;
@@ -369,11 +370,11 @@ VideoDevice DeviceEnumerator::get_default_video_source() {
 
     // Fallback: return first device or empty
     if (!devices.empty()) {
-        std::cout << "[DeviceEnumerator] No default video source found, using first device" << std::endl;
+        LOG_INFO("[DeviceEnumerator] No default video source found, using first device");
         return devices[0];
     }
 
-    std::cerr << "[DeviceEnumerator] No video devices found!" << std::endl;
+    LOG_ERROR("[DeviceEnumerator] No video devices found!");
     return VideoDevice();
 }
 
