@@ -18,6 +18,8 @@ import logging
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional
 
+from .features import RtcpMuxHandler
+
 
 class JingleSDPConverter:
     """
@@ -142,8 +144,8 @@ class JingleSDPConverter:
             description = ET.SubElement(content, '{urn:xmpp:jingle:apps:rtp:1}description')
             description.set('media', media_type)
 
-            # Check if SDP has rtcp-mux
-            has_rtcp_mux = any(line.strip() == 'a=rtcp-mux' for line in media_lines)
+            # Check if SDP has rtcp-mux (parsed once, used later)
+            sdp_has_rtcp_mux = any(line.strip() == 'a=rtcp-mux' for line in media_lines)
 
             # Parse fmtp parameters (codec-specific parameters from SDP)
             # Format: a=fmtp:111 minptime=10;useinbandfec=1
@@ -244,8 +246,16 @@ class JingleSDPConverter:
                         self.logger.debug(f"Added SSRC {ssrc} to Jingle (role={role})")
 
             # Add rtcp-mux AFTER source (matches Conversations' element ordering)
-            if has_rtcp_mux:
-                ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
+            # Use RtcpMuxHandler to determine if we should include rtcp-mux
+            if role == 'offer':
+                # Creating Jingle offer from SDP offer
+                if RtcpMuxHandler.should_add_to_offer_jingle(sdp_has_rtcp_mux):
+                    ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
+            elif role == 'answer':
+                # Creating Jingle answer from SDP answer
+                offer_had_rtcp_mux = offer_context.get('rtcp_mux', False) if offer_context else False
+                if RtcpMuxHandler.should_add_to_answer_jingle(sdp_has_rtcp_mux, offer_had_rtcp_mux):
+                    ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
 
             # Add ICE-UDP transport with credentials
             transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
@@ -419,10 +429,19 @@ class JingleSDPConverter:
                     # Media direction
                     sdp_lines.append("a=sendrecv")
 
-                    # Check for rtcp-mux
-                    rtcp_mux = description.find('{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
-                    if rtcp_mux is not None:
-                        sdp_lines.append("a=rtcp-mux")
+                    # Check for rtcp-mux in Jingle
+                    jingle_has_rtcp_mux = description.find('{urn:xmpp:jingle:apps:rtp:1}rtcp-mux') is not None
+
+                    # Use RtcpMuxHandler to determine if we should include rtcp-mux in SDP
+                    if role == 'offer':
+                        # Converting peer's Jingle offer to SDP for webrtcbin (we're answering)
+                        if RtcpMuxHandler.should_add_to_answer_sdp(jingle_has_rtcp_mux):
+                            sdp_lines.append("a=rtcp-mux")
+                    elif role == 'answer':
+                        # Converting peer's Jingle answer to SDP (setting remote description)
+                        # Just echo what peer sent
+                        if jingle_has_rtcp_mux:
+                            sdp_lines.append("a=rtcp-mux")
 
                     # Add rtpmap lines
                     sdp_lines.extend(rtpmap_lines)

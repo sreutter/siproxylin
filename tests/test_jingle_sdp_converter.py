@@ -353,6 +353,324 @@ def test_jingle_to_sdp_no_content(converter):
 
 
 # ============================================================================
+# Test: rtcp-mux Negotiation (RtcpMuxHandler)
+# ============================================================================
+
+def test_rtcp_mux_answer_both_have_it(converter):
+    """
+    Test rtcp-mux negotiation: Offer has it, SDP answer has it.
+
+    Result: Jingle answer SHOULD have rtcp-mux (both sides agree).
+    """
+    sdp_answer = """v=0
+o=- 123456 0 IN IP4 0.0.0.0
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=ice-ufrag:wxyz
+a=ice-pwd:0987654321zyxwvutsrqp
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF
+a=setup:active
+a=mid:0
+a=rtcp-mux
+a=rtpmap:111 opus/48000/2
+"""
+
+    # Offer context: offer HAD rtcp-mux
+    offer_context = {
+        'bundle': False,
+        'rtcp_mux': True,  # ← Offer had rtcp-mux
+        'codecs': [],
+        'rtp_hdrext': [],
+        'ssrc_params': []
+    }
+
+    jingle = converter.sdp_to_jingle(sdp_answer, role='answer', offer_context=offer_context)
+
+    content = jingle.find('{urn:xmpp:jingle:1}content')
+    description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
+    rtcp_mux = description.find('{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
+
+    assert rtcp_mux is not None, "Should have rtcp-mux (both offer and answer support it)"
+
+
+def test_rtcp_mux_answer_offer_has_answer_doesnt(converter):
+    """
+    Test rtcp-mux negotiation: Offer has it, SDP answer does NOT.
+
+    Result: Jingle answer should NOT have rtcp-mux (answer rejects it).
+    """
+    sdp_answer = """v=0
+o=- 123456 0 IN IP4 0.0.0.0
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=ice-ufrag:wxyz
+a=ice-pwd:0987654321zyxwvutsrqp
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF
+a=setup:active
+a=mid:0
+a=rtpmap:111 opus/48000/2
+"""
+    # NO a=rtcp-mux in SDP answer
+
+    # Offer context: offer HAD rtcp-mux
+    offer_context = {
+        'bundle': False,
+        'rtcp_mux': True,  # ← Offer had rtcp-mux
+        'codecs': [],
+        'rtp_hdrext': [],
+        'ssrc_params': []
+    }
+
+    jingle = converter.sdp_to_jingle(sdp_answer, role='answer', offer_context=offer_context)
+
+    content = jingle.find('{urn:xmpp:jingle:1}content')
+    description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
+    rtcp_mux = description.find('{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
+
+    assert rtcp_mux is None, "Should NOT have rtcp-mux (SDP answer rejected it)"
+
+
+def test_rtcp_mux_answer_offer_doesnt_answer_has(converter):
+    """
+    Test rtcp-mux negotiation: Offer does NOT have it, SDP answer has it.
+
+    Result: Jingle answer should NOT have rtcp-mux (offer didn't propose it).
+    """
+    sdp_answer = """v=0
+o=- 123456 0 IN IP4 0.0.0.0
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=ice-ufrag:wxyz
+a=ice-pwd:0987654321zyxwvutsrqp
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF
+a=setup:active
+a=mid:0
+a=rtcp-mux
+a=rtpmap:111 opus/48000/2
+"""
+
+    # Offer context: offer did NOT have rtcp-mux
+    offer_context = {
+        'bundle': False,
+        'rtcp_mux': False,  # ← Offer did NOT have rtcp-mux
+        'codecs': [],
+        'rtp_hdrext': [],
+        'ssrc_params': []
+    }
+
+    jingle = converter.sdp_to_jingle(sdp_answer, role='answer', offer_context=offer_context)
+
+    content = jingle.find('{urn:xmpp:jingle:1}content')
+    description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
+    rtcp_mux = description.find('{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
+
+    assert rtcp_mux is None, "Should NOT have rtcp-mux (offer didn't propose it, can't add in answer)"
+
+
+def test_rtcp_mux_answer_neither_has_it(converter):
+    """
+    Test rtcp-mux negotiation: Offer does NOT have it, SDP answer does NOT have it.
+
+    Result: Jingle answer should NOT have rtcp-mux (neither side supports it).
+    """
+    sdp_answer = """v=0
+o=- 123456 0 IN IP4 0.0.0.0
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=ice-ufrag:wxyz
+a=ice-pwd:0987654321zyxwvutsrqp
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF
+a=setup:active
+a=mid:0
+a=rtpmap:111 opus/48000/2
+"""
+    # NO a=rtcp-mux in SDP answer
+
+    # Offer context: offer did NOT have rtcp-mux
+    offer_context = {
+        'bundle': False,
+        'rtcp_mux': False,  # ← Offer did NOT have rtcp-mux
+        'codecs': [],
+        'rtp_hdrext': [],
+        'ssrc_params': []
+    }
+
+    jingle = converter.sdp_to_jingle(sdp_answer, role='answer', offer_context=offer_context)
+
+    content = jingle.find('{urn:xmpp:jingle:1}content')
+    description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
+    rtcp_mux = description.find('{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
+
+    assert rtcp_mux is None, "Should NOT have rtcp-mux (neither offer nor answer support it)"
+
+
+def test_jingle_answer_to_sdp_with_rtcp_mux(converter):
+    """
+    Test Jingle answer → SDP conversion with rtcp-mux.
+
+    When we receive peer's Jingle answer with rtcp-mux, SDP should have it.
+    """
+    jingle = ET.Element('{urn:xmpp:jingle:1}jingle')
+    jingle.set('action', 'session-accept')
+    jingle.set('sid', 'test-session-123')
+
+    content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
+    content.set('creator', 'initiator')
+    content.set('name', '0')
+
+    description = ET.SubElement(content, '{urn:xmpp:jingle:apps:rtp:1}description')
+    description.set('media', 'audio')
+
+    payload = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}payload-type')
+    payload.set('id', '111')
+    payload.set('name', 'opus')
+    payload.set('clockrate', '48000')
+    payload.set('channels', '2')
+
+    # Add rtcp-mux
+    ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
+
+    transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
+    transport.set('ufrag', 'test-ufrag')
+    transport.set('pwd', 'test-password')
+
+    fingerprint = ET.SubElement(transport, '{urn:xmpp:jingle:apps:dtls:0}fingerprint')
+    fingerprint.set('hash', 'sha-256')
+    fingerprint.set('setup', 'active')
+    fingerprint.text = 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99'
+
+    sdp = converter.jingle_to_sdp(jingle, role='answer')
+
+    assert 'a=rtcp-mux' in sdp, "SDP should have rtcp-mux (Jingle answer has it)"
+
+
+def test_jingle_answer_to_sdp_without_rtcp_mux(converter):
+    """
+    Test Jingle answer → SDP conversion without rtcp-mux.
+
+    When we receive peer's Jingle answer without rtcp-mux, SDP should NOT have it.
+    """
+    jingle = ET.Element('{urn:xmpp:jingle:1}jingle')
+    jingle.set('action', 'session-accept')
+    jingle.set('sid', 'test-session-123')
+
+    content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
+    content.set('creator', 'initiator')
+    content.set('name', '0')
+
+    description = ET.SubElement(content, '{urn:xmpp:jingle:apps:rtp:1}description')
+    description.set('media', 'audio')
+
+    payload = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}payload-type')
+    payload.set('id', '111')
+    payload.set('name', 'opus')
+    payload.set('clockrate', '48000')
+    payload.set('channels', '2')
+
+    # NO rtcp-mux element
+
+    transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
+    transport.set('ufrag', 'test-ufrag')
+    transport.set('pwd', 'test-password')
+
+    fingerprint = ET.SubElement(transport, '{urn:xmpp:jingle:apps:dtls:0}fingerprint')
+    fingerprint.set('hash', 'sha-256')
+    fingerprint.set('setup', 'active')
+    fingerprint.text = 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99'
+
+    sdp = converter.jingle_to_sdp(jingle, role='answer')
+
+    assert 'a=rtcp-mux' not in sdp, "SDP should NOT have rtcp-mux (Jingle answer doesn't have it)"
+
+
+def test_jingle_offer_to_sdp_with_rtcp_mux(converter):
+    """
+    Test Jingle offer → SDP conversion with rtcp-mux.
+
+    When we receive peer's Jingle offer with rtcp-mux, we should pass it to webrtcbin.
+    """
+    jingle = ET.Element('{urn:xmpp:jingle:1}jingle')
+    jingle.set('action', 'session-initiate')
+    jingle.set('sid', 'test-session-123')
+
+    content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
+    content.set('creator', 'initiator')
+    content.set('name', '0')
+
+    description = ET.SubElement(content, '{urn:xmpp:jingle:apps:rtp:1}description')
+    description.set('media', 'audio')
+
+    payload = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}payload-type')
+    payload.set('id', '111')
+    payload.set('name', 'opus')
+    payload.set('clockrate', '48000')
+    payload.set('channels', '2')
+
+    # Add rtcp-mux
+    ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
+
+    transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
+    transport.set('ufrag', 'test-ufrag')
+    transport.set('pwd', 'test-password')
+
+    fingerprint = ET.SubElement(transport, '{urn:xmpp:jingle:apps:dtls:0}fingerprint')
+    fingerprint.set('hash', 'sha-256')
+    fingerprint.set('setup', 'actpass')
+    fingerprint.text = 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99'
+
+    sdp = converter.jingle_to_sdp(jingle, role='offer')
+
+    assert 'a=rtcp-mux' in sdp, "SDP should have rtcp-mux (pass peer's offer to webrtcbin)"
+
+
+def test_jingle_offer_to_sdp_without_rtcp_mux(converter):
+    """
+    Test Jingle offer → SDP conversion without rtcp-mux.
+
+    When we receive peer's Jingle offer without rtcp-mux, SDP should NOT have it.
+    """
+    jingle = ET.Element('{urn:xmpp:jingle:1}jingle')
+    jingle.set('action', 'session-initiate')
+    jingle.set('sid', 'test-session-123')
+
+    content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
+    content.set('creator', 'initiator')
+    content.set('name', '0')
+
+    description = ET.SubElement(content, '{urn:xmpp:jingle:apps:rtp:1}description')
+    description.set('media', 'audio')
+
+    payload = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}payload-type')
+    payload.set('id', '111')
+    payload.set('name', 'opus')
+    payload.set('clockrate', '48000')
+    payload.set('channels', '2')
+
+    # NO rtcp-mux
+
+    transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
+    transport.set('ufrag', 'test-ufrag')
+    transport.set('pwd', 'test-password')
+
+    fingerprint = ET.SubElement(transport, '{urn:xmpp:jingle:apps:dtls:0}fingerprint')
+    fingerprint.set('hash', 'sha-256')
+    fingerprint.set('setup', 'actpass')
+    fingerprint.text = 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99'
+
+    sdp = converter.jingle_to_sdp(jingle, role='offer')
+
+    assert 'a=rtcp-mux' not in sdp, "SDP should NOT have rtcp-mux (peer's offer doesn't have it)"
+
+
+# ============================================================================
 # Test: Advanced Features (Placeholder for future)
 # ============================================================================
 
