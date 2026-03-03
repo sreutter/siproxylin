@@ -4,6 +4,10 @@
  * Standard path - uses GStreamer webrtcbin element
  * Handles ICE, DTLS, SRTP automatically
  *
+ * LOGGING: Use LOG_*() macros (logger.h) for all application logging
+ *          DO NOT use std::cout/std::cerr in production code
+ *          See: docs/LOGGING-POLICY.md
+ *
  * See: docs/CALLS/PLAN.md for full architecture
  * Reference: docs/CALLS/webrtcbin-reference.cpp for implementation patterns
  */

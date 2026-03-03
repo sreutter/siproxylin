@@ -11,7 +11,7 @@ GST_CFLAGS = $(shell $(PKG_CONFIG) --cflags $(GST_PACKAGES))
 GST_LIBS = $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES))
 
 # Targets (in order of complexity)
-TESTS = test_step0_gstreamer_basic test_step1_pipeline test_step2_sdp_negotiation test_step3_ice_connectivity test_audio_loopback test_device_enumeration test_stats test_logger
+TESTS = test_step0_gstreamer_basic test_step1_pipeline test_step1b_audio_playback test_step2_sdp_negotiation test_step3_ice_connectivity test_step4_audio_loopback test_step5_device_enumeration test_step6_stats test_step7_logger test_step8_thread_safe_queue test_step9_session_manager
 
 all: $(TESTS)
 
@@ -23,6 +23,10 @@ test_step0_gstreamer_basic: test_step0_gstreamer_basic.cpp
 test_step1_pipeline: test_step1_pipeline.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
 
+# Step 1b: Audio playback (2-second tone to default device)
+test_step1b_audio_playback: test_step1b_audio_playback.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+
 # Step 2: SDP offer/answer negotiation
 test_step2_sdp_negotiation: test_step2_sdp_negotiation.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
@@ -31,21 +35,29 @@ test_step2_sdp_negotiation: test_step2_sdp_negotiation.cpp
 test_step3_ice_connectivity: test_step3_ice_connectivity.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
 
-# Audio loopback (based on GStreamer examples, for reference)
-test_audio_loopback: test_audio_loopback.cpp
+# Step 4: Audio loopback (based on GStreamer examples, for reference)
+test_step4_audio_loopback: test_step4_audio_loopback.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS)
 
-# Device enumeration test
-test_device_enumeration: test_device_enumeration.cpp
+# Step 5: Device enumeration test
+test_step5_device_enumeration: test_step5_device_enumeration.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
 
-# Stats test
-test_stats: test_stats.cpp
+# Step 6: Stats test
+test_step6_stats: test_step6_stats.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
 
-# Logger test
-test_logger: test_logger.cpp ../../src/logger.cpp
+# Step 7: Logger test
+test_step7_logger: test_step7_logger.cpp ../../src/logger.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(shell $(PKG_CONFIG) --cflags --libs spdlog)
+
+# Step 8: Thread-safe queue test (Phase 4.1 - gRPC integration)
+test_step8_thread_safe_queue: test_step8_thread_safe_queue.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@ -pthread
+
+# Step 9: Session manager test (Phase 4.1 - gRPC integration)
+test_step9_session_manager: test_step9_session_manager.cpp ../../src/session_manager.cpp
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
 
 clean:
 	rm -f $(TESTS)
