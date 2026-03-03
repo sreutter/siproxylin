@@ -10,6 +10,7 @@
  */
 
 #include "../../src/session_manager.h"
+#include "call.pb.h"  // For complete call::CallEvent type (from build/generated/)
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -28,7 +29,7 @@ bool test_basic_operations() {
     session->session_id = "test-session-1";
     session->peer_jid = "alice@example.com";
     session->active = true;
-    session->event_queue = std::make_shared<ThreadSafeQueue<CallEvent>>();
+    session->event_queue = std::make_shared<ThreadSafeQueue<call::CallEvent>>();
 
     // Add session
     manager.add_session("test-session-1", session);
@@ -67,7 +68,7 @@ bool test_multiple_sessions() {
         session->session_id = "session-" + std::to_string(i);
         session->peer_jid = "user" + std::to_string(i) + "@example.com";
         session->active = true;
-        session->event_queue = std::make_shared<ThreadSafeQueue<CallEvent>>();
+        session->event_queue = std::make_shared<ThreadSafeQueue<call::CallEvent>>();
         manager.add_session(session->session_id, session);
     }
     std::cout << "  ✓ Added 10 sessions" << std::endl;
@@ -106,7 +107,7 @@ bool test_reference_counting() {
     session->session_id = "ref-test";
     session->peer_jid = "bob@example.com";
     session->active = true;
-    session->event_queue = std::make_shared<ThreadSafeQueue<CallEvent>>();
+    session->event_queue = std::make_shared<ThreadSafeQueue<call::CallEvent>>();
 
     manager.add_session("ref-test", session);
     std::cout << "  ✓ Session added, ref count: " << session.use_count() << std::endl;
@@ -159,7 +160,7 @@ bool test_concurrent_access() {
                 session->session_id = session_id;
                 session->peer_jid = "user@example.com";
                 session->active = true;
-                session->event_queue = std::make_shared<ThreadSafeQueue<CallEvent>>();
+                session->event_queue = std::make_shared<ThreadSafeQueue<call::CallEvent>>();
                 manager.add_session(session_id, session);
                 add_count++;
 
@@ -211,7 +212,7 @@ bool test_concurrent_lifecycle() {
             session->session_id = "lifecycle-" + std::to_string(i);
             session->peer_jid = "user@example.com";
             session->active = true;
-            session->event_queue = std::make_shared<ThreadSafeQueue<CallEvent>>();
+            session->event_queue = std::make_shared<ThreadSafeQueue<call::CallEvent>>();
             manager.add_session(session->session_id, session);
             sessions_created++;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));  // 1ms instead of 100μs
@@ -282,7 +283,7 @@ bool test_remove_while_in_use() {
         session->session_id = "remove-test-" + std::to_string(i);
         session->peer_jid = "user@example.com";
         session->active = true;
-        session->event_queue = std::make_shared<ThreadSafeQueue<CallEvent>>();
+        session->event_queue = std::make_shared<ThreadSafeQueue<call::CallEvent>>();
         manager.add_session(session->session_id, session);
     }
     std::cout << "  ✓ Created " << num_sessions << " sessions" << std::endl;
@@ -378,7 +379,7 @@ bool test_stress_lifecycle() {
                 session->session_id = session_id;
                 session->peer_jid = "user@example.com";
                 session->active = true;
-                session->event_queue = std::make_shared<ThreadSafeQueue<CallEvent>>();
+                session->event_queue = std::make_shared<ThreadSafeQueue<call::CallEvent>>();
                 manager.add_session(session_id, session);
                 add_successes++;
                 std::this_thread::sleep_for(std::chrono::microseconds(100));

@@ -56,8 +56,9 @@ test_step8_thread_safe_queue: test_step8_thread_safe_queue.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ -pthread
 
 # Step 9: Session manager test (Phase 4.1 - gRPC integration)
-test_step9_session_manager: test_step9_session_manager.cpp ../../src/session_manager.cpp
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+# Note: Requires proto headers from build/generated/
+test_step9_session_manager: test_step9_session_manager.cpp ../../src/session_manager.cpp ../../build/generated/call.pb.cc
+	$(CXX) $(CXXFLAGS) -I../../build/generated $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) -lprotobuf -pthread
 
 clean:
 	rm -f $(TESTS)

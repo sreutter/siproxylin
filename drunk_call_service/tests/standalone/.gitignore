@@ -1,0 +1,10 @@
+test_step0_gstreamer_basic
+test_step1_pipeline
+test_step2_sdp_negotiation
+test_step3_ice_connectivity
+test_step4_audio_loopback
+test_step5_device_enumeration
+test_step6_stats
+test_step7_logger
+test_step9_session_manager
+
