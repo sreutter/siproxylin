@@ -17,6 +17,8 @@ from typing import Optional, Dict, Any, List, Callable
 from slixmpp.stanza import Iq
 from slixmpp.xmlstream import ET
 
+from drunk_call_hook.protocol.jingle_sdp_converter import JingleSDPConverter
+
 
 class JingleAdapter:
     """
@@ -63,6 +65,9 @@ class JingleAdapter:
         self.on_call_state_changed = on_call_state_changed  # Optional - for connection state updates
         self.on_candidates_ready = on_candidates_ready  # Optional - for deferred answer creation
         self.logger = logger or logging.getLogger(__name__)
+
+        # Initialize SDP ↔ Jingle converter (pure conversion, no business logic)
+        self.converter = JingleSDPConverter(logger=self.logger)
 
         # Track session_id → peer_jid mapping
         self.sessions: Dict[str, Dict[str, Any]] = {}
@@ -217,7 +222,7 @@ class JingleAdapter:
 
         # Convert Jingle XML to SDP offer
         try:
-            sdp_offer = self._jingle_to_sdp(jingle, 'offer')
+            sdp_offer = self.converter.jingle_to_sdp(jingle, role='offer')
             self.logger.info(f"[SDP-OFFER] {sid}:\n{sdp_offer}")
         except Exception as e:
             self.logger.error(f"Failed to convert Jingle to SDP: {e}")
@@ -244,9 +249,9 @@ class JingleAdapter:
             'remote_ice_pwd': remote_pwd
         }
 
-        # Extract and store offer details for echoing in answer (WebRTC standard behavior)
-        offer_details = self._extract_offer_details(jingle)
-        self.sessions[sid]['offer_details'] = offer_details
+        # Extract and store offer context for echoing in answer (WebRTC standard behavior)
+        offer_context = self.converter.extract_offer_context(jingle)
+        self.sessions[sid]['offer_context'] = offer_context
 
         # Count candidates in the offer SDP
         candidate_count = sdp_offer.count('a=candidate:')
@@ -299,7 +304,7 @@ class JingleAdapter:
 
         # Convert Jingle XML to SDP answer
         try:
-            sdp_answer = self._jingle_to_sdp(jingle, 'answer')
+            sdp_answer = self.converter.jingle_to_sdp(jingle, role='answer')
             self.logger.debug(f"Converted to SDP answer:\n{sdp_answer}")
         except Exception as e:
             self.logger.error(f"Failed to convert Jingle to SDP: {e}")
@@ -753,12 +758,18 @@ class JingleAdapter:
 
         # Build Jingle session-initiate stanza
         iq = self.xmpp.make_iq_set(ito=peer_id)
-        jingle = self._build_jingle_element(
+        jingle_wrapper = self._build_jingle_element(
             iq, 'session-initiate', sid, initiator=initiator
         )
 
-        # Convert SDP to Jingle XML
-        self._sdp_to_jingle(sdp, jingle, media, session_id=sid)
+        # Convert SDP to Jingle XML (offer)
+        jingle_content = self.converter.sdp_to_jingle(sdp, role='offer', offer_context=None)
+
+        # Copy content and group elements from converter output to wrapper
+        for content in jingle_content.findall('{urn:xmpp:jingle:1}content'):
+            jingle_wrapper.append(content)
+        for group in jingle_content.findall('{urn:xmpp:jingle:apps:grouping:0}group'):
+            jingle_wrapper.append(group)
 
         # HYBRID TRICKLE ICE: Include initial candidates in session-initiate
         # (many implementations, including Conversations.im, expect this)
@@ -766,7 +777,7 @@ class JingleAdapter:
             pending = self.pending_ice_candidates[sid]
             if pending:
                 self.logger.info(f"[HYBRID-ICE] Including {len(pending)} initial candidates in session-initiate")
-                self._inject_candidates_into_jingle(jingle, pending)
+                self._inject_candidates_into_jingle(jingle_wrapper, pending)
                 # Clear the queue - candidates are now in the stanza
                 del self.pending_ice_candidates[sid]
             else:
@@ -833,17 +844,23 @@ class JingleAdapter:
 
         # Build Jingle session-accept stanza
         iq = self.xmpp.make_iq_set(ito=peer_jid)
-        jingle = self._build_jingle_element(
+        jingle_wrapper = self._build_jingle_element(
             iq, 'session-accept', session_id, responder=responder
         )
 
-        # Convert SDP to Jingle XML
+        # Convert SDP to Jingle XML (answer with offer_context for echoing)
         self.logger.info(f"[SDP-ANSWER] {session_id}:\n{sdp}")
-        # Don't include SSRC in session-accept (not standard for answers, even though offer has it)
-        self._sdp_to_jingle(sdp, jingle, session['media'], session_id=session_id, include_ssrc=False)
+        offer_context = self.sessions[session_id].get('offer_context')
+        jingle_content = self.converter.sdp_to_jingle(sdp, role='answer', offer_context=offer_context)
+
+        # Copy content and group elements from converter output to wrapper
+        for content in jingle_content.findall('{urn:xmpp:jingle:1}content'):
+            jingle_wrapper.append(content)
+        for group in jingle_content.findall('{urn:xmpp:jingle:apps:grouping:0}group'):
+            jingle_wrapper.append(group)
 
         # Candidates are already in the SDP (we wait for gathering to complete in Go)
-        # _sdp_to_jingle() has already parsed and added them to the Jingle XML
+        # The converter has already parsed and added them to the Jingle XML
         # Clear pending queue to avoid duplicates (previously caused both components to have same ports)
         if session_id in self.pending_ice_candidates:
             pending_count = len(self.pending_ice_candidates[session_id])
@@ -1119,566 +1136,6 @@ class JingleAdapter:
             jingle.set('responder', responder)
 
         return jingle
-
-    def _extract_offer_details(self, jingle: ET.Element) -> Dict[str, Any]:
-        """
-        Extract offer details for later echoing in answer.
-
-        Extracts WebRTC features from incoming Jingle offer:
-        - BUNDLE group
-        - RTP header extensions
-        - Codec parameters
-        - RTCP-FB elements
-
-        This follows WebRTC standard behavior: features in offer should be
-        echoed back in answer if we support them.
-
-        Args:
-            jingle: Jingle element from session-initiate
-
-        Returns:
-            Dictionary with offer details
-        """
-        details = {
-            'bundle_group': None,
-            'rtp_extensions': [],       # [{id, uri}]
-            'codec_params': {},          # {pt_id: {param_name: param_value}}
-            'rtcp_fb': {},               # {pt_id: [type values]}
-            'has_ssrc': False,           # Whether offer includes SSRC
-            'ssrc_params': [],           # List of SSRC parameter names in offer (e.g., ['cname', 'msid'])
-            'extmap_allow_mixed': False  # Whether offer has extmap-allow-mixed
-        }
-
-        # Extract BUNDLE group (RFC 9143)
-        group = jingle.find('{urn:xmpp:jingle:apps:grouping:0}group[@semantics="BUNDLE"]')
-        if group is not None:
-            content_names = []
-            for content_ref in group.findall('{urn:xmpp:jingle:apps:grouping:0}content'):
-                content_names.append(content_ref.get('name'))
-            details['bundle_group'] = content_names
-            self.logger.debug(f"Extracted BUNDLE group: {content_names}")
-
-        # Extract RTP extensions, codec params, RTCP-FB from each content
-        for content in jingle.findall('{urn:xmpp:jingle:1}content'):
-            description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
-            if description is None:
-                continue
-
-            # RTP header extensions (RFC 8285)
-            for ext in description.findall('{urn:xmpp:jingle:apps:rtp:rtp-hdrext:0}rtp-hdrext'):
-                details['rtp_extensions'].append({
-                    'id': ext.get('id'),
-                    'uri': ext.get('uri')
-                })
-
-            # Check for extmap-allow-mixed (RFC 8285)
-            if description.find('{urn:xmpp:jingle:apps:rtp:rtp-hdrext:0}extmap-allow-mixed') is not None:
-                details['extmap_allow_mixed'] = True
-
-            # Check for SSRC (XEP-0294) and extract parameter names
-            source = description.find('{urn:xmpp:jingle:apps:rtp:ssma:0}source')
-            if source is not None:
-                details['has_ssrc'] = True
-                # Extract parameter names (e.g., ['cname', 'msid'])
-                # Conversations sends: cname, msid (2 params)
-                # Some clients might send: cname only (1 param)
-                # We'll only echo parameters that were in the offer
-                for param in source.findall('{urn:xmpp:jingle:apps:rtp:ssma:0}parameter'):
-                    param_name = param.get('name')
-                    if param_name and param_name not in details['ssrc_params']:
-                        details['ssrc_params'].append(param_name)
-                self.logger.debug(f"Offer SSRC has parameters: {details['ssrc_params']}")
-
-            # Codec parameters
-            for pt in description.findall('{urn:xmpp:jingle:apps:rtp:1}payload-type'):
-                pt_id = pt.get('id')
-                params = {}
-                for param in pt.findall('{urn:xmpp:jingle:apps:rtp:1}parameter'):
-                    params[param.get('name')] = param.get('value')
-                if params:
-                    details['codec_params'][pt_id] = params
-
-                # RTCP-FB
-                fb_types = []
-                for fb in pt.findall('{urn:xmpp:jingle:apps:rtp:rtcp-fb:0}rtcp-fb'):
-                    fb_types.append(fb.get('type'))
-                if fb_types:
-                    details['rtcp_fb'][pt_id] = fb_types
-
-        # Log what we extracted
-        if details['bundle_group']:
-            self.logger.info(f"Offer has BUNDLE group with {len(details['bundle_group'])} contents")
-        if details['rtp_extensions']:
-            self.logger.info(f"Offer has {len(details['rtp_extensions'])} RTP extensions")
-        if details['codec_params']:
-            self.logger.info(f"Offer has codec params for {len(details['codec_params'])} payload types")
-        if details['has_ssrc']:
-            self.logger.info(f"Offer has SSRC with parameters: {details['ssrc_params']}")
-
-        return details
-
-    def _echo_offer_features(self, jingle: ET.Element, offer_details: Dict[str, Any], media_sections: List):
-        """
-        Echo offer features in answer (BUNDLE, RTP extensions, codec params).
-
-        This implements WebRTC standard behavior: features present in the offer
-        should be echoed back in the answer to indicate support.
-
-        Args:
-            jingle: Jingle element being built (answer)
-            offer_details: Stored offer details from _extract_offer_details()
-            media_sections: List of media sections parsed from SDP
-        """
-        # Find all content elements (we just built them in _sdp_to_jingle)
-        contents = jingle.findall('{urn:xmpp:jingle:1}content')
-        if not contents:
-            return
-
-        # Echo RTP header extensions (add to first audio/video description)
-        # Per BUNDLE: extensions are shared across bundled media
-        if offer_details['rtp_extensions']:
-            for content in contents:
-                description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
-                if description is not None:
-                    for ext in offer_details['rtp_extensions']:
-                        ext_el = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:rtp-hdrext:0}rtp-hdrext')
-                        ext_el.set('id', ext['id'])
-                        ext_el.set('uri', ext['uri'])
-                    self.logger.debug(f"Echoed {len(offer_details['rtp_extensions'])} RTP extensions in answer")
-
-                    # Echo extmap-allow-mixed if it was in the offer (RFC 8285)
-                    if offer_details.get('extmap_allow_mixed', False):
-                        ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:rtp-hdrext:0}extmap-allow-mixed')
-                        self.logger.debug("Echoed extmap-allow-mixed in answer")
-
-                    break  # Only add to first media (per BUNDLE)
-
-        # Echo codec parameters and RTCP-FB (for codecs we selected in our answer)
-        # We only echo params for payload types that exist in our answer
-        if offer_details['codec_params'] or offer_details['rtcp_fb']:
-            for content in contents:
-                description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
-                if description is None:
-                    continue
-
-                for pt in description.findall('{urn:xmpp:jingle:apps:rtp:1}payload-type'):
-                    pt_id = pt.get('id')
-
-                    # Echo codec parameters
-                    if pt_id in offer_details['codec_params']:
-                        # Check if we already have parameters (from Pion's SDP fmtp parsing)
-                        existing_params = pt.findall('{urn:xmpp:jingle:apps:rtp:1}parameter')
-                        if not existing_params:
-                            # No params yet - add from offer
-                            for param_name, param_value in offer_details['codec_params'][pt_id].items():
-                                param_el = ET.SubElement(pt, '{urn:xmpp:jingle:apps:rtp:1}parameter')
-                                param_el.set('name', param_name)
-                                param_el.set('value', param_value)
-                            self.logger.debug(f"Echoed codec params for pt={pt_id} from offer")
-
-                    # Echo RTCP-FB feedback types (transport-cc, etc.)
-                    if pt_id in offer_details['rtcp_fb']:
-                        for fb_type in offer_details['rtcp_fb'][pt_id]:
-                            fb_el = ET.SubElement(pt, '{urn:xmpp:jingle:apps:rtp:rtcp-fb:0}rtcp-fb')
-                            fb_el.set('type', fb_type)
-                        self.logger.debug(f"Echoed {len(offer_details['rtcp_fb'][pt_id])} RTCP-FB types for pt={pt_id}")
-
-        # Add BUNDLE group (CRITICAL for Monocles!)
-        # This MUST be added at the jingle level, not inside content
-        if offer_details['bundle_group']:
-            group_el = ET.SubElement(jingle, '{urn:xmpp:jingle:apps:grouping:0}group')
-            group_el.set('semantics', 'BUNDLE')
-            for content in contents:
-                content_name = content.get('name')
-                if content_name:
-                    content_ref = ET.SubElement(group_el, '{urn:xmpp:jingle:apps:grouping:0}content')
-                    content_ref.set('name', content_name)
-            self.logger.info(f"Added BUNDLE group with {len(contents)} contents to answer")
-
-    def _sdp_to_jingle(self, sdp: str, jingle: ET.Element, media: List[str], session_id: Optional[str] = None, include_ssrc: bool = True):
-        """
-        Convert SDP to Jingle XML content elements.
-
-        Parses SDP and extracts:
-        - Media descriptions (audio/video)
-        - Codecs (payload types)
-        - ICE candidates
-        - DTLS fingerprint
-        - ICE credentials (ufrag/pwd)
-
-        Args:
-            sdp: SDP string to convert
-            jingle: Jingle XML element to populate
-            media: List of media types (e.g., ['audio'])
-            session_id: Optional session ID (used to access offer_details for echoing features)
-        """
-        # Parse SDP into lines
-        sdp_lines = sdp.strip().split('\r\n')
-
-        # Global session attributes
-        ice_ufrag = None
-        ice_pwd = None
-        dtls_fingerprint = None
-        dtls_hash = None
-        dtls_setup = None
-
-        # Parse global attributes
-        for line in sdp_lines:
-            if line.startswith('a=ice-ufrag:'):
-                ice_ufrag = line.split(':', 1)[1]
-            elif line.startswith('a=ice-pwd:'):
-                ice_pwd = line.split(':', 1)[1]
-            elif line.startswith('a=fingerprint:'):
-                # Format: "a=fingerprint:sha-256 AB:CD:EF:..."
-                parts = line.split(':', 1)[1].split(' ', 1)
-                dtls_hash = parts[0]
-                dtls_fingerprint = parts[1]
-            elif line.startswith('a=setup:'):
-                dtls_setup = line.split(':', 1)[1]
-
-        # Parse media sections
-        current_media = None
-        current_media_lines = []
-        media_sections = []
-
-        for line in sdp_lines:
-            if line.startswith('m='):
-                # Save previous media section
-                if current_media:
-                    media_sections.append((current_media, current_media_lines))
-
-                # Start new media section
-                # Format: m=audio 9 UDP/TLS/RTP/SAVPF 111 ...
-                parts = line.split(' ')
-                current_media = parts[0].split('=')[1]  # 'audio' or 'video'
-                current_media_lines = [line]
-            elif current_media:
-                current_media_lines.append(line)
-
-        # Save last media section
-        if current_media:
-            media_sections.append((current_media, current_media_lines))
-
-        # Build Jingle content elements for each media section
-        for media_type, media_lines in media_sections:
-            if media_type not in media:
-                continue
-
-            # Parse mid from media section (used for content name)
-            content_name = media_type  # Default to media type
-            for line in media_lines:
-                if line.startswith('a=mid:'):
-                    content_name = line.split(':', 1)[1]
-                    break
-
-            content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
-            content.set('creator', 'initiator')
-            content.set('name', content_name)
-            content.set('senders', 'both')  # Explicitly set for clarity
-
-            # Parse m= line for payload types
-            # Format: m=audio 9 UDP/TLS/RTP/SAVPF 111 ...
-            m_line = media_lines[0]
-            m_parts = m_line.split(' ')
-            payload_types = m_parts[3:]  # Everything after protocol
-
-            # Add RTP description
-            description = ET.SubElement(content, '{urn:xmpp:jingle:apps:rtp:1}description')
-            description.set('media', media_type)
-
-            # Check if SDP has rtcp-mux (from Pion's negotiation)
-            has_rtcp_mux = any(line.strip() == 'a=rtcp-mux' for line in media_lines)
-
-            # Parse fmtp parameters (codec-specific parameters from SDP)
-            # Format: a=fmtp:111 minptime=10;useinbandfec=1
-            fmtp_params = {}  # {payload_type_id: {param_name: param_value}}
-            for line in media_lines:
-                if line.startswith('a=fmtp:'):
-                    fmtp_line = line.split(':', 1)[1]  # "111 minptime=10;useinbandfec=1"
-                    parts = fmtp_line.split(' ', 1)
-                    pt_id = parts[0]
-                    if len(parts) > 1:
-                        params_str = parts[1]  # "minptime=10;useinbandfec=1"
-                        params_dict = {}
-                        for param in params_str.split(';'):
-                            param = param.strip()
-                            if '=' in param:
-                                key, value = param.split('=', 1)
-                                params_dict[key.strip()] = value.strip()
-                        fmtp_params[pt_id] = params_dict
-
-            # Parse codecs from rtpmap lines
-            for line in media_lines:
-                if line.startswith('a=rtpmap:'):
-                    # Format: a=rtpmap:111 opus/48000/2
-                    rtpmap = line.split(':', 1)[1]
-                    pt_id, codec_info = rtpmap.split(' ', 1)
-
-                    if pt_id in payload_types:
-                        codec_parts = codec_info.split('/')
-                        codec_name = codec_parts[0]
-                        clockrate = codec_parts[1] if len(codec_parts) > 1 else '48000'
-                        channels = codec_parts[2] if len(codec_parts) > 2 else '1'
-
-                        payload = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}payload-type')
-                        payload.set('id', pt_id)
-                        payload.set('name', codec_name)
-                        payload.set('clockrate', clockrate)
-
-                        # Opus is always stereo (2 channels) - CRITICAL for Conversations.im compatibility
-                        if codec_name.lower() == 'opus':
-                            payload.set('channels', '2')
-                        elif int(channels) > 1:
-                            payload.set('channels', channels)
-
-                        # Add codec parameters from SDP fmtp (parsed from Pion's SDP)
-                        # This ensures we only echo parameters that Pion negotiated
-                        if pt_id in fmtp_params:
-                            for param_name, param_value in fmtp_params[pt_id].items():
-                                param_elem = ET.SubElement(payload, '{urn:xmpp:jingle:apps:rtp:1}parameter')
-                                param_elem.set('name', param_name)
-                                param_elem.set('value', param_value)
-
-            # Parse SSRC info from Pion's SDP (only if offer had SSRC - echo pattern)
-            # IMPORTANT: Add SSRC *before* rtcp-mux to match Conversations' element ordering
-            # Check if we should add SSRC (only if offer had it AND include_ssrc is True)
-            # Most clients don't echo SSRC in session-accept, so we skip it for answers
-            should_add_ssrc = False
-            allowed_ssrc_params = []  # Which SSRC parameter names to include
-            if include_ssrc and session_id and session_id in self.sessions:
-                offer_details = self.sessions[session_id].get('offer_details', {})
-                should_add_ssrc = offer_details.get('has_ssrc', False)
-                allowed_ssrc_params = offer_details.get('ssrc_params', [])
-
-            if should_add_ssrc:
-                ssrc_info = {}  # {ssrc: {attr_name: attr_value}}
-                for line in media_lines:
-                    if line.startswith('a=ssrc:'):
-                        # Format: a=ssrc:2485877649 cname:pion-audio
-                        # Split: "a=ssrc:2485877649 cname:pion-audio" → ["a=ssrc", "2485877649 cname:pion-audio"]
-                        parts = line.split(':', 1)
-                        if len(parts) >= 2:
-                            # parts[1] = "2485877649 cname:pion-audio"
-                            rest = parts[1].strip()
-                            # Split by space: "2485877649 cname:pion-audio" → ["2485877649", "cname:pion-audio"]
-                            ssrc_parts = rest.split(' ', 1)
-                            if len(ssrc_parts) >= 2:
-                                ssrc = ssrc_parts[0]  # "2485877649"
-                                # ssrc_parts[1] = "cname:pion-audio"
-                                if ':' in ssrc_parts[1]:
-                                    attr_name, attr_value = ssrc_parts[1].split(':', 1)
-                                    if ssrc not in ssrc_info:
-                                        ssrc_info[ssrc] = {}
-                                    ssrc_info[ssrc][attr_name] = attr_value
-
-                # Add source elements (if we have SSRC info)
-                # IMPORTANT: Only include SSRC parameters that were in the offer (echo pattern)
-                # Conversations sends: cname + msid (2 params)
-                # Pion generates: cname + msid + mslabel + label (4 params)
-                # We filter to match what was in the offer
-                for ssrc, attrs in ssrc_info.items():
-                    source_el = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:ssma:0}source')
-                    source_el.set('ssrc', ssrc)
-
-                    # Filter attributes: only include what was in the offer
-                    filtered_count = 0
-                    for attr_name, attr_value in attrs.items():
-                        if not allowed_ssrc_params or attr_name in allowed_ssrc_params:
-                            param_el = ET.SubElement(source_el, '{urn:xmpp:jingle:apps:rtp:ssma:0}parameter')
-                            param_el.set('name', attr_name)
-                            param_el.set('value', attr_value)
-                            filtered_count += 1
-
-                    self.logger.debug(f"Added SSRC {ssrc} with {filtered_count}/{len(attrs)} attributes to Jingle (filtered to match offer)")
-                    if filtered_count < len(attrs):
-                        skipped = [name for name in attrs.keys() if name not in allowed_ssrc_params]
-                        self.logger.debug(f"Skipped SSRC params not in offer: {skipped}")
-
-            # Add rtcp-mux AFTER source (matches Conversations' element ordering)
-            # Only if Pion negotiated it in the SDP answer (RTCPMuxPolicyNegotiate)
-            if has_rtcp_mux:
-                ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
-                self.logger.debug(f"Added rtcp-mux to Jingle (from Pion's SDP)")
-
-            # Add ICE-UDP transport with credentials
-            transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
-
-            if ice_ufrag:
-                transport.set('ufrag', ice_ufrag)
-            if ice_pwd:
-                transport.set('pwd', ice_pwd)
-
-            # Parse ICE candidates FIRST (standard element order: candidates before fingerprint)
-            for line in media_lines:
-                if line.startswith('a=candidate:'):
-                    # Format: a=candidate:foundation component protocol priority ip port typ type [raddr] [rport]
-                    # Example: a=candidate:1 1 UDP 2130706431 192.168.1.100 54321 typ host
-                    cand_str = line.split(':', 1)[1]
-                    cand_parts = cand_str.split(' ')
-
-                    if len(cand_parts) >= 8:
-                        cand_el = ET.SubElement(transport, '{urn:xmpp:jingle:transports:ice-udp:1}candidate')
-                        cand_el.set('foundation', cand_parts[0])
-                        cand_el.set('component', cand_parts[1])
-                        cand_el.set('protocol', cand_parts[2].lower())
-                        cand_el.set('priority', cand_parts[3])
-                        cand_el.set('ip', cand_parts[4])
-                        cand_el.set('port', cand_parts[5])
-                        cand_el.set('type', cand_parts[7])  # typ is at index 6, type value at 7
-                        cand_el.set('generation', '0')
-
-                        # Optional: related address/port for reflexive/relay candidates
-                        if len(cand_parts) >= 12 and cand_parts[8] == 'raddr':
-                            cand_el.set('rel-addr', cand_parts[9])
-                            cand_el.set('rel-port', cand_parts[11])
-
-            # Add DTLS fingerprint AFTER candidates (standard element order)
-            if dtls_fingerprint and dtls_hash:
-                fingerprint_el = ET.SubElement(transport, '{urn:xmpp:jingle:apps:dtls:0}fingerprint')
-                fingerprint_el.set('hash', dtls_hash)
-                if dtls_setup:
-                    fingerprint_el.set('setup', dtls_setup)
-                fingerprint_el.text = dtls_fingerprint
-
-            # Add Jingle transport options for Conversations compatibility
-            # XEP-0176: ICE-UDP Transport Method (Trickle ICE)
-            trickle_el = ET.SubElement(transport, '{http://gultsch.de/xmpp/drafts/jingle/transports/ice-udp/option}trickle')
-            renomination_el = ET.SubElement(transport, '{http://gultsch.de/xmpp/drafts/jingle/transports/ice-udp/option}renomination')
-
-        # Echo offer features in answer (WebRTC standard behavior)
-        if session_id and session_id in self.sessions:
-            offer_details = self.sessions[session_id].get('offer_details')
-            if offer_details:
-                self._echo_offer_features(jingle, offer_details, media_sections)
-
-        self.logger.debug(f"Converted SDP to Jingle XML (parsed {len(media_sections)} media sections)")
-
-    def _jingle_to_sdp(self, jingle: ET.Element, sdp_type: str) -> str:
-        """
-        Convert Jingle XML to SDP.
-
-        Parses Jingle and extracts:
-        - Media descriptions
-        - Codecs
-        - ICE candidates
-        - DTLS fingerprint
-        - ICE credentials
-        """
-        sdp_lines = [
-            "v=0",
-            "o=- 0 0 IN IP4 0.0.0.0",
-            "s=-",
-            "t=0 0",
-        ]
-
-        contents = jingle.findall('{urn:xmpp:jingle:1}content')
-
-        for content in contents:
-            # Get content name (used for a=mid)
-            content_name = content.get('name', 'audio')
-
-            description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
-            transport = content.find('{urn:xmpp:jingle:transports:ice-udp:1}transport')
-
-            if description is not None:
-                media = description.get('media')
-
-                # Parse payload types
-                payload_types = description.findall('{urn:xmpp:jingle:apps:rtp:1}payload-type')
-                pt_ids = []
-                rtpmap_lines = []
-
-                for pt in payload_types:
-                    pt_id = pt.get('id')
-                    pt_name = pt.get('name')
-                    pt_clockrate = pt.get('clockrate', '48000')
-                    pt_channels = pt.get('channels', '1')
-
-                    pt_ids.append(pt_id)
-
-                    # Build rtpmap
-                    if int(pt_channels) > 1:
-                        rtpmap_lines.append(f"a=rtpmap:{pt_id} {pt_name}/{pt_clockrate}/{pt_channels}")
-                    else:
-                        rtpmap_lines.append(f"a=rtpmap:{pt_id} {pt_name}/{pt_clockrate}")
-
-                # Add m= line with payload types
-                pt_list = ' '.join(pt_ids) if pt_ids else '111'
-                sdp_lines.append(f"m={media} 9 UDP/TLS/RTP/SAVPF {pt_list}")
-                sdp_lines.append("c=IN IP4 0.0.0.0")
-                sdp_lines.append("a=rtcp:9 IN IP4 0.0.0.0")
-
-                # Add mid (media ID) - CRITICAL for aiortc to match offer/answer
-                sdp_lines.append(f"a=mid:{content_name}")
-
-                # Add rtpmap lines
-                if not rtpmap_lines and media == 'audio':
-                    # Fallback to Opus if no codecs specified
-                    sdp_lines.append("a=rtpmap:111 opus/48000/2")
-                else:
-                    sdp_lines.extend(rtpmap_lines)
-
-                # CRITICAL: Do NOT add rtcp-mux to SDP even if Jingle has it
-                # Conversations.im/Monocles expect BOTH component 1 and component 2 candidates
-                # even when rtcp-mux is present (for backward compatibility)
-                # By omitting rtcp-mux from SDP, Pion will gather both components
-                # Then Pion will include rtcp-mux in the SDP answer (negotiation)
-                # We'll convert that back to Jingle with <rtcp-mux /> in session-accept
-
-                # Parse transport (ICE-UDP)
-                if transport is not None:
-                    # ICE credentials
-                    ice_ufrag = transport.get('ufrag')
-                    ice_pwd = transport.get('pwd')
-
-                    if ice_ufrag:
-                        sdp_lines.append(f"a=ice-ufrag:{ice_ufrag}")
-                    if ice_pwd:
-                        sdp_lines.append(f"a=ice-pwd:{ice_pwd}")
-
-                    sdp_lines.append("a=ice-options:trickle")
-
-                    # DTLS fingerprint
-                    fingerprint_el = transport.find('{urn:xmpp:jingle:apps:dtls:0}fingerprint')
-                    if fingerprint_el is not None:
-                        dtls_hash = fingerprint_el.get('hash', 'sha-256')
-                        dtls_setup = fingerprint_el.get('setup', 'actpass')
-                        fingerprint = fingerprint_el.text
-
-                        sdp_lines.append(f"a=setup:{dtls_setup}")
-                        sdp_lines.append(f"a=fingerprint:{dtls_hash} {fingerprint}")
-
-                    # ICE candidates
-                    candidates = transport.findall('{urn:xmpp:jingle:transports:ice-udp:1}candidate')
-                    for cand in candidates:
-                        foundation = cand.get('foundation', '1')
-                        component = cand.get('component', '1')
-                        protocol = cand.get('protocol', 'udp').upper()
-                        priority = cand.get('priority', '1')
-                        ip = cand.get('ip', '0.0.0.0')
-                        port = cand.get('port', '9')
-                        cand_type = cand.get('type', 'host')
-
-                        cand_line = f"a=candidate:{foundation} {component} {protocol} {priority} {ip} {port} typ {cand_type}"
-
-                        # Optional: related address/port
-                        rel_addr = cand.get('rel-addr')
-                        rel_port = cand.get('rel-port')
-                        if rel_addr and rel_port:
-                            cand_line += f" raddr {rel_addr} rport {rel_port}"
-
-                        sdp_lines.append(cand_line)
-
-                # Media direction
-                if sdp_type == 'offer':
-                    sdp_lines.append("a=sendrecv")
-                else:
-                    sdp_lines.append("a=sendrecv")
-
-        sdp = "\r\n".join(sdp_lines) + "\r\n"
-
-        self.logger.debug(f"Converted Jingle XML to SDP ({sdp_type}, {len(contents)} media sections)")
-        return sdp
 
     # =========================================================================
     # CallBridge Event Callbacks (Go → Python → Jingle)

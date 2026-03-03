@@ -194,7 +194,56 @@ class JingleSDPConverter:
                                 param_elem.set('name', param_name)
                                 param_elem.set('value', param_value)
 
-            # Add rtcp-mux if present in SDP
+            # Parse SSRC info from SDP (lines 1454-1472 from original jingle.py)
+            # IMPORTANT: Add SSRC *before* rtcp-mux to match Conversations' element ordering
+            ssrc_info = {}  # {ssrc: {attr_name: attr_value}}
+            for line in media_lines:
+                if line.startswith('a=ssrc:'):
+                    # Format: a=ssrc:2485877649 cname:pion-audio
+                    parts = line.split(':', 1)
+                    if len(parts) >= 2:
+                        rest = parts[1].strip()
+                        # Split by space: "2485877649 cname:pion-audio" → ["2485877649", "cname:pion-audio"]
+                        ssrc_parts = rest.split(' ', 1)
+                        if len(ssrc_parts) >= 2:
+                            ssrc = ssrc_parts[0]
+                            # ssrc_parts[1] = "cname:pion-audio"
+                            if ':' in ssrc_parts[1]:
+                                attr_name, attr_value = ssrc_parts[1].split(':', 1)
+                                if ssrc not in ssrc_info:
+                                    ssrc_info[ssrc] = {}
+                                ssrc_info[ssrc][attr_name] = attr_value
+
+            # Add SSRC elements with filtering based on role and offer_context
+            # For offers: include all SSRC params
+            # For answers: only include params that were in the offer (echo pattern)
+            if ssrc_info:
+                should_add_ssrc = False
+                allowed_params = []
+
+                if role == 'offer':
+                    # For offers, include all SSRC params
+                    should_add_ssrc = True
+                elif role == 'answer' and offer_context:
+                    # For answers, only if offer had SSRC
+                    should_add_ssrc = len(offer_context.get('ssrc_params', [])) > 0
+                    allowed_params = offer_context.get('ssrc_params', [])
+
+                if should_add_ssrc:
+                    for ssrc, attrs in ssrc_info.items():
+                        source_el = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:ssma:0}source')
+                        source_el.set('ssrc', ssrc)
+
+                        # Filter attributes: only include what was in the offer (for answers)
+                        for attr_name, attr_value in attrs.items():
+                            if role == 'offer' or (not allowed_params or attr_name in allowed_params):
+                                param_el = ET.SubElement(source_el, '{urn:xmpp:jingle:apps:rtp:ssma:0}parameter')
+                                param_el.set('name', attr_name)
+                                param_el.set('value', attr_value)
+
+                        self.logger.debug(f"Added SSRC {ssrc} to Jingle (role={role})")
+
+            # Add rtcp-mux AFTER source (matches Conversations' element ordering)
             if has_rtcp_mux:
                 ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
 

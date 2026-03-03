@@ -362,10 +362,131 @@ def test_sdp_to_jingle_multiple_codecs(converter):
     pass
 
 
-@pytest.mark.skip(reason="Not implemented yet - future test")
-def test_sdp_to_jingle_with_ssrc_params(converter):
-    """Test SSRC parameter filtering."""
-    pass
+def test_sdp_to_jingle_with_ssrc_offer(converter):
+    """Test that SSRC is included in offers with all params."""
+    sdp_with_ssrc = """v=0
+o=- 123456 0 IN IP4 0.0.0.0
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=ice-ufrag:abcd
+a=ice-pwd:1234567890abcdefghij
+a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99
+a=setup:actpass
+a=mid:0
+a=rtpmap:111 opus/48000/2
+a=ssrc:2485877649 cname:pion-audio
+a=ssrc:2485877649 msid:stream1 track1
+a=ssrc:2485877649 mslabel:stream1
+a=ssrc:2485877649 label:track1
+"""
+
+    jingle = converter.sdp_to_jingle(sdp_with_ssrc, role='offer')
+
+    content = jingle.find('{urn:xmpp:jingle:1}content')
+    description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
+
+    # Verify SSRC source element
+    source = description.find('{urn:xmpp:jingle:apps:rtp:ssma:0}source')
+    assert source is not None, "Should have SSRC source element in offer"
+    assert source.get('ssrc') == '2485877649'
+
+    # Verify all SSRC parameters are included in offer
+    params = source.findall('{urn:xmpp:jingle:apps:rtp:ssma:0}parameter')
+    assert len(params) == 4, "Should have all 4 SSRC params in offer"
+
+    param_names = [p.get('name') for p in params]
+    assert 'cname' in param_names
+    assert 'msid' in param_names
+    assert 'mslabel' in param_names
+    assert 'label' in param_names
+
+
+def test_sdp_to_jingle_with_ssrc_answer_filtered(converter):
+    """Test that SSRC params are filtered in answers based on offer_context."""
+    sdp_with_ssrc = """v=0
+o=- 123456 0 IN IP4 0.0.0.0
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=ice-ufrag:wxyz
+a=ice-pwd:0987654321zyxwvutsrqp
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF
+a=setup:active
+a=mid:0
+a=rtpmap:111 opus/48000/2
+a=ssrc:9876543210 cname:pion-audio-resp
+a=ssrc:9876543210 msid:stream2 track2
+a=ssrc:9876543210 mslabel:stream2
+a=ssrc:9876543210 label:track2
+"""
+
+    # Offer context with only cname and msid (like Conversations.im)
+    offer_context = {
+        'bundle': False,
+        'rtcp_mux': False,
+        'codecs': [],
+        'rtp_hdrext': [],
+        'ssrc_params': ['cname', 'msid']  # Only these 2 params
+    }
+
+    jingle = converter.sdp_to_jingle(sdp_with_ssrc, role='answer', offer_context=offer_context)
+
+    content = jingle.find('{urn:xmpp:jingle:1}content')
+    description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
+
+    # Verify SSRC source element
+    source = description.find('{urn:xmpp:jingle:apps:rtp:ssma:0}source')
+    assert source is not None, "Should have SSRC source element in answer"
+    assert source.get('ssrc') == '9876543210'
+
+    # Verify only allowed SSRC parameters are included (filtered)
+    params = source.findall('{urn:xmpp:jingle:apps:rtp:ssma:0}parameter')
+    assert len(params) == 2, "Should have only 2 SSRC params (filtered to match offer)"
+
+    param_names = [p.get('name') for p in params]
+    assert 'cname' in param_names, "Should include cname (in offer)"
+    assert 'msid' in param_names, "Should include msid (in offer)"
+    assert 'mslabel' not in param_names, "Should NOT include mslabel (not in offer)"
+    assert 'label' not in param_names, "Should NOT include label (not in offer)"
+
+
+def test_sdp_to_jingle_with_ssrc_answer_no_offer_ssrc(converter):
+    """Test that SSRC is NOT included in answers if offer had no SSRC."""
+    sdp_with_ssrc = """v=0
+o=- 123456 0 IN IP4 0.0.0.0
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=ice-ufrag:wxyz
+a=ice-pwd:0987654321zyxwvutsrqp
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF
+a=setup:active
+a=mid:0
+a=rtpmap:111 opus/48000/2
+a=ssrc:9876543210 cname:pion-audio-resp
+"""
+
+    # Offer context with NO ssrc_params (offer had no SSRC)
+    offer_context = {
+        'bundle': False,
+        'rtcp_mux': False,
+        'codecs': [],
+        'rtp_hdrext': [],
+        'ssrc_params': []  # Offer had NO SSRC
+    }
+
+    jingle = converter.sdp_to_jingle(sdp_with_ssrc, role='answer', offer_context=offer_context)
+
+    content = jingle.find('{urn:xmpp:jingle:1}content')
+    description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
+
+    # Verify NO SSRC source element (should be skipped)
+    source = description.find('{urn:xmpp:jingle:apps:rtp:ssma:0}source')
+    assert source is None, "Should NOT have SSRC in answer when offer had no SSRC"
 
 
 @pytest.mark.skip(reason="Not implemented yet - future test")
