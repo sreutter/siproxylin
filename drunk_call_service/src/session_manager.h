@@ -23,12 +23,10 @@
 #include <atomic>
 #include <chrono>
 
-// Forward declarations (proto types will be defined when we integrate with gRPC)
-// For now, using placeholder - will be replaced with actual proto::CallEvent
-struct CallEvent {
-    std::string session_id;
-    // TODO: Replace with actual proto::CallEvent when integrating gRPC
-};
+// Forward declare proto types
+namespace call {
+class CallEvent;
+}
 
 namespace drunk_call {
 
@@ -50,7 +48,7 @@ struct CallSession {
     std::unique_ptr<WebRTCSession> webrtc;
 
     // Event streaming
-    std::shared_ptr<ThreadSafeQueue<CallEvent>> event_queue;
+    std::shared_ptr<ThreadSafeQueue<call::CallEvent>> event_queue;
 
     // State
     std::atomic<bool> active;         // Session is active (not ended)

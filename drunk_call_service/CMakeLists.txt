@@ -77,15 +77,13 @@ set(BINARY_NAME "drunk-call-service-${PLATFORM_SUFFIX}")
 add_executable(${BINARY_NAME}
     src/main.cpp
     src/call_service_impl.cpp
+    src/webrtc_session.cpp
+    src/session_manager.cpp
+    src/device_enumerator.cpp
+    src/logger.cpp
     ${PROTO_SRCS}
     ${GRPC_SRCS}
 )
-
-# TODO Phase 4.3+: Add library files when implementing actual logic:
-#   src/webrtc_session.cpp
-#   src/session_manager.cpp
-#   src/device_enumerator.cpp
-#   src/logger.cpp
 
 target_include_directories(${BINARY_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/src

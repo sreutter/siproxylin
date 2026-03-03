@@ -32,18 +32,139 @@ grpc::Status CallServiceImpl::CreateSession(
     const call::CreateSessionRequest* request,
     call::CreateSessionResponse* response) {
 
-    LOG_DEBUG("CreateSession called: session_id={}", request->session_id());
+    std::string session_id = request->session_id();
+    LOG_INFO("CreateSession: session_id={}, peer={}", session_id, request->peer_jid());
 
-    // Phase 4.3: Implement session creation
-    // - Create CallSession struct
-    // - Create WebRTCSession
-    // - Configure proxy, TURN, audio devices
-    // - Set callbacks for ICE candidates, state changes
-    // - Add to SessionManager
-    // See: docs/CALLS/4-GRPC-PLAN.md lines 408-486
+    try {
+        // Check if session already exists
+        auto existing = session_manager_.get_session(session_id);
+        if (existing) {
+            LOG_WARN("Session already exists: {}", session_id);
+            response->set_success(false);
+            response->set_error("Session already exists");
+            return grpc::Status::OK;
+        }
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "CreateSession not yet implemented (Phase 4.3)");
+        // Create session
+        auto session = std::make_shared<CallSession>();
+        session->session_id = session_id;
+        session->peer_jid = request->peer_jid();
+        session->event_queue = std::make_shared<ThreadSafeQueue<call::CallEvent>>();
+        session->active = true;
+        session->created_at = std::chrono::steady_clock::now();
+
+        // Create WebRTC session
+        session->webrtc = std::make_unique<WebRTCSession>();
+
+        // Configure session
+        SessionConfig config;
+        config.session_id = session_id;
+        config.microphone_device = request->microphone_device();
+        config.speakers_device = request->speakers_device();
+        config.relay_only = request->relay_only();
+
+        // Proxy config
+        if (!request->proxy_host().empty()) {
+            config.proxy_host = request->proxy_host();
+            config.proxy_port = request->proxy_port();
+            config.proxy_username = request->proxy_username();
+            config.proxy_password = request->proxy_password();
+            config.proxy_type = request->proxy_type();
+            LOG_DEBUG("Session {}: Proxy configured: {}:{} ({})",
+                     session_id, config.proxy_host, config.proxy_port, config.proxy_type);
+        }
+
+        // TURN config
+        if (!request->turn_server().empty()) {
+            // Build TURN URL: turn://username:password@host:port
+            std::string turn_url = "turn://";
+            if (!request->turn_username().empty()) {
+                turn_url += request->turn_username();
+                if (!request->turn_password().empty()) {
+                    turn_url += ":" + request->turn_password();
+                }
+                turn_url += "@";
+            }
+            turn_url += request->turn_server();
+            config.turn_servers.push_back(turn_url);
+            LOG_DEBUG("Session {}: TURN server configured: {}", session_id, turn_url);
+        }
+
+        // Audio processing
+        config.echo_cancel = request->echo_cancel();
+        config.noise_suppression = request->noise_suppression();
+        config.gain_control = request->gain_control();
+
+        // Set callbacks (BEFORE initialize to avoid race)
+        // ICE candidate callback - fires in GLib thread, pushes to queue
+        session->webrtc->set_ice_candidate_callback([session](const ICECandidate& cand) {
+            // THIS RUNS IN GLIB THREAD!
+            call::CallEvent event;
+            event.set_session_id(session->session_id);
+            auto* ice_event = event.mutable_ice_candidate();
+            ice_event->set_candidate(cand.candidate);
+            ice_event->set_sdp_mid(cand.sdp_mid);
+            ice_event->set_sdp_mline_index(cand.sdp_mline_index);
+            session->event_queue->push(event);
+            LOG_DEBUG("Session {}: ICE candidate pushed to queue", session->session_id);
+        });
+
+        // State callback - fires in GLib thread, pushes to queue
+        session->webrtc->set_state_callback([session](MediaSession::ConnectionState state) {
+            // THIS RUNS IN GLIB THREAD!
+            call::CallEvent event;
+            event.set_session_id(session->session_id);
+            auto* state_event = event.mutable_connection_state();
+
+            // Map connection state to proto enum
+            switch (state) {
+                case MediaSession::ConnectionState::NEW:
+                    state_event->set_state(call::ConnectionStateEvent::NEW);
+                    break;
+                case MediaSession::ConnectionState::CHECKING:
+                    state_event->set_state(call::ConnectionStateEvent::CHECKING);
+                    break;
+                case MediaSession::ConnectionState::CONNECTED:
+                case MediaSession::ConnectionState::COMPLETED:
+                    state_event->set_state(call::ConnectionStateEvent::CONNECTED);
+                    break;
+                case MediaSession::ConnectionState::FAILED:
+                    state_event->set_state(call::ConnectionStateEvent::FAILED);
+                    break;
+                case MediaSession::ConnectionState::DISCONNECTED:
+                    state_event->set_state(call::ConnectionStateEvent::DISCONNECTED);
+                    break;
+                case MediaSession::ConnectionState::CLOSED:
+                    state_event->set_state(call::ConnectionStateEvent::CLOSED);
+                    break;
+            }
+
+            session->event_queue->push(event);
+            LOG_DEBUG("Session {}: State change pushed to queue: {}",
+                     session->session_id, static_cast<int>(state));
+        });
+
+        // Initialize WebRTC session
+        if (!session->webrtc->initialize(config)) {
+            LOG_ERROR("Session {}: Failed to initialize WebRTC session", session_id);
+            response->set_success(false);
+            response->set_error("Failed to initialize WebRTC session");
+            return grpc::Status::OK;
+        }
+
+        // Add to SessionManager
+        session_manager_.add_session(session_id, session);
+
+        LOG_INFO("Session created successfully: {}, peer: {}", session_id, request->peer_jid());
+        response->set_success(true);
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception in CreateSession: {}", e.what());
+        response->set_success(false);
+        response->set_error(std::string("Exception: ") + e.what());
+        return grpc::Status::OK;
+    }
 }
 
 grpc::Status CallServiceImpl::EndSession(
@@ -51,17 +172,39 @@ grpc::Status CallServiceImpl::EndSession(
     const call::EndSessionRequest* request,
     call::Empty* response) {
 
-    LOG_DEBUG("EndSession called: session_id={}", request->session_id());
+    std::string session_id = request->session_id();
+    LOG_INFO("EndSession called: session_id={}", session_id);
 
-    // Phase 4.7: Implement session cleanup
-    // - Get session from SessionManager
-    // - Set active = false
-    // - Shutdown event queue
-    // - Stop WebRTC session
-    // - Remove from SessionManager
+    // Get session from SessionManager
+    auto session = session_manager_.get_session(session_id);
+    if (!session) {
+        LOG_WARN("EndSession: Session not found (already ended?): {}", session_id);
+        return grpc::Status::OK;  // Not an error - session may have already ended
+    }
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "EndSession not yet implemented (Phase 4.7)");
+    // Calculate session duration
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - session->created_at
+    ).count();
+
+    // Mark session as inactive (stops StreamEvents loop)
+    session->active = false;
+
+    // Shutdown event queue (wakes any blocked StreamEvents threads)
+    session->event_queue->shutdown();
+
+    // Stop WebRTC session
+    if (session->webrtc) {
+        session->webrtc->stop();
+    }
+
+    // Remove from SessionManager
+    // Note: StreamEvents may still hold a shared_ptr - that's OK!
+    // Session will be destroyed when the last shared_ptr is released
+    session_manager_.remove_session(session_id);
+
+    LOG_INFO("Session ended: {}, duration: {}s", session_id, duration);
+    return grpc::Status::OK;
 }
 
 // ============================================================================
@@ -155,18 +298,43 @@ grpc::Status CallServiceImpl::StreamEvents(
     const call::StreamEventsRequest* request,
     grpc::ServerWriter<call::CallEvent>* writer) {
 
-    LOG_DEBUG("StreamEvents called: session_id={}", request->session_id());
+    std::string session_id = request->session_id();
+    LOG_INFO("StreamEvents started: session_id={}", session_id);
 
-    // Phase 4.3: Implement event streaming
-    // - Get session from SessionManager
-    // - Loop: pop from event_queue (1s timeout)
-    // - Write event to stream
-    // - Check context->IsCancelled() for client disconnect
-    // - Continue until session->active = false
-    // See: docs/CALLS/GSTREAMER-THREADING.md Pattern 2
+    // Get session from SessionManager
+    auto session = session_manager_.get_session(session_id);
+    if (!session) {
+        LOG_ERROR("StreamEvents: Session not found: {}", session_id);
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+    }
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "StreamEvents not yet implemented (Phase 4.3)");
+    // Stream events until session ends or client disconnects
+    int event_count = 0;
+    while (session->active && !context->IsCancelled()) {
+        call::CallEvent event;
+
+        // Pop from queue with 1s timeout (allows checking cancellation)
+        if (session->event_queue->pop(event, std::chrono::milliseconds(1000))) {
+            // Write event to stream
+            if (!writer->Write(event)) {
+                LOG_WARN("StreamEvents: Failed to write event to stream (client disconnected?): {}",
+                        session_id);
+                break;
+            }
+            event_count++;
+            LOG_DEBUG("StreamEvents: Event #{} sent to client: {}", event_count, session_id);
+        }
+        // Timeout is OK - just loop and check cancellation
+    }
+
+    if (context->IsCancelled()) {
+        LOG_INFO("StreamEvents cancelled by client: {}, events sent: {}",
+                session_id, event_count);
+    } else {
+        LOG_INFO("StreamEvents completed: {}, events sent: {}", session_id, event_count);
+    }
+
+    return grpc::Status::OK;
 }
 
 // ============================================================================

@@ -33,7 +33,14 @@
 - Binary: drunk-call-service-linux (13MB debug)
 - Service verified: Starts, accepts connections, returns UNIMPLEMENTED
 
-### 🎯 Phase 4.3: CreateSession + StreamEvents - **NEXT**
+### ✅ Phase 4.3: CreateSession + StreamEvents - **COMPLETE**
+- CreateSession RPC: Creates WebRTC session, sets callbacks, adds to SessionManager
+- StreamEvents RPC: Blocks waiting for events, streams to client, handles cancellation
+- EndSession RPC: Marks inactive, shuts down queue, stops WebRTC, removes from manager
+- Threading model verified: GLib thread → ThreadSafeQueue → gRPC streaming thread
+- All success criteria met: No crashes, no deadlocks, clean session lifecycle
+
+### 🎯 Phase 4.4: SDP Operations - **NEXT**
 
 ---
 
@@ -134,11 +141,11 @@ grpcurl -plaintext -import-path proto -proto call.proto \
 **gRPC Service** (8 phases):
 - [x] Phase 4.1: Thread infrastructure
 - [x] Phase 4.2: Service skeleton (main.cpp + stubs)
-- [ ] Phase 4.3: CreateSession + StreamEvents ← **NEXT**
-- [ ] Phase 4.4: SDP operations (CreateOffer, CreateAnswer, SetRemoteDescription)
+- [x] Phase 4.3: CreateSession + StreamEvents + EndSession
+- [ ] Phase 4.4: SDP operations (CreateOffer, CreateAnswer, SetRemoteDescription) ← **NEXT**
 - [ ] Phase 4.5: ICE candidate handling
 - [ ] Phase 4.6: GetStats, SetMute, ListAudioDevices
-- [ ] Phase 4.7: EndSession + error handling
+- [ ] Phase 4.7: Error handling improvements
 - [ ] Phase 4.8: Integration testing with Python
 
 ---
@@ -195,6 +202,16 @@ grpcurl -plaintext -import-path proto -proto call.proto \
 - Service verified: Starts, accepts connections, clean shutdown
 - Binary: 13MB debug, ~3MB release
 
+**Session 9** (2026-03-03): C++ Phase 4.3 - CreateSession + StreamEvents
+- Implemented CreateSession RPC (creates WebRTCSession, sets ICE/state callbacks, adds to SessionManager)
+- Implemented StreamEvents RPC (blocks on ThreadSafeQueue, streams CallEvents to client)
+- Implemented EndSession RPC (marks inactive, shuts down queue, stops WebRTC, removes from manager)
+- Updated session_manager.h to use proto::CallEvent (forward declare call::CallEvent)
+- Updated CMakeLists.txt to include library sources (webrtc_session.cpp, session_manager.cpp, etc.)
+- Fixed TURN config (build URL for turn_servers vector) and state callback signature (MediaSession::ConnectionState)
+- Tested with grpcurl: CreateSession succeeds, StreamEvents blocks waiting for events, EndSession cleans up gracefully
+- Threading model verified: No deadlocks, clean lifecycle, GLib thread → queue → gRPC thread working correctly
+
 **Details**: All historical code samples are in git history. See commit logs for implementation details.
 
 ---
@@ -216,5 +233,5 @@ grpcurl -plaintext -import-path proto -proto call.proto \
 
 ---
 
-**Last Updated**: 2026-03-03 (Session 8 complete, Phase 4.2)
-**Next Session**: Start Phase 4.3 (CreateSession + StreamEvents)
+**Last Updated**: 2026-03-03 (Session 9 complete, Phase 4.3)
+**Next Session**: Start Phase 4.4 (SDP operations: CreateOffer, CreateAnswer, SetRemoteDescription)
