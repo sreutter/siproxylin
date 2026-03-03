@@ -136,7 +136,27 @@ bool WebRTCSession::stop() {
         }
 
         LOG_INFO("[WebRTCSession] Stopping pipeline...");
+
+        // ========================================================================
+        // ISSUE #8 FIX: Graceful pipeline shutdown with timeout
+        // Official Pattern: https://gstreamer.freedesktop.org/documentation/application-development/basics/states.html
+        // ========================================================================
         gst_element_set_state(pipeline_, GST_STATE_NULL);
+
+        // Wait for state change to complete with 5-second timeout
+        GstStateChangeReturn ret = gst_element_get_state(
+            pipeline_, nullptr, nullptr, GST_SECOND * 5);
+
+        if (ret == GST_STATE_CHANGE_FAILURE) {
+            LOG_ERROR("[WebRTCSession] Pipeline shutdown failed");
+            // Force cleanup anyway
+        } else if (ret == GST_STATE_CHANGE_ASYNC) {
+            LOG_WARN("[WebRTCSession] Pipeline shutdown timed out after 5 seconds");
+            // Force cleanup anyway
+        } else {
+            LOG_DEBUG("[WebRTCSession] Pipeline state changed to NULL successfully");
+        }
+
         gst_object_unref(pipeline_);
 
         pipeline_ = nullptr;
@@ -409,14 +429,16 @@ bool WebRTCSession::create_pipeline() {
         std::string pipeline_name = "call-pipeline-" + config_.session_id;
         pipeline_ = gst_pipeline_new(pipeline_name.c_str());
         if (!pipeline_) {
-            LOG_ERROR("[WebRTCSession] Failed to create pipeline");
+            LOG_ERROR("[WebRTCSession] Failed to create pipeline '{}'", pipeline_name);
             return false;
         }
 
         // Create webrtcbin element
         webrtc_ = gst_element_factory_make("webrtcbin", "webrtc");
         if (!webrtc_) {
-            LOG_ERROR("[WebRTCSession] Failed to create webrtcbin element");
+            LOG_ERROR("[WebRTCSession] Failed to create webrtcbin element - is gst-plugins-bad installed?");
+            gst_object_unref(pipeline_);
+            pipeline_ = nullptr;
             return false;
         }
 
@@ -431,8 +453,22 @@ bool WebRTCSession::create_pipeline() {
         GstElement *opusenc = gst_element_factory_make("opusenc", "opus_encoder");
         GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "rtp_payloader");
 
+        // ========================================================================
+        // ISSUE #7 FIX: Add detailed logging for partial pipeline failure
+        // ========================================================================
         if (!audio_src_ || !volume_ || !queue || !opusenc || !rtpopuspay) {
-            LOG_ERROR("[WebRTCSession] Failed to create audio source elements");
+            LOG_ERROR("[WebRTCSession] Failed to create audio source elements:");
+            if (!audio_src_) LOG_ERROR("  - audio_src ({}) creation failed", audio_src_name);
+            if (!volume_) LOG_ERROR("  - volume element creation failed");
+            if (!queue) LOG_ERROR("  - queue element creation failed");
+            if (!opusenc) LOG_ERROR("  - opusenc element creation failed - is gst-plugins-base installed?");
+            if (!rtpopuspay) LOG_ERROR("  - rtpopuspay element creation failed - is gst-plugins-good installed?");
+
+            // Cleanup already-created elements
+            if (pipeline_) {
+                gst_object_unref(pipeline_);
+                pipeline_ = nullptr;
+            }
             return false;
         }
 
@@ -453,7 +489,13 @@ bool WebRTCSession::create_pipeline() {
 
         // Link audio source chain
         if (!gst_element_link_many(audio_src_, volume_, queue, opusenc, rtpopuspay, nullptr)) {
-            LOG_ERROR("[WebRTCSession] Failed to link audio source chain");
+            LOG_ERROR("[WebRTCSession] Failed to link audio source chain: {} → volume → queue → opusenc → rtpopuspay",
+                     audio_src_name);
+            LOG_ERROR("[WebRTCSession] Possible causes: incompatible caps, missing plugins, or device access denied");
+
+            // Cleanup
+            gst_object_unref(pipeline_);
+            pipeline_ = nullptr;
             return false;
         }
 
@@ -461,7 +503,11 @@ bool WebRTCSession::create_pipeline() {
         // Use capsfilter to specify exact RTP caps
         GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_caps");
         if (!capsfilter) {
-            LOG_ERROR("[WebRTCSession] Failed to create capsfilter");
+            LOG_ERROR("[WebRTCSession] Failed to create capsfilter element");
+
+            // Cleanup
+            gst_object_unref(pipeline_);
+            pipeline_ = nullptr;
             return false;
         }
 
@@ -477,7 +523,11 @@ bool WebRTCSession::create_pipeline() {
         gst_bin_add(GST_BIN(pipeline_), capsfilter);
 
         if (!gst_element_link_many(rtpopuspay, capsfilter, nullptr)) {
-            LOG_ERROR("[WebRTCSession] Failed to link payloader to capsfilter");
+            LOG_ERROR("[WebRTCSession] Failed to link rtpopuspay → capsfilter");
+
+            // Cleanup
+            gst_object_unref(pipeline_);
+            pipeline_ = nullptr;
             return false;
         }
 
@@ -486,7 +536,15 @@ bool WebRTCSession::create_pipeline() {
         GstPad *webrtc_sink = gst_element_request_pad_simple(webrtc_, "sink_%u");
 
         if (!caps_src || !webrtc_sink) {
-            LOG_ERROR("[WebRTCSession] Failed to get pads for linking");
+            LOG_ERROR("[WebRTCSession] Failed to get pads for linking capsfilter → webrtcbin");
+            if (!caps_src) LOG_ERROR("  - capsfilter src pad is NULL");
+            if (!webrtc_sink) LOG_ERROR("  - webrtcbin sink pad request failed");
+
+            // Cleanup
+            if (caps_src) gst_object_unref(caps_src);
+            if (webrtc_sink) gst_object_unref(webrtc_sink);
+            gst_object_unref(pipeline_);
+            pipeline_ = nullptr;
             return false;
         }
 
@@ -496,8 +554,35 @@ bool WebRTCSession::create_pipeline() {
         gst_object_unref(webrtc_sink);
 
         if (link_ret != GST_PAD_LINK_OK) {
-            LOG_ERROR("[WebRTCSession] Failed to link capsfilter to webrtcbin: {}", link_ret);
+            const char *link_err = "";
+            switch (link_ret) {
+                case GST_PAD_LINK_WRONG_HIERARCHY: link_err = "wrong hierarchy"; break;
+                case GST_PAD_LINK_WAS_LINKED: link_err = "already linked"; break;
+                case GST_PAD_LINK_WRONG_DIRECTION: link_err = "wrong direction"; break;
+                case GST_PAD_LINK_NOFORMAT: link_err = "incompatible formats"; break;
+                case GST_PAD_LINK_NOSCHED: link_err = "no common scheduler"; break;
+                case GST_PAD_LINK_REFUSED: link_err = "link refused"; break;
+                default: link_err = "unknown error"; break;
+            }
+            LOG_ERROR("[WebRTCSession] Failed to link capsfilter → webrtcbin: {} ({})", link_ret, link_err);
+
+            // Cleanup
+            gst_object_unref(pipeline_);
+            pipeline_ = nullptr;
             return false;
+        }
+
+        // ========================================================================
+        // ISSUE #6 FIX: Add GStreamer bus error monitoring
+        // Official Pattern: https://gstreamer.freedesktop.org/documentation/application-development/basics/bus.html
+        // ========================================================================
+        GstBus *bus = gst_element_get_bus(pipeline_);
+        if (bus) {
+            gst_bus_add_watch(bus, bus_message_handler_static, this);
+            gst_object_unref(bus);
+            LOG_DEBUG("[WebRTCSession] Bus watch added for error monitoring");
+        } else {
+            LOG_ERROR("[WebRTCSession] Failed to get pipeline bus");
         }
 
         LOG_DEBUG("[WebRTCSession] Pipeline created successfully");
@@ -686,6 +771,15 @@ void WebRTCSession::connect_signals() {
 }
 
 // ============================================================================
+// Static Bus Message Handler
+// ============================================================================
+
+gboolean WebRTCSession::bus_message_handler_static(GstBus *bus, GstMessage *msg, gpointer user_data) {
+    WebRTCSession *self = static_cast<WebRTCSession*>(user_data);
+    return self->bus_message_handler(bus, msg);
+}
+
+// ============================================================================
 // Static Signal Handlers (dispatch to instance methods)
 // ============================================================================
 
@@ -737,6 +831,82 @@ void WebRTCSession::on_incoming_stream_static(GstElement *webrtc, GstPad *pad,
 void WebRTCSession::on_offer_set_for_answer_static(GstPromise *promise, gpointer user_data) {
     WebRTCSession *self = static_cast<WebRTCSession*>(user_data);
     self->on_offer_set_for_answer();
+}
+
+// ============================================================================
+// Instance Bus Message Handler
+// ============================================================================
+
+gboolean WebRTCSession::bus_message_handler(GstBus *bus, GstMessage *msg) {
+    try {
+        switch (GST_MESSAGE_TYPE(msg)) {
+            case GST_MESSAGE_ERROR: {
+                GError *err = nullptr;
+                gchar *debug_info = nullptr;
+                gst_message_parse_error(msg, &err, &debug_info);
+
+                // Log error with source element name
+                const gchar *src_name = GST_MESSAGE_SRC_NAME(msg);
+                LOG_ERROR("[WebRTCSession] GStreamer ERROR from {}: {} (debug: {})",
+                         src_name ? src_name : "unknown",
+                         err ? err->message : "no message",
+                         debug_info ? debug_info : "no debug info");
+
+                // TODO: Propagate to Python via ErrorEvent
+                // This requires event_queue access (not currently available in WebRTCSession)
+                // Will be implemented when error event types are added to proto
+
+                g_error_free(err);
+                g_free(debug_info);
+                break;
+            }
+
+            case GST_MESSAGE_WARNING: {
+                GError *warn = nullptr;
+                gchar *debug_info = nullptr;
+                gst_message_parse_warning(msg, &warn, &debug_info);
+
+                const gchar *src_name = GST_MESSAGE_SRC_NAME(msg);
+                LOG_WARN("[WebRTCSession] GStreamer WARNING from {}: {} (debug: {})",
+                         src_name ? src_name : "unknown",
+                         warn ? warn->message : "no message",
+                         debug_info ? debug_info : "no debug info");
+
+                g_error_free(warn);
+                g_free(debug_info);
+                break;
+            }
+
+            case GST_MESSAGE_EOS: {
+                LOG_INFO("[WebRTCSession] GStreamer EOS (end-of-stream)");
+                break;
+            }
+
+            case GST_MESSAGE_STATE_CHANGED: {
+                // Only log pipeline state changes (too verbose for all elements)
+                if (GST_MESSAGE_SRC(msg) == GST_OBJECT(pipeline_)) {
+                    GstState old_state, new_state, pending_state;
+                    gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
+
+                    const gchar *old_str = gst_element_state_get_name(old_state);
+                    const gchar *new_str = gst_element_state_get_name(new_state);
+
+                    LOG_DEBUG("[WebRTCSession] Pipeline state changed: {} → {}",
+                             old_str, new_str);
+                }
+                break;
+            }
+
+            default:
+                // Ignore other message types
+                break;
+        }
+
+    } catch (const std::exception &e) {
+        LOG_ERROR("[WebRTCSession] bus_message_handler exception: {}", e.what());
+    }
+
+    return TRUE;  // Continue receiving messages
 }
 
 // ============================================================================
@@ -1065,12 +1235,39 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
 
         // Link webrtcbin pad to depay
         GstPad *sink_pad = gst_element_get_static_pad(depay, "sink");
-        if (gst_pad_link(pad, sink_pad) != GST_PAD_LINK_OK) {
-            LOG_ERROR("[WebRTCSession] Failed to link incoming pad to depay");
-        } else {
-            LOG_DEBUG("[WebRTCSession] Incoming stream linked successfully");
-        }
+        GstPadLinkReturn link_ret = gst_pad_link(pad, sink_pad);
         gst_object_unref(sink_pad);
+
+        if (link_ret != GST_PAD_LINK_OK) {
+            // ========================================================================
+            // ISSUE #9 FIX: Cleanup zombie elements on pad link failure
+            // Official Pattern: https://gstreamer.freedesktop.org/documentation/application-development/advanced/pipeline-manipulation.html
+            // ========================================================================
+            LOG_ERROR("[WebRTCSession] Failed to link incoming pad to depay: {}", link_ret);
+
+            // Remove elements from pipeline
+            gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, queue, audio_sink_, nullptr);
+
+            // Set to NULL state and unref (GstBin doesn't own them anymore)
+            gst_element_set_state(depay, GST_STATE_NULL);
+            gst_object_unref(depay);
+
+            gst_element_set_state(decoder, GST_STATE_NULL);
+            gst_object_unref(decoder);
+
+            gst_element_set_state(queue, GST_STATE_NULL);
+            gst_object_unref(queue);
+
+            gst_element_set_state(audio_sink_, GST_STATE_NULL);
+            gst_object_unref(audio_sink_);
+
+            audio_sink_ = nullptr;  // Mark as not created
+
+            LOG_ERROR("[WebRTCSession] Cleaned up zombie elements after pad link failure");
+            return;
+        }
+
+        LOG_DEBUG("[WebRTCSession] Incoming stream linked successfully");
 
     } catch (const std::exception &e) {
         LOG_ERROR("[WebRTCSession] on_incoming_stream exception: {}", e.what());

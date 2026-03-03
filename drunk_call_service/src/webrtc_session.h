@@ -74,6 +74,9 @@ private:
     SDPMessage local_sdp_;
     bool sdp_done_;
 
+    // GStreamer bus message handler (static)
+    static gboolean bus_message_handler_static(GstBus *bus, GstMessage *msg, gpointer user_data);
+
     // GStreamer signal handlers (static, dispatch to instance methods)
     static void on_negotiation_needed_static(GstElement *webrtc, gpointer user_data);
     static void on_offer_created_static(GstPromise *promise, gpointer user_data);
@@ -90,6 +93,7 @@ private:
                                          gpointer user_data);
 
     // Instance methods called by static handlers
+    gboolean bus_message_handler(GstBus *bus, GstMessage *msg);
     void on_negotiation_needed();
     void on_offer_created(GstPromise *promise);
     void on_answer_created(GstPromise *promise);
