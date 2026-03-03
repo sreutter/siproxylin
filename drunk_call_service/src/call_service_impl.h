@@ -109,6 +109,9 @@ public:
         const call::Empty* request,
         call::Empty* response) override;
 
+    // Cleanup all sessions (called during shutdown)
+    void cleanup_all_sessions();
+
 private:
     // Session manager (thread-safe)
     SessionManager session_manager_;

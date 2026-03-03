@@ -12,6 +12,9 @@
 #include "call_service_impl.h"
 #include "logger.h"
 
+// Global shutdown flag (defined in main.cpp, global namespace)
+extern std::atomic<bool> g_shutdown_requested;
+
 namespace drunk_call {
 
 CallServiceImpl::CallServiceImpl()
@@ -33,6 +36,7 @@ grpc::Status CallServiceImpl::CreateSession(
     call::CreateSessionResponse* response) {
 
     std::string session_id = request->session_id();
+    LOG_DEBUG("gRPC: CreateSession - session_id={}", session_id);
     LOG_INFO("CreateSession: session_id={}, peer={}", session_id, request->peer_jid());
 
     try {
@@ -173,7 +177,8 @@ grpc::Status CallServiceImpl::EndSession(
     call::Empty* response) {
 
     std::string session_id = request->session_id();
-    LOG_INFO("EndSession called: session_id={}", session_id);
+    LOG_DEBUG("gRPC: EndSession - session_id={}", session_id);
+    LOG_INFO("EndSession: session_id={}", session_id);
 
     // Get session from SessionManager
     auto session = session_manager_.get_session(session_id);
@@ -216,7 +221,8 @@ grpc::Status CallServiceImpl::CreateOffer(
     const call::CreateOfferRequest* request,
     call::SDPResponse* response) {
 
-    LOG_DEBUG("CreateOffer called: session_id={}", request->session_id());
+    LOG_DEBUG("gRPC: CreateOffer - session_id={}", request->session_id());
+    LOG_WARN("Method not implemented: CreateOffer (Phase 4.4)");
 
     // Phase 4.4: Implement offer creation
     // - Get session from SessionManager
@@ -235,7 +241,8 @@ grpc::Status CallServiceImpl::CreateAnswer(
     const call::CreateAnswerRequest* request,
     call::SDPResponse* response) {
 
-    LOG_DEBUG("CreateAnswer called: session_id={}", request->session_id());
+    LOG_DEBUG("gRPC: CreateAnswer - session_id={}", request->session_id());
+    LOG_WARN("Method not implemented: CreateAnswer (Phase 4.4)");
 
     // Phase 4.4: Implement answer creation
     // - Get session from SessionManager
@@ -254,8 +261,9 @@ grpc::Status CallServiceImpl::SetRemoteDescription(
     const call::SetRemoteDescriptionRequest* request,
     call::Empty* response) {
 
-    LOG_DEBUG("SetRemoteDescription called: session_id={}, type={}",
+    LOG_DEBUG("gRPC: SetRemoteDescription - session_id={}, type={}",
               request->session_id(), request->sdp_type());
+    LOG_WARN("Method not implemented: SetRemoteDescription (Phase 4.4)");
 
     // Phase 4.4: Implement remote SDP setting
     // - Get session from SessionManager
@@ -276,8 +284,9 @@ grpc::Status CallServiceImpl::AddICECandidate(
     const call::AddICECandidateRequest* request,
     call::Empty* response) {
 
-    LOG_DEBUG("AddICECandidate called: session_id={}, mid={}, mline_index={}",
+    LOG_DEBUG("gRPC: AddICECandidate - session_id={}, mid={}, mline_index={}",
               request->session_id(), request->sdp_mid(), request->sdp_mline_index());
+    LOG_WARN("Method not implemented: AddICECandidate (Phase 4.5)");
 
     // Phase 4.5: Implement ICE candidate addition
     // - Get session from SessionManager
@@ -299,6 +308,7 @@ grpc::Status CallServiceImpl::StreamEvents(
     grpc::ServerWriter<call::CallEvent>* writer) {
 
     std::string session_id = request->session_id();
+    LOG_DEBUG("gRPC: StreamEvents - session_id={}", session_id);
     LOG_INFO("StreamEvents started: session_id={}", session_id);
 
     // Get session from SessionManager
@@ -346,7 +356,8 @@ grpc::Status CallServiceImpl::ListAudioDevices(
     const call::Empty* request,
     call::ListAudioDevicesResponse* response) {
 
-    LOG_DEBUG("ListAudioDevices called");
+    LOG_DEBUG("gRPC: ListAudioDevices");
+    LOG_WARN("Method not implemented: ListAudioDevices (Phase 4.6)");
 
     // Phase 4.6: Implement device enumeration
     // - Call DeviceEnumerator::list_audio_inputs()
@@ -362,8 +373,9 @@ grpc::Status CallServiceImpl::SetMute(
     const call::SetMuteRequest* request,
     call::Empty* response) {
 
-    LOG_DEBUG("SetMute called: session_id={}, muted={}",
+    LOG_DEBUG("gRPC: SetMute - session_id={}, muted={}",
               request->session_id(), request->muted());
+    LOG_WARN("Method not implemented: SetMute (Phase 4.6)");
 
     // Phase 4.6: Implement mute control
     // - Get session from SessionManager
@@ -383,7 +395,8 @@ grpc::Status CallServiceImpl::GetStats(
     const call::GetStatsRequest* request,
     call::GetStatsResponse* response) {
 
-    LOG_DEBUG("GetStats called: session_id={}", request->session_id());
+    LOG_DEBUG("gRPC: GetStats - session_id={}", request->session_id());
+    LOG_WARN("Method not implemented: GetStats (Phase 4.6)");
 
     // Phase 4.6: Implement statistics retrieval
     // - Get session from SessionManager
@@ -403,8 +416,9 @@ grpc::Status CallServiceImpl::Heartbeat(
     const call::Empty* request,
     call::Empty* response) {
 
-    // Heartbeat: No logging (called every 5s from Python)
-    // Just return OK to indicate service is alive
+    // Heartbeat: Minimal logging (called every 5s from Python)
+    // Only log at TRACE level to avoid spam
+    LOG_TRACE("gRPC: Heartbeat");
     return grpc::Status::OK;
 }
 
@@ -413,16 +427,62 @@ grpc::Status CallServiceImpl::Shutdown(
     const call::Empty* request,
     call::Empty* response) {
 
+    LOG_DEBUG("gRPC: Shutdown");
     LOG_INFO("Shutdown requested via gRPC");
 
-    // Phase 4.7: Implement graceful shutdown
-    // - Set shutdown_requested_ = true
-    // - Cleanup all sessions
-    // - Signal gRPC server to stop
-    // - Return OK
+    // Cleanup all sessions
+    cleanup_all_sessions();
+
+    // Set global shutdown flag (main() will detect and shutdown)
+    ::g_shutdown_requested = true;
 
     shutdown_requested_ = true;
     return grpc::Status::OK;
+}
+
+void CallServiceImpl::cleanup_all_sessions() {
+    LOG_INFO("Cleaning up all sessions...");
+
+    // Get all session IDs
+    auto session_ids = session_manager_.get_all_session_ids();
+
+    if (session_ids.empty()) {
+        LOG_INFO("No active sessions to cleanup");
+        return;
+    }
+
+    LOG_INFO("Cleaning up {} active session(s)", session_ids.size());
+
+    // Cleanup each session
+    for (const auto& session_id : session_ids) {
+        auto session = session_manager_.get_session(session_id);
+        if (session) {
+            LOG_DEBUG("Cleaning up session: {}", session_id);
+
+            // Calculate session duration
+            auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - session->created_at
+            ).count();
+
+            // Mark session as inactive
+            session->active = false;
+
+            // Shutdown event queue (unblocks any waiting StreamEvents)
+            session->event_queue->shutdown();
+
+            // Stop WebRTC session
+            if (session->webrtc) {
+                session->webrtc->stop();
+            }
+
+            LOG_INFO("Session cleaned up: {}, duration: {}s", session_id, duration);
+        }
+
+        // Remove from SessionManager
+        session_manager_.remove_session(session_id);
+    }
+
+    LOG_INFO("All sessions cleaned up successfully");
 }
 
 } // namespace drunk_call

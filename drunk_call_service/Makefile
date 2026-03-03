@@ -29,7 +29,25 @@ install: release
 
 # Clean build artifacts
 clean:
-	@rm -rf $(BUILD_DIR)
+	@echo "Cleaning build artifacts..."
+	@if [ -d "$(BUILD_DIR)" ]; then \
+		echo "Removing build directory: $(BUILD_DIR)/"; \
+		find $(BUILD_DIR) -type f | wc -l | xargs -I {} echo "  {} files in build/"; \
+		du -sh $(BUILD_DIR) | awk '{print "  Size: " $$1}'; \
+		rm -rf $(BUILD_DIR); \
+		echo "  ✓ $(BUILD_DIR)/ removed"; \
+	else \
+		echo "  $(BUILD_DIR)/ does not exist (already clean)"; \
+	fi
+	@if [ -d "$(BIN_DIR)" ]; then \
+		echo "Removing binaries: $(BIN_DIR)/"; \
+		ls -lh $(BIN_DIR)/ 2>/dev/null | grep -v "^total" | awk '{print "  " $$9 " (" $$5 ")"}' || true; \
+		rm -rf $(BIN_DIR); \
+		echo "  ✓ $(BIN_DIR)/ removed"; \
+	else \
+		echo "  $(BIN_DIR)/ does not exist (already clean)"; \
+	fi
+	@echo "Clean complete"
 
 # Download LibWebRTC prebuilt binaries (placeholder - manual step for now)
 deps:

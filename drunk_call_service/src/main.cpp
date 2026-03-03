@@ -157,15 +157,22 @@ void test_devices_and_exit() {
 /**
  * Signal handler for SIGINT/SIGTERM.
  * Triggers graceful shutdown.
+ *
+ * IMPORTANT: Keep this async-signal-safe!
+ * Only set atomic flags and call async-signal-safe functions.
+ * Session cleanup will happen in main() shutdown sequence.
  */
 void signal_handler(int signum) {
-    // Set shutdown flag
+    // Set shutdown flag (atomic, signal-safe)
     g_shutdown_requested = true;
 
-    // Quit GLib main loop if running
+    // Quit GLib main loop if running (signal-safe)
     if (g_main_loop) {
         g_main_loop_quit(g_main_loop);
     }
+
+    // Note: Session cleanup happens in main() shutdown sequence,
+    // not here, to avoid async-signal-safety issues
 }
 
 /**
@@ -324,28 +331,45 @@ int main(int argc, char* argv[]) {
     }
 
     LOG_INFO("Shutdown signal received, cleaning up...");
+    LOG_DEBUG("Shutdown source: SIGINT/SIGTERM or gRPC Shutdown command");
 
     // ========================================================================
     // Phase 8: Graceful shutdown
     // ========================================================================
 
-    // Shutdown gRPC server (graceful shutdown with deadline)
-    LOG_INFO("Shutting down gRPC server...");
+    // Step 1: Cleanup all active sessions
+    LOG_DEBUG("Phase 8.1: Cleaning up active sessions");
+    service.cleanup_all_sessions();
+
+    // Step 2: Shutdown gRPC server (graceful shutdown with deadline)
+    LOG_DEBUG("Phase 8.2: Shutting down gRPC server");
+    LOG_INFO("Shutting down gRPC server (5s graceful deadline)...");
     server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(5));
     LOG_INFO("gRPC server stopped");
 
-    // Quit GLib main loop
-    LOG_INFO("Stopping GLib main loop...");
-    g_main_loop_quit(g_main_loop);
+    // Step 3: Stop GLib main loop (may already be stopped by signal handler)
+    LOG_DEBUG("Phase 8.3: Stopping GLib main loop");
+    if (g_main_loop && g_main_loop_is_running(g_main_loop)) {
+        LOG_DEBUG("GLib main loop still running, quitting...");
+        g_main_loop_quit(g_main_loop);
+    } else {
+        LOG_DEBUG("GLib main loop already stopped (signal handler)");
+    }
+    LOG_DEBUG("Waiting for GLib thread to join...");
     glib_thread.join();
-    g_main_loop_unref(g_main_loop);
+    if (g_main_loop) {
+        g_main_loop_unref(g_main_loop);
+    }
     LOG_INFO("GLib main loop stopped");
 
-    // Shutdown GStreamer (cleanup resources)
+    // Step 4: Deinitialize GStreamer (cleanup resources)
+    LOG_DEBUG("Phase 8.4: Deinitializing GStreamer");
     gst_deinit();
+    LOG_DEBUG("GStreamer deinitialized");
 
-    // Shutdown logger
-    LOG_INFO("Service shutdown complete");
+    // Step 5: Shutdown logger
+    LOG_INFO("Service shutdown complete - exiting cleanly");
+    LOG_DEBUG("Phase 8.5: Shutting down logger");
     drunk_call::Logger::shutdown();
 
     return 0;
