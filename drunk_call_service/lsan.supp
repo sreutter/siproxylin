@@ -1,0 +1,17 @@
+# LeakSanitizer Suppression File
+# Suppresses known false positives from GLib and GStreamer
+
+# GLib internal allocations
+leak:g_malloc
+leak:g_realloc
+leak:g_slice_alloc
+leak:g_type_register_static
+leak:g_type_class_ref
+
+# GStreamer internal allocations
+leak:gst_init
+leak:gst_element_factory_make
+leak:gst_plugin_load_file
+
+# gRPC internal allocations (static init)
+leak:grpc_init

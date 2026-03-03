@@ -24,7 +24,16 @@
 - SessionManager (7 tests passing, validated remove-while-in-use pattern)
 - Docs: THREAD-INFRASTRUCTURE-USAGE.md, LOGGING-POLICY.md
 
-### 🎯 Phase 4.2: gRPC Service Skeleton - **NEXT**
+### ✅ Phase 4.2: gRPC Service Skeleton - **COMPLETE**
+- main.cpp (GLib thread + gRPC server, 353 lines)
+- call_service_impl.{h,cpp} (12 RPC handlers, stub implementations)
+- CMakeLists.txt (platform-specific binary naming)
+- CLI parameters: --port, --log-level, --log-path, --test-devices, --help
+- Memory leak suppression (lsan.supp for GLib/GStreamer internals)
+- Binary: drunk-call-service-linux (13MB debug)
+- Service verified: Starts, accepts connections, returns UNIMPLEMENTED
+
+### 🎯 Phase 4.3: CreateSession + StreamEvents - **NEXT**
 
 ---
 
@@ -55,44 +64,61 @@ Threading Model:
 - Use LOG_*() macros for all application logging
 - Follow patterns in GSTREAMER-THREADING.md (no creativity!)
 
-### What to Build Next (Phase 4.2)
+### What to Build Next (Phase 4.3: CreateSession + StreamEvents)
 
-**Files to Create**:
-1. `drunk_call_service/src/main.cpp`
-   - Copy template from `src/MAIN-CPP-TEMPLATE.txt` for logging header
-   - Start GLib main loop thread FIRST (before gRPC server)
-   - Initialize logger early
-   - See 4-GRPC-PLAN.md lines 377-415
+**Goal**: Implement session lifecycle and event streaming
 
-2. `drunk_call_service/src/call_service_impl.h`
-   - Skeleton with 13 RPC handler declarations
-   - See 4-GRPC-PLAN.md lines 416-440
+**Files to Modify**:
+1. `drunk_call_service/src/call_service_impl.cpp`
+   - Implement CreateSession RPC (lines 30-51)
+     - Create CallSession struct
+     - Create WebRTCSession (library level)
+     - Configure proxy, TURN servers, audio devices
+     - Set ICE/state callbacks → push events to ThreadSafeQueue
+     - Add session to SessionManager
+     - Return success/error
 
-3. `drunk_call_service/src/call_service_impl.cpp`
-   - Empty/stub implementations (return UNIMPLEMENTED)
-   - See 4-GRPC-PLAN.md lines 441-486
+   - Implement StreamEvents RPC (lines 137-165)
+     - Get session from SessionManager
+     - Loop: pop from event_queue (1s timeout)
+     - Write event to gRPC stream
+     - Check context->IsCancelled() for client disconnect
+     - Continue until session->active = false
 
-**Don't Implement Yet** (Phase 4.3+):
-- CreateSession logic (Phase 4.3)
-- SDP operations (Phase 4.4)
-- ICE handling (Phase 4.5)
+   - Implement EndSession RPC (lines 54-68)
+     - Get session from SessionManager
+     - Set active = false
+     - Shutdown event queue
+     - Stop WebRTC session
+     - Remove from SessionManager
 
-**Build & Test**:
+**Pattern Reference**:
+- Session creation: 4-GRPC-PLAN.md lines 408-486
+- Event streaming: GSTREAMER-THREADING.md lines 217-270
+- Thread safety: THREAD-INFRASTRUCTURE-USAGE.md
+
+**Testing**:
 ```bash
-# Add to CMakeLists.txt or create Makefile
-# Link: gRPC, GStreamer, protobuf, spdlog, pthread
-# Binary: drunk_call_service
+# Terminal 1: Start service
+LSAN_OPTIONS=suppressions=lsan.supp ./bin/drunk-call-service-linux --log-level DEBUG
 
-# Should start, log initialization, wait for RPCs
-./drunk_call_service
+# Terminal 2: Test CreateSession
+grpcurl -plaintext -import-path proto -proto call.proto \
+  -d '{"session_id": "test-1", "peer_jid": "alice@example.com"}' \
+  localhost:50051 call.CallService/CreateSession
+
+# Terminal 3: Test StreamEvents (should stream ICE candidates)
+grpcurl -plaintext -import-path proto -proto call.proto \
+  -d '{"session_id": "test-1"}' \
+  localhost:50051 call.CallService/StreamEvents
 ```
 
 **Success Criteria**:
-- [ ] Service starts without crashes
-- [ ] GLib main loop running in dedicated thread
-- [ ] gRPC server accepts connections (but returns UNIMPLEMENTED)
-- [ ] Clean shutdown (no deadlocks)
-- [ ] Logger writes to file (not stdout/stderr)
+- [ ] CreateSession creates WebRTC session, returns success
+- [ ] StreamEvents streams ICE candidates from GLib thread
+- [ ] EndSession cleans up gracefully
+- [ ] No crashes, no deadlocks
+- [ ] Logging shows session lifecycle events
 
 ---
 
@@ -107,11 +133,11 @@ Threading Model:
 
 **gRPC Service** (8 phases):
 - [x] Phase 4.1: Thread infrastructure
-- [ ] Phase 4.2: Service skeleton (main.cpp + stubs) ← **NEXT**
-- [ ] Phase 4.3: CreateSession + StreamEvents
+- [x] Phase 4.2: Service skeleton (main.cpp + stubs)
+- [ ] Phase 4.3: CreateSession + StreamEvents ← **NEXT**
 - [ ] Phase 4.4: SDP operations (CreateOffer, CreateAnswer, SetRemoteDescription)
 - [ ] Phase 4.5: ICE candidate handling
-- [ ] Phase 4.6: GetStats, SetMute
+- [ ] Phase 4.6: GetStats, SetMute, ListAudioDevices
 - [ ] Phase 4.7: EndSession + error handling
 - [ ] Phase 4.8: Integration testing with Python
 
@@ -160,6 +186,15 @@ Threading Model:
 - Tests renamed to test_step{num}_{name} pattern
 - Added test_step1b_audio_playback (2-second tone test)
 
+**Session 8** (2026-03-03): C++ Phase 4.2 - gRPC Service Skeleton
+- Created main.cpp with GLib thread + gRPC server (353 lines)
+- Created call_service_impl.{h,cpp} with 12 RPC handlers (stub implementations)
+- CMakeLists.txt: Platform-specific binary naming (drunk-call-service-linux)
+- CLI parameters: --port, --log-level, --log-path, --test-devices, --help
+- Memory leak suppression (lsan.supp for GLib/GStreamer)
+- Service verified: Starts, accepts connections, clean shutdown
+- Binary: 13MB debug, ~3MB release
+
 **Details**: All historical code samples are in git history. See commit logs for implementation details.
 
 ---
@@ -181,5 +216,5 @@ Threading Model:
 
 ---
 
-**Last Updated**: 2026-03-03 (Session 7 complete, Phase 4.1)
-**Next Session**: Start Phase 4.2 (gRPC service skeleton)
+**Last Updated**: 2026-03-03 (Session 8 complete, Phase 4.2)
+**Next Session**: Start Phase 4.3 (CreateSession + StreamEvents)
