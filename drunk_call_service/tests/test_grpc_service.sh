@@ -141,8 +141,8 @@ grpc_call "call.CallService/SetRemoteDescription" \
     "SetRemoteDescription (Phase 4.4 - should show WARN)"
 
 grpc_call "call.CallService/AddICECandidate" \
-    '{"session_id": "test-session-1", "candidate": "candidate:...", "sdp_mid": "audio", "sdp_mline_index": 0}' \
-    "AddICECandidate (Phase 4.5 - should show WARN)"
+    '{"session_id": "test-session-1", "candidate": "candidate:1 1 UDP 2130706431 192.168.1.100 54321 typ host", "sdp_mid": "0", "sdp_mline_index": 0}' \
+    "AddICECandidate (should succeed)"
 
 grpc_call "call.CallService/ListAudioDevices" \
     '{}' \

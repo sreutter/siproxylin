@@ -441,18 +441,41 @@ grpc::Status CallServiceImpl::AddICECandidate(
     const call::AddICECandidateRequest* request,
     call::Empty* response) {
 
+    std::string session_id = request->session_id();
     LOG_DEBUG("gRPC: AddICECandidate - session_id={}, mid={}, mline_index={}",
-              request->session_id(), request->sdp_mid(), request->sdp_mline_index());
-    LOG_WARN("Method not implemented: AddICECandidate (Phase 4.5)");
+              session_id, request->sdp_mid(), request->sdp_mline_index());
+    LOG_INFO("AddICECandidate: session_id={}, candidate_length={} bytes",
+             session_id, request->candidate().size());
 
-    // Phase 4.5: Implement ICE candidate addition
-    // - Get session from SessionManager
-    // - Create ICECandidate struct from request
-    // - Call webrtc->add_remote_ice_candidate(candidate)
-    // - Return success/error
+    try {
+        // Get session from SessionManager
+        auto session = session_manager_.get_session(session_id);
+        if (!session) {
+            LOG_ERROR("AddICECandidate: Session not found: {}", session_id);
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+        }
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "AddICECandidate not yet implemented (Phase 4.5)");
+        // Create ICECandidate struct from request
+        ICECandidate candidate;
+        candidate.candidate = request->candidate();
+        candidate.sdp_mid = request->sdp_mid();
+        candidate.sdp_mline_index = static_cast<uint32_t>(request->sdp_mline_index());
+
+        // Add remote ICE candidate to WebRTC session
+        if (!session->webrtc->add_remote_ice_candidate(candidate)) {
+            LOG_ERROR("AddICECandidate: Failed to add candidate: {}", session_id);
+            return grpc::Status(grpc::StatusCode::INTERNAL,
+                              "Failed to add ICE candidate");
+        }
+
+        LOG_DEBUG("AddICECandidate: Success, session={}", session_id);
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception in AddICECandidate: {}", e.what());
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                          std::string("Exception: ") + e.what());
+    }
 }
 
 // ============================================================================
