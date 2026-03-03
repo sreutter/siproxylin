@@ -18,6 +18,7 @@ from slixmpp.stanza import Iq
 from slixmpp.xmlstream import ET
 
 from drunk_call_hook.protocol.jingle_sdp_converter import JingleSDPConverter
+from drunk_call_hook.protocol.features import TrickleICEHandler
 
 
 class JingleAdapter:
@@ -68,6 +69,9 @@ class JingleAdapter:
 
         # Initialize SDP ↔ Jingle converter (pure conversion, no business logic)
         self.converter = JingleSDPConverter(logger=self.logger)
+
+        # Initialize Trickle ICE handler (manages deferred answer creation)
+        self.trickle_ice = TrickleICEHandler(timeout_seconds=5.0, logger=self.logger)
 
         # Track session_id → peer_jid mapping
         self.sessions: Dict[str, Dict[str, Any]] = {}
@@ -253,43 +257,22 @@ class JingleAdapter:
         offer_context = self.converter.extract_offer_context(jingle)
         self.sessions[sid]['offer_context'] = offer_context
 
-        # Count candidates in the offer SDP
-        candidate_count = sdp_offer.count('a=candidate:')
-        self.logger.info(f"Offer contains {candidate_count} candidates in SDP")
-
-        # TRICKLE ICE FIX: Detect trickle-only offers (0 candidates in SDP)
-        # Conversations.im sends offers with 0 candidates, relying entirely on trickle ICE.
-        # This causes a race condition: we call setRemoteDescription(offer) with 0 candidates,
-        # Pion starts ICE checking with 0 remote candidates, then candidates arrive 400ms later.
-        # Fix: Defer answer creation until we receive at least one candidate via transport-info.
-        if candidate_count == 0:
-            self.logger.info(f"[TRICKLE-ICE] Offer has 0 candidates - deferring answer until candidates arrive")
-            self.sessions[sid]['waiting_for_candidates'] = True
-            self.sessions[sid]['sdp_offer'] = sdp_offer  # Store for later
-
-            # Safety timeout: If no candidates arrive within 5 seconds, proceed anyway
-            # This prevents the call from hanging indefinitely if transport-info gets lost
-            import asyncio
-            async def candidates_timeout():
-                await asyncio.sleep(5.0)
-                if sid in self.sessions and self.sessions[sid].get('waiting_for_candidates', False):
-                    self.logger.warning(f"[TRICKLE-ICE] Timeout waiting for candidates for {sid} - proceeding anyway")
-                    self.sessions[sid]['waiting_for_candidates'] = False
-                    if self.on_candidates_ready:
-                        await self.on_candidates_ready(sid)
-
-            # Schedule the timeout (fire and forget)
-            asyncio.create_task(candidates_timeout())
-        else:
-            self.logger.info(f"[TRICKLE-ICE] Offer has {candidate_count} candidates - proceeding normally")
-            self.sessions[sid]['waiting_for_candidates'] = False
-
         self.logger.info(f"Incoming call from {peer_jid}: {media_types}")
 
-        # Notify AccountManager (this triggers answer creation in normal flow)
-        # For trickle-only offers, we'll defer the actual answer creation
-        if self.on_incoming_call:
-            await self.on_incoming_call(sid, peer_jid, sdp_offer, media_types)
+        # Check if this is a trickle-only offer (0 candidates)
+        if self.trickle_ice.should_defer_answer(sdp_offer):
+            # Defer answer creation until candidates arrive via transport-info
+            async def on_timeout(session_id: str):
+                # Timeout expired - proceed with answer creation anyway
+                if self.on_candidates_ready:
+                    await self.on_candidates_ready(session_id)
+
+            self.trickle_ice.defer_answer(sid, sdp_offer, peer_jid, media_types, on_timeout)
+            # Don't call on_incoming_call yet - wait for candidates
+        else:
+            # Normal offer with candidates - proceed immediately
+            if self.on_incoming_call:
+                await self.on_incoming_call(sid, peer_jid, sdp_offer, media_types)
 
     async def _handle_session_accept(self, iq: Iq, jingle, sid: str):
         """Handle call acceptance (session-accept)."""
@@ -338,13 +321,8 @@ class JingleAdapter:
         if self.on_call_answered:
             await self.on_call_answered(sid, sdp_answer)
 
-        # THEN flush pending local ICE candidates
-        if sid in self.pending_ice_candidates:
-            pending = self.pending_ice_candidates[sid]
-            self.logger.info(f"Flushing {len(pending)} queued ICE candidates for {sid}")
-            for cand in pending:
-                await self.send_ice_candidate(sid, cand)
-            del self.pending_ice_candidates[sid]
+        # THEN flush pending local ICE candidates (trickle ICE post-accept)
+        await self._flush_pending_candidates(sid)
 
     async def _handle_session_terminate(self, iq: Iq, jingle, sid: str):
         """Handle call termination (session-terminate)."""
@@ -427,24 +405,22 @@ class JingleAdapter:
         for candidate in candidates:
             self._track_ice_candidate(sid, candidate, 'received')
 
-        # TRICKLE ICE FIX: Check if we were waiting for candidates before creating answer
-        # This handles the race condition where Conversations sends trickle-only offers
-        waiting_for_candidates = session.get('waiting_for_candidates', False)
-        if waiting_for_candidates and len(candidates) > 0:
-            self.logger.info(f"[TRICKLE-ICE] First candidates arrived for {sid}, now proceeding with deferred answer creation")
-            session['waiting_for_candidates'] = False
-
-            # Add candidates to Pion FIRST before creating answer
+        # Check if we were waiting for candidates (trickle-only offer)
+        if self.trickle_ice.candidates_arrived(sid):
+            # First candidates arrived - add them FIRST, then trigger answer creation
             if self.on_ice_candidate_received:
                 for candidate in candidates:
                     await self.on_ice_candidate_received(sid, candidate)
 
-            # Now trigger the deferred answer creation
-            # We need to call the account manager's accept_call method which will create the answer
-            # The sdp_offer was already stored in session-initiate handler
-            # Signal to AccountManager that it can now proceed with answer creation
-            if self.on_candidates_ready:
-                await self.on_candidates_ready(sid)
+            # Get the deferred offer data and trigger answer creation
+            offer_data = self.trickle_ice.get_deferred_offer(sid)
+            if offer_data and self.on_incoming_call:
+                await self.on_incoming_call(
+                    sid,
+                    offer_data['peer_jid'],
+                    offer_data['sdp'],
+                    offer_data['media_types']
+                )
 
             return  # Don't process candidates again below
 
@@ -482,19 +458,22 @@ class JingleAdapter:
             self.logger.error(traceback.format_exc())
 
     async def _on_ice_candidate_from_webrtc(self, session_id: str, candidate: Dict[str, Any]):
-        """Bridge ICE candidates from CallManager to Jingle transport-info."""
-        # Check if session-initiate has been sent yet
-        if session_id in self.sessions:
-            state = self.sessions[session_id].get('state', 'new')
-            if state in ('proposing', 'proceeding', 'pending'):
-                # Session-initiate hasn't been sent yet - queue the candidate
-                if session_id not in self.pending_ice_candidates:
-                    self.pending_ice_candidates[session_id] = []
-                self.pending_ice_candidates[session_id].append(candidate)
-                self.logger.debug(f"Queued ICE candidate for {session_id} (state={state}, queue_size={len(self.pending_ice_candidates[session_id])})")
-                return
+        """
+        Bridge ICE candidates from CallManager to Jingle transport-info.
 
-        # Session-initiate sent (outgoing call) or session-accept sent (incoming call) - send candidate immediately
+        Uses centralized queuing decision (_should_queue_candidate).
+        Queued candidates are bulk-included in session-initiate/session-accept.
+        """
+        if self._should_queue_candidate(session_id):
+            # Queue candidate - will be included in session stanza
+            if session_id not in self.pending_ice_candidates:
+                self.pending_ice_candidates[session_id] = []
+            self.pending_ice_candidates[session_id].append(candidate)
+            state = self.sessions.get(session_id, {}).get('state', 'unknown')
+            self.logger.debug(f"Queued ICE candidate for {session_id} (state={state}, queue_size={len(self.pending_ice_candidates[session_id])})")
+            return
+
+        # Session established - send via transport-info (trickle ICE)
         await self.send_ice_candidate(session_id, candidate)
 
     # XEP-0353 (Jingle Message Initiation) methods
@@ -771,8 +750,13 @@ class JingleAdapter:
         for group in jingle_content.findall('{urn:xmpp:jingle:apps:grouping:0}group'):
             jingle_wrapper.append(group)
 
-        # HYBRID TRICKLE ICE: Include initial candidates in session-initiate
-        # (many implementations, including Conversations.im, expect this)
+        # HYBRID TRICKLE ICE: Bulk-include queued candidates in session-initiate
+        # Following Dino's pattern (xmpp-vala/xep/0176_jingle_ice_udp/transport_parameters.vala):
+        # - Queue candidates UNTIL session-initiate is sent
+        # - Include ALL queued candidates in session-initiate (not one-by-one)
+        # - After session-initiate sent, new candidates go via transport-info
+        # Many implementations (including Conversations.im) expect initial candidates
+        # in the session stanza, not sent separately first
         if sid in self.pending_ice_candidates:
             pending = self.pending_ice_candidates[sid]
             if pending:
@@ -859,19 +843,21 @@ class JingleAdapter:
         for group in jingle_content.findall('{urn:xmpp:jingle:apps:grouping:0}group'):
             jingle_wrapper.append(group)
 
-        # Candidates are already in the SDP (we wait for gathering to complete in Go)
+        # Note: Candidates are already in the SDP (Go waits for gathering complete)
         # The converter has already parsed and added them to the Jingle XML
-        # Clear pending queue to avoid duplicates (previously caused both components to have same ports)
+        # If any candidates arrived AFTER SDP creation, they're queued and will be
+        # sent via transport-info after this (no injection needed for answers)
+        # Just clear the queue to avoid duplicates
         if session_id in self.pending_ice_candidates:
             pending_count = len(self.pending_ice_candidates[session_id])
             del self.pending_ice_candidates[session_id]
-            self.logger.info(f"[HYBRID-ICE] Cleared {pending_count} pending candidates (already in SDP)")
+            self.logger.info(f"Cleared {pending_count} pending candidates (already in SDP or will trickle)")
 
         self.logger.info(f"Sending session-accept for {session_id}")
 
         # Debug: Log the Jingle XML we're sending
         from xml.etree import ElementTree as ET_format
-        jingle_xml = ET_format.tostring(jingle, encoding='unicode')
+        jingle_xml = ET_format.tostring(jingle_wrapper, encoding='unicode')
         self.logger.info(f"[JINGLE-ANSWER] {session_id}:\n{jingle_xml}")
 
         # Send stanza
@@ -1146,6 +1132,7 @@ class JingleAdapter:
         Handle ICE candidate from CallBridge (Go service).
 
         Sends the candidate to peer via Jingle transport-info.
+        Uses centralized queuing decision (_should_queue_candidate).
 
         Args:
             session_id: Jingle session ID
@@ -1153,32 +1140,17 @@ class JingleAdapter:
         """
         self.logger.debug(f"Received ICE candidate from Go for {session_id}")
 
-        # Check if session exists
-        if session_id not in self.sessions:
-            self.logger.warning(f"Session {session_id} not found, queueing ICE candidate")
+        # Use centralized queuing decision
+        if self._should_queue_candidate(session_id):
+            # Queue candidate - will be included in session stanza
             if session_id not in self.pending_ice_candidates:
                 self.pending_ice_candidates[session_id] = []
             self.pending_ice_candidates[session_id].append(candidate)
+            state = self.sessions.get(session_id, {}).get('state', 'unknown')
+            self.logger.debug(f"Queued ICE candidate for {session_id} (state={state}, queue_size={len(self.pending_ice_candidates[session_id])})")
             return
 
-        session = self.sessions[session_id]
-        peer_jid = session['peer_jid']
-        state = session.get('state', 'new')
-
-        # Check session state - queue candidates until session-accept sent/received
-        # Per XEP-0176: can send transport-info after session stanza exchange
-        if state in ('proposing', 'proceeding', 'pending', 'incoming', 'accepted'):
-            # Session-initiate not sent yet OR waiting for session-accept
-            # For incoming calls: 'incoming' = just received session-initiate, 'accepted' = we accepted but haven't sent session-accept yet
-            # Queue candidate to send later (avoids "No module is handling this query" from peer)
-            if session_id not in self.pending_ice_candidates:
-                self.pending_ice_candidates[session_id] = []
-            self.pending_ice_candidates[session_id].append(candidate)
-            queue_size = len(self.pending_ice_candidates[session_id])
-            self.logger.debug(f"Queued ICE candidate for {session_id} (state={state}, queue_size={queue_size})")
-            return
-
-        # State is 'active' or later - safe to send transport-info immediately (Trickle ICE)
+        # Session established - send via transport-info (trickle ICE)
         # Parse ICE candidate string
         candidate_str = candidate.get('candidate', '')
         sdp_mid = candidate.get('sdpMid', 'audio')  # Default to audio
@@ -1289,6 +1261,63 @@ class JingleAdapter:
                 f"[SDP-VALID] {session_id}: ICE credentials missing! "
                 f"ufrag={ice_ufrag}, pwd={ice_pwd}"
             )
+
+    def _should_queue_candidate(self, session_id: str) -> bool:
+        """
+        Determine if ICE candidate should be queued vs sent immediately.
+
+        Following Dino's pattern (xmpp-vala/xep/0176_jingle_ice_udp):
+        - Queue candidates UNTIL session stanza exchange completes
+        - Bulk-include queued candidates in session-initiate/session-accept
+        - After exchange, send new candidates individually via transport-info
+
+        Queueing states (before session stanza exchange):
+        - proposing: Outgoing call, propose sent, waiting for proceed
+        - proceeding: Outgoing call, proceed received, preparing session-initiate
+        - pending: Outgoing call, session-initiate sent, waiting for session-accept
+        - incoming: Incoming call, session-initiate received, preparing session-accept
+        - accepted: Incoming call, session-accept about to be sent
+
+        Active states (session stanza exchange complete):
+        - active: Session established, send via transport-info immediately
+
+        Args:
+            session_id: Jingle session ID
+
+        Returns:
+            True if candidate should be queued, False if it should be sent via transport-info
+        """
+        if session_id not in self.sessions:
+            # Session doesn't exist yet - queue it (rare edge case)
+            return True
+
+        state = self.sessions[session_id].get('state', 'new')
+
+        # Queue before session stanza exchange completes
+        # After 'active' state, candidates go via transport-info (trickle ICE)
+        return state in ('proposing', 'proceeding', 'pending', 'incoming', 'accepted')
+
+    async def _flush_pending_candidates(self, session_id: str) -> None:
+        """
+        Flush queued ICE candidates after session-accept exchange.
+
+        Called after:
+        - Receiving session-accept (outgoing call accepted by peer)
+        - Sending session-accept (incoming call accepted by us)
+
+        Note: For session-initiate, candidates are bulk-included in the stanza
+        (see _send_session_initiate lines 757-763). This method handles the
+        post-accept trickle ICE flow.
+
+        Args:
+            session_id: Jingle session ID
+        """
+        if session_id in self.pending_ice_candidates:
+            pending = self.pending_ice_candidates[session_id]
+            self.logger.info(f"Flushing {len(pending)} queued ICE candidates for {session_id}")
+            for cand in pending:
+                await self.send_ice_candidate(session_id, cand)
+            del self.pending_ice_candidates[session_id]
 
     def _track_ice_candidate(self, session_id: str, candidate: Dict[str, Any], direction: str):
         """
