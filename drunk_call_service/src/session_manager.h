@@ -89,6 +89,16 @@ public:
     void add_session(const std::string& session_id, std::shared_ptr<CallSession> session);
 
     /**
+     * Try to add session atomically (check-and-add under single lock).
+     * Returns false if session already exists.
+     *
+     * @param session_id Jingle session ID
+     * @param session Session object
+     * @return true if added, false if already exists
+     */
+    bool try_add_session(const std::string& session_id, std::shared_ptr<CallSession> session);
+
+    /**
      * Remove session from map (thread-safe).
      *
      * @param session_id Jingle session ID

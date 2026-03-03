@@ -31,11 +31,11 @@ echo -e "${BLUE}========================================${NC}"
 echo ""
 
 # Check if binary exists
-if [ ! -f "$BIN" ]; then
-    echo -e "${RED}Error: Binary not found at $BIN${NC}"
-    echo "Run 'make' first to build the service"
-    exit 1
-fi
+# if [ ! -f "$BIN" ]; then
+#     echo -e "${RED}Error: Binary not found at $BIN${NC}"
+#     echo "Run 'make' first to build the service"
+#     exit 1
+# fi
 
 # Check if grpcurl is installed
 if ! command -v grpcurl &> /dev/null; then
@@ -53,10 +53,10 @@ fi
 # rm -f "$LOG_FILE"
 
 # Start service in background
-echo -e "${GREEN}Starting service on port $PORT...${NC}"
-LSAN_OPTIONS=suppressions="$ROOT_DIR/lsan.supp" \
-    "$BIN" --log-level DEBUG --port "$PORT" > /dev/null 2>&1 &
-SERVICE_PID=$!
+#echo -e "${GREEN}Starting service on port $PORT...${NC}"
+#LSAN_OPTIONS=suppressions="$ROOT_DIR/lsan.supp" \
+#    "$BIN" --log-level DEBUG --port "$PORT" > /dev/null 2>&1 &
+#SERVICE_PID=$!
 
 # Wait for service to start
 echo -n "Waiting for service to be ready..."

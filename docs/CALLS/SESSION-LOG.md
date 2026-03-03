@@ -40,7 +40,38 @@
 - Threading model verified: GLib thread → ThreadSafeQueue → gRPC streaming thread
 - All success criteria met: No crashes, no deadlocks, clean session lifecycle
 
-### 🎯 Phase 4.4: SDP Operations - **NEXT**
+### 🎯 Phase 4.4: SDP Operations - **IN PROGRESS**
+
+**Status**: Partially implemented, debugging session lifecycle bug
+
+**Implemented**:
+- ✅ CreateOffer RPC (Pattern 1: gRPC → GLib → gRPC with condition variable)
+- ✅ CreateAnswer RPC (Pattern 1: gRPC → GLib → gRPC with condition variable)
+- ✅ SetRemoteDescription RPC (synchronous, no callback)
+- ✅ Added webrtc->start() call in CreateSession
+- ✅ Added SessionManager::try_add_session() for atomic check-and-add
+- ✅ Debug logging in CreateSession
+
+**Current Bug** (Session Disappearing Mystery):
+- CreateSession succeeds, adds session to SessionManager
+- CreateOffer succeeds, generates SDP (677 bytes), ICE candidates flowing
+- StreamEvents (300ms later): Session not found in SessionManager!
+- Something is removing the session between CreateOffer and StreamEvents
+
+**Hypotheses**:
+1. Session destructor being called prematurely (shared_ptr refcount issue?)
+2. Exception in CreateOffer causing early return but logging "Success"?
+3. SessionManager corruption or thread-safety bug?
+
+**Files Modified**:
+- `src/call_service_impl.cpp`: Implemented SDP ops, added start() call, debug logging
+- `src/session_manager.h/cpp`: Added try_add_session() method
+
+**Next Steps**:
+- Find why session disappears from SessionManager
+- Check shared_ptr lifecycle and refcounting
+- Verify SessionManager::try_add_session actually adds to map
+- Test with single session (no duplicate) to isolate the bug
 
 ---
 
@@ -71,33 +102,36 @@ Threading Model:
 - Use LOG_*() macros for all application logging
 - Follow patterns in GSTREAMER-THREADING.md (no creativity!)
 
-### What to Build Next (Phase 4.3: CreateSession + StreamEvents)
+### What to Build Next (Phase 4.4: SDP Operations)
 
-**Goal**: Implement session lifecycle and event streaming
+**Goal**: Implement SDP offer/answer creation and remote SDP handling
 
 **Files to Modify**:
 1. `drunk_call_service/src/call_service_impl.cpp`
-   - Implement CreateSession RPC (lines 30-51)
-     - Create CallSession struct
-     - Create WebRTCSession (library level)
-     - Configure proxy, TURN servers, audio devices
-     - Set ICE/state callbacks → push events to ThreadSafeQueue
-     - Add session to SessionManager
+
+   - Implement CreateOffer RPC
+     - Get session from SessionManager
+     - Set SDP callback with condition variable
+     - Call webrtc->create_offer()
+     - Wait for callback (max 10s timeout)
+     - Return SDP in response
+     - Pattern: GSTREAMER-THREADING.md Pattern 1 (gRPC → GLib → gRPC)
+
+   - Implement CreateAnswer RPC
+     - Get session from SessionManager
+     - Parse remote SDP from request
+     - Set SDP callback with condition variable
+     - Call webrtc->create_answer(remote_sdp)
+     - Wait for callback (max 10s timeout)
+     - Return SDP in response
+     - Pattern: Same as CreateOffer
+
+   - Implement SetRemoteDescription RPC
+     - Get session from SessionManager
+     - Parse remote SDP and type (offer/answer)
+     - Call webrtc->set_remote_description(sdp)
      - Return success/error
-
-   - Implement StreamEvents RPC (lines 137-165)
-     - Get session from SessionManager
-     - Loop: pop from event_queue (1s timeout)
-     - Write event to gRPC stream
-     - Check context->IsCancelled() for client disconnect
-     - Continue until session->active = false
-
-   - Implement EndSession RPC (lines 54-68)
-     - Get session from SessionManager
-     - Set active = false
-     - Shutdown event queue
-     - Stop WebRTC session
-     - Remove from SessionManager
+     - Pattern: Simple synchronous call (no callback)
 
 **Pattern Reference**:
 - Session creation: 4-GRPC-PLAN.md lines 408-486
@@ -202,15 +236,23 @@ grpcurl -plaintext -import-path proto -proto call.proto \
 - Service verified: Starts, accepts connections, clean shutdown
 - Binary: 13MB debug, ~3MB release
 
-**Session 9** (2026-03-03): C++ Phase 4.3 - CreateSession + StreamEvents
+**Session 9** (2026-03-03): C++ Phase 4.3 - CreateSession + StreamEvents + Graceful Shutdown
 - Implemented CreateSession RPC (creates WebRTCSession, sets ICE/state callbacks, adds to SessionManager)
 - Implemented StreamEvents RPC (blocks on ThreadSafeQueue, streams CallEvents to client)
 - Implemented EndSession RPC (marks inactive, shuts down queue, stops WebRTC, removes from manager)
 - Updated session_manager.h to use proto::CallEvent (forward declare call::CallEvent)
 - Updated CMakeLists.txt to include library sources (webrtc_session.cpp, session_manager.cpp, etc.)
 - Fixed TURN config (build URL for turn_servers vector) and state callback signature (MediaSession::ConnectionState)
-- Tested with grpcurl: CreateSession succeeds, StreamEvents blocks waiting for events, EndSession cleans up gracefully
-- Threading model verified: No deadlocks, clean lifecycle, GLib thread → queue → gRPC thread working correctly
+- Implemented graceful shutdown handlers for SIGINT/SIGTERM/gRPC
+  - cleanup_all_sessions() method: iterates all sessions, stops WebRTC, logs durations
+  - Shutdown RPC: calls cleanup + sets global g_shutdown_requested flag
+  - main.cpp Phase 8: 5-step shutdown sequence (sessions → gRPC → GLib → GStreamer → logger)
+  - Signal handler kept async-signal-safe (only sets flag, cleanup in main)
+- Added verbose DEBUG logging: "gRPC: {method}" for all RPCs, WARN for unimplemented methods
+- Created test_grpc_service.sh: comprehensive test script for all RPC methods
+- Makefile: Enhanced 'make clean' with detailed output (file counts, sizes)
+- Tested with grpcurl: CreateSession succeeds, StreamEvents blocks, EndSession cleans up, Shutdown exits cleanly
+- Threading model verified: No deadlocks, clean lifecycle, graceful shutdown working correctly
 
 **Details**: All historical code samples are in git history. See commit logs for implementation details.
 
@@ -233,5 +275,13 @@ grpcurl -plaintext -import-path proto -proto call.proto \
 
 ---
 
-**Last Updated**: 2026-03-03 (Session 9 complete, Phase 4.3)
-**Next Session**: Start Phase 4.4 (SDP operations: CreateOffer, CreateAnswer, SetRemoteDescription)
+**Last Updated**: 2026-03-03 (Session 10 in progress, Phase 4.4 SDP operations)
+**Next Session**: Debug session disappearing bug, complete Phase 4.4
+
+**Quick Test** (verify service works):
+```bash
+cd /home/m/claude/siproxylin/drunk_call_service
+make
+./tests/test_grpc_service.sh
+# Should show: CreateSession succeeds, unimplemented methods show WARN, clean shutdown
+```

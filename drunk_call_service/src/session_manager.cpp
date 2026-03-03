@@ -18,6 +18,16 @@ void SessionManager::add_session(const std::string& session_id,
     sessions_[session_id] = session;
 }
 
+bool SessionManager::try_add_session(const std::string& session_id,
+                                     std::shared_ptr<CallSession> session) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (sessions_.find(session_id) != sessions_.end()) {
+        return false;  // Already exists
+    }
+    sessions_[session_id] = session;
+    return true;
+}
+
 void SessionManager::remove_session(const std::string& session_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     sessions_.erase(session_id);

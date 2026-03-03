@@ -40,15 +40,6 @@ grpc::Status CallServiceImpl::CreateSession(
     LOG_INFO("CreateSession: session_id={}, peer={}", session_id, request->peer_jid());
 
     try {
-        // Check if session already exists
-        auto existing = session_manager_.get_session(session_id);
-        if (existing) {
-            LOG_WARN("Session already exists: {}", session_id);
-            response->set_success(false);
-            response->set_error("Session already exists");
-            return grpc::Status::OK;
-        }
-
         // Create session
         auto session = std::make_shared<CallSession>();
         session->session_id = session_id;
@@ -149,15 +140,38 @@ grpc::Status CallServiceImpl::CreateSession(
         });
 
         // Initialize WebRTC session
+        LOG_DEBUG("Session {}: Calling webrtc->initialize()", session_id);
         if (!session->webrtc->initialize(config)) {
             LOG_ERROR("Session {}: Failed to initialize WebRTC session", session_id);
             response->set_success(false);
             response->set_error("Failed to initialize WebRTC session");
             return grpc::Status::OK;
         }
+        LOG_DEBUG("Session {}: initialize() succeeded", session_id);
 
-        // Add to SessionManager
-        session_manager_.add_session(session_id, session);
+        // Start WebRTC pipeline (set to PLAYING state)
+        LOG_DEBUG("Session {}: Calling webrtc->start()", session_id);
+        if (!session->webrtc->start()) {
+            LOG_ERROR("Session {}: Failed to start WebRTC pipeline", session_id);
+            response->set_success(false);
+            response->set_error("Failed to start WebRTC pipeline");
+            return grpc::Status::OK;
+        }
+        LOG_DEBUG("Session {}: start() succeeded", session_id);
+
+        // Add to SessionManager (atomic check-and-add)
+        LOG_DEBUG("Session {}: Adding to SessionManager", session_id);
+        if (!session_manager_.try_add_session(session_id, session)) {
+            LOG_WARN("Session already exists: {}, cleaning up orphaned pipeline", session_id);
+            // CRITICAL: Stop the pipeline we just started to prevent resource leak
+            if (session->webrtc) {
+                session->webrtc->stop();
+            }
+            response->set_success(false);
+            response->set_error("Session already exists");
+            return grpc::Status::OK;
+        }
+        LOG_DEBUG("Session {}: Added to SessionManager successfully", session_id);
 
         LOG_INFO("Session created successfully: {}, peer: {}", session_id, request->peer_jid());
         response->set_success(true);
@@ -221,19 +235,72 @@ grpc::Status CallServiceImpl::CreateOffer(
     const call::CreateOfferRequest* request,
     call::SDPResponse* response) {
 
-    LOG_DEBUG("gRPC: CreateOffer - session_id={}", request->session_id());
-    LOG_WARN("Method not implemented: CreateOffer (Phase 4.4)");
+    std::string session_id = request->session_id();
+    LOG_DEBUG("gRPC: CreateOffer - session_id={}", session_id);
+    LOG_INFO("CreateOffer: session_id={}", session_id);
 
-    // Phase 4.4: Implement offer creation
-    // - Get session from SessionManager
-    // - Set SDP callback with condition variable
-    // - Call webrtc->create_offer()
-    // - Wait for callback (max 10s timeout)
-    // - Return SDP in response
-    // See: docs/CALLS/GSTREAMER-THREADING.md Pattern 1
+    try {
+        // Get session from SessionManager
+        auto session = session_manager_.get_session(session_id);
+        if (!session) {
+            LOG_ERROR("CreateOffer: Session not found: {}", session_id);
+            response->set_error("Session not found");
+            return grpc::Status::OK;
+        }
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "CreateOffer not yet implemented (Phase 4.4)");
+        // Pattern 1: gRPC → GLib → gRPC (using condition variable)
+        // CRITICAL: Use shared_ptr to keep state alive even if function returns early
+        // (e.g., on timeout or if session ends). The GLib callback may execute after
+        // this function returns, so stack variables would be destroyed -> crash!
+        struct SDPCallbackState {
+            std::mutex mutex;
+            std::condition_variable cv;
+            bool ready = false;
+            SDPMessage sdp;
+            std::string error;
+        };
+        auto state = std::make_shared<SDPCallbackState>();
+
+        // Set SDP callback (will be called from GLib thread)
+        session->webrtc->create_offer([state, session_id](bool success, const SDPMessage& sdp, const std::string& error) {
+            // THIS RUNS IN GLIB THREAD!
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (success) {
+                state->sdp = sdp;
+                LOG_DEBUG("CreateOffer: SDP generated for session {}", session_id);
+            } else {
+                state->error = error;
+                LOG_ERROR("CreateOffer: Failed to generate SDP for session {}: {}", session_id, error);
+            }
+            state->ready = true;
+            state->cv.notify_one();
+        });
+
+        // Wait for callback (max 10s timeout)
+        std::unique_lock<std::mutex> lock(state->mutex);
+        if (!state->cv.wait_for(lock, std::chrono::seconds(10), [&]{ return state->ready; })) {
+            LOG_ERROR("CreateOffer: Timeout waiting for SDP generation: {}", session_id);
+            response->set_error("Timeout waiting for SDP generation");
+            return grpc::Status::OK;
+        }
+
+        // Check result
+        if (!state->error.empty()) {
+            response->set_error(state->error);
+            return grpc::Status::OK;
+        }
+
+        // Return SDP in response
+        response->set_sdp(state->sdp.sdp_text);
+        LOG_INFO("CreateOffer: Success, session={}, sdp_size={} bytes",
+                 session_id, state->sdp.sdp_text.size());
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception in CreateOffer: {}", e.what());
+        response->set_error(std::string("Exception: ") + e.what());
+        return grpc::Status::OK;
+    }
 }
 
 grpc::Status CallServiceImpl::CreateAnswer(
@@ -241,19 +308,76 @@ grpc::Status CallServiceImpl::CreateAnswer(
     const call::CreateAnswerRequest* request,
     call::SDPResponse* response) {
 
-    LOG_DEBUG("gRPC: CreateAnswer - session_id={}", request->session_id());
-    LOG_WARN("Method not implemented: CreateAnswer (Phase 4.4)");
+    std::string session_id = request->session_id();
+    LOG_DEBUG("gRPC: CreateAnswer - session_id={}", session_id);
+    LOG_INFO("CreateAnswer: session_id={}, remote_sdp_size={} bytes",
+             session_id, request->remote_sdp().size());
 
-    // Phase 4.4: Implement answer creation
-    // - Get session from SessionManager
-    // - Parse remote SDP from request
-    // - Set SDP callback with condition variable
-    // - Call webrtc->create_answer(remote_sdp)
-    // - Wait for callback (max 10s timeout)
-    // - Return SDP in response
+    try {
+        // Get session from SessionManager
+        auto session = session_manager_.get_session(session_id);
+        if (!session) {
+            LOG_ERROR("CreateAnswer: Session not found: {}", session_id);
+            response->set_error("Session not found");
+            return grpc::Status::OK;
+        }
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "CreateAnswer not yet implemented (Phase 4.4)");
+        // Parse remote SDP (offer) from request
+        SDPMessage remote_offer(SDPMessage::Type::OFFER, request->remote_sdp());
+
+        // Pattern 1: gRPC → GLib → gRPC (using condition variable)
+        // CRITICAL: Use shared_ptr to keep state alive even if function returns early
+        // (e.g., on timeout or if session ends). The GLib callback may execute after
+        // this function returns, so stack variables would be destroyed -> crash!
+        struct SDPCallbackState {
+            std::mutex mutex;
+            std::condition_variable cv;
+            bool ready = false;
+            SDPMessage sdp;
+            std::string error;
+        };
+        auto state = std::make_shared<SDPCallbackState>();
+
+        // Set SDP callback and create answer (will be called from GLib thread)
+        session->webrtc->create_answer(remote_offer, [state, session_id](bool success, const SDPMessage& sdp, const std::string& error) {
+            // THIS RUNS IN GLIB THREAD!
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (success) {
+                state->sdp = sdp;
+                LOG_DEBUG("CreateAnswer: SDP generated for session {}", session_id);
+            } else {
+                state->error = error;
+                LOG_ERROR("CreateAnswer: Failed to generate SDP for session {}: {}", session_id, error);
+            }
+            state->ready = true;
+            state->cv.notify_one();
+        });
+
+        // Wait for callback (max 10s timeout)
+        std::unique_lock<std::mutex> lock(state->mutex);
+        if (!state->cv.wait_for(lock, std::chrono::seconds(10), [&]{ return state->ready; })) {
+            LOG_ERROR("CreateAnswer: Timeout waiting for SDP generation: {}", session_id);
+            response->set_error("Timeout waiting for SDP generation");
+            return grpc::Status::OK;
+        }
+
+        // Check result
+        if (!state->error.empty()) {
+            response->set_error(state->error);
+            return grpc::Status::OK;
+        }
+
+        // Return SDP in response
+        response->set_sdp(state->sdp.sdp_text);
+        LOG_INFO("CreateAnswer: Success, session={}, sdp_size={} bytes",
+                 session_id, state->sdp.sdp_text.size());
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception in CreateAnswer: {}", e.what());
+        response->set_error(std::string("Exception: ") + e.what());
+        return grpc::Status::OK;
+    }
 }
 
 grpc::Status CallServiceImpl::SetRemoteDescription(
@@ -261,18 +385,51 @@ grpc::Status CallServiceImpl::SetRemoteDescription(
     const call::SetRemoteDescriptionRequest* request,
     call::Empty* response) {
 
+    std::string session_id = request->session_id();
     LOG_DEBUG("gRPC: SetRemoteDescription - session_id={}, type={}",
-              request->session_id(), request->sdp_type());
-    LOG_WARN("Method not implemented: SetRemoteDescription (Phase 4.4)");
+              session_id, request->sdp_type());
+    LOG_INFO("SetRemoteDescription: session_id={}, type={}, sdp_size={} bytes",
+             session_id, request->sdp_type(), request->remote_sdp().size());
 
-    // Phase 4.4: Implement remote SDP setting
-    // - Get session from SessionManager
-    // - Parse remote SDP and type (offer/answer)
-    // - Call webrtc->set_remote_description(sdp)
-    // - Return success/error
+    try {
+        // Get session from SessionManager
+        auto session = session_manager_.get_session(session_id);
+        if (!session) {
+            LOG_ERROR("SetRemoteDescription: Session not found: {}", session_id);
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+        }
 
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        "SetRemoteDescription not yet implemented (Phase 4.4)");
+        // Parse remote SDP type
+        SDPMessage::Type sdp_type;
+        std::string type_str = request->sdp_type();
+        if (type_str == "offer") {
+            sdp_type = SDPMessage::Type::OFFER;
+        } else if (type_str == "answer") {
+            sdp_type = SDPMessage::Type::ANSWER;
+        } else {
+            LOG_ERROR("SetRemoteDescription: Invalid SDP type: {}", type_str);
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                              "Invalid SDP type (must be 'offer' or 'answer')");
+        }
+
+        // Create SDPMessage
+        SDPMessage remote_sdp(sdp_type, request->remote_sdp());
+
+        // Set remote description (synchronous call, no callback needed)
+        if (!session->webrtc->set_remote_description(remote_sdp)) {
+            LOG_ERROR("SetRemoteDescription: Failed to set remote description: {}", session_id);
+            return grpc::Status(grpc::StatusCode::INTERNAL,
+                              "Failed to set remote description");
+        }
+
+        LOG_INFO("SetRemoteDescription: Success, session={}", session_id);
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception in SetRemoteDescription: {}", e.what());
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                          std::string("Exception: ") + e.what());
+    }
 }
 
 // ============================================================================

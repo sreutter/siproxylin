@@ -166,10 +166,11 @@ void signal_handler(int signum) {
     // Set shutdown flag (atomic, signal-safe)
     g_shutdown_requested = true;
 
-    // Quit GLib main loop if running (signal-safe)
-    if (g_main_loop) {
-        g_main_loop_quit(g_main_loop);
-    }
+    // CRITICAL: Do NOT quit GLib loop here!
+    // If we quit the loop before cleaning up sessions, webrtc->stop() will hang
+    // because it needs the GLib thread to process GStreamer cleanup.
+    // The main shutdown sequence (Phase 8.3) will quit the loop AFTER
+    // cleaning up sessions (Phase 8.1).
 
     // Note: Session cleanup happens in main() shutdown sequence,
     // not here, to avoid async-signal-safety issues
@@ -325,9 +326,9 @@ int main(int argc, char* argv[]) {
     // gRPC server handles requests in thread pool
     // GLib thread processes GStreamer callbacks
 
-    // Check shutdown flag periodically (every 1s)
+    // Check shutdown flag periodically (every 100ms for responsiveness)
     while (!g_shutdown_requested) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     LOG_INFO("Shutdown signal received, cleaning up...");
