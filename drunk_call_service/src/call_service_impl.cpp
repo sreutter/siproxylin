@@ -73,6 +73,7 @@ grpc::Status CallServiceImpl::CreateSession(
         // TURN config
         if (!request->turn_server().empty()) {
             // Build TURN URL: turn://username:password@host:port
+            // NOTE: Username and password should be URL-encoded by Python before sending
             std::string turn_url = "turn://";
             if (!request->turn_username().empty()) {
                 turn_url += request->turn_username();

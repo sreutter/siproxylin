@@ -18,7 +18,7 @@ from slixmpp.stanza import Iq
 from slixmpp.xmlstream import ET
 
 from drunk_call_hook.protocol.jingle_sdp_converter import JingleSDPConverter
-from drunk_call_hook.protocol.features import TrickleICEHandler
+from drunk_call_hook.protocol.features.trickle_ice import TrickleICEHandler, IncomingCallState
 
 
 class JingleAdapter:
@@ -183,6 +183,18 @@ class JingleAdapter:
 
         self.logger.info(f"Jingle IQ: action={action}, sid={sid}, from={iq['from']}")
 
+        # Send IQ result (ACK) IMMEDIATELY before processing (XEP-0166 compliance)
+        # The spec requires: "The responder acknowledges receipt" before processing.
+        # Previously, we sent ACK after handler completion, which violated the spec
+        # and caused session-accept to be sent before session-initiate was ACKed.
+        # This caused Dino to stay in "Calling" state instead of "Connected".
+        try:
+            iq.reply().send()
+        except Exception as e:
+            self.logger.error(f"Failed to send IQ ACK for {action}: {e}")
+            return
+
+        # Now process the action (can take time for session-initiate/accept)
         try:
             if action == 'session-initiate':
                 await self._handle_session_initiate(iq, jingle, sid)
@@ -194,21 +206,15 @@ class JingleAdapter:
                 await self._handle_transport_info(iq, jingle, sid)
             else:
                 self.logger.warning(f"Unknown Jingle action: {action}")
-                error_iq = iq.reply()
-                error_iq['type'] = 'error'
-                error_iq.send()
+                # Note: We already sent result ACK above, so unknown actions are just logged
                 return
-
-            # Send IQ result (ACK)
-            iq.reply().send()
 
         except Exception as e:
             self.logger.error(f"Error handling Jingle IQ: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
-            error_iq = iq.reply()
-            error_iq['type'] = 'error'
-            error_iq.send()
+            # Note: We already sent IQ result, can't send error now
+            # The peer will see our ACK but we failed to process internally
 
     async def _handle_session_initiate(self, iq: Iq, jingle, sid: str):
         """Handle incoming call (session-initiate)."""
@@ -258,6 +264,9 @@ class JingleAdapter:
         self.sessions[sid]['offer_context'] = offer_context
 
         self.logger.info(f"Incoming call from {peer_jid}: {media_types}")
+
+        # Set initial state for incoming call (enables buffering of transport-info)
+        self.trickle_ice.set_incoming_state(sid, IncomingCallState.HAVE_OFFER)
 
         # Check if this is a trickle-only offer (0 candidates)
         if self.trickle_ice.should_defer_answer(sdp_offer):
@@ -359,6 +368,9 @@ class JingleAdapter:
         if sid in self.sessions:
             del self.sessions[sid]
 
+        # Clean up trickle ICE state and buffered candidates
+        self.trickle_ice.cleanup_incoming_call(sid)
+
         # Notify AccountManager
         if self.on_call_terminated:
             await self.on_call_terminated(sid, reason)
@@ -405,26 +417,27 @@ class JingleAdapter:
         for candidate in candidates:
             self._track_ice_candidate(sid, candidate, 'received')
 
-        # Check if we were waiting for candidates (trickle-only offer)
-        if self.trickle_ice.candidates_arrived(sid):
-            # First candidates arrived - add them FIRST, then trigger answer creation
-            if self.on_ice_candidate_received:
-                for candidate in candidates:
-                    await self.on_ice_candidate_received(sid, candidate)
+        # Check if we should buffer these candidates (incoming call not ready yet)
+        if self.trickle_ice.should_buffer_candidates(sid):
+            # Buffer candidates - they'll be processed after CreateAnswer completes
+            self.trickle_ice.buffer_candidates(sid, candidates)
 
-            # Get the deferred offer data and trigger answer creation
-            offer_data = self.trickle_ice.get_deferred_offer(sid)
-            if offer_data and self.on_incoming_call:
-                await self.on_incoming_call(
-                    sid,
-                    offer_data['peer_jid'],
-                    offer_data['sdp'],
-                    offer_data['media_types']
-                )
+            # Check if we were waiting for candidates (trickle-only offer)
+            if self.trickle_ice.candidates_arrived(sid):
+                # First candidates arrived - trigger answer creation
+                # (candidates already buffered above, will be processed later)
+                offer_data = self.trickle_ice.get_deferred_offer(sid)
+                if offer_data and self.on_incoming_call:
+                    await self.on_incoming_call(
+                        sid,
+                        offer_data['peer_jid'],
+                        offer_data['sdp'],
+                        offer_data['media_types']
+                    )
 
-            return  # Don't process candidates again below
+            return  # Candidates buffered, don't process yet
 
-        # Normal flow: add candidates to ongoing session
+        # Normal flow: session is ready, add candidates immediately
         if self.on_ice_candidate_received:
             for candidate in candidates:
                 await self.on_ice_candidate_received(sid, candidate)
@@ -843,15 +856,16 @@ class JingleAdapter:
         for group in jingle_content.findall('{urn:xmpp:jingle:apps:grouping:0}group'):
             jingle_wrapper.append(group)
 
-        # Note: Candidates are already in the SDP (Go waits for gathering complete)
-        # The converter has already parsed and added them to the Jingle XML
-        # If any candidates arrived AFTER SDP creation, they're queued and will be
-        # sent via transport-info after this (no injection needed for answers)
-        # Just clear the queue to avoid duplicates
+        # C++ uses trickle ICE - candidates arrive via callback after SDP creation
+        # Inject any queued candidates into session-accept (hybrid trickle ICE)
+        # This matches the pattern used for session-initiate (outgoing calls)
         if session_id in self.pending_ice_candidates:
-            pending_count = len(self.pending_ice_candidates[session_id])
+            pending = self.pending_ice_candidates[session_id]
+            if pending:
+                self.logger.info(f"[HYBRID-ICE] Including {len(pending)} initial candidates in session-accept")
+                self._inject_candidates_into_jingle(jingle_wrapper, pending)
+            # Clear the queue - candidates are now in the stanza
             del self.pending_ice_candidates[session_id]
-            self.logger.info(f"Cleared {pending_count} pending candidates (already in SDP or will trickle)")
 
         self.logger.info(f"Sending session-accept for {session_id}")
 
@@ -938,9 +952,12 @@ class JingleAdapter:
         # Add content with transport candidates
         content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
         content.set('creator', 'initiator')
-        # Use sdpMid directly as content name (e.g., '0')
+        # Use sdpMid directly as content name (e.g., '0', 'audio')
         # This MUST match the content name from session-initiate/session-accept
-        sdp_mid = candidate.get('sdpMid', '0')
+        # C++ may send empty sdpMid, so default to 'audio' for audio-only calls
+        sdp_mid = candidate.get('sdpMid', 'audio')
+        if not sdp_mid:  # Handle empty string from C++
+            sdp_mid = 'audio'
         content.set('name', sdp_mid)
 
         transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
@@ -1044,6 +1061,9 @@ class JingleAdapter:
             del self.pending_ice_candidates[session_id]
             self.logger.debug(f"Cleaned up {candidate_count} pending ICE candidates for {session_id}")
 
+        # Clean up trickle ICE state and buffered candidates
+        self.trickle_ice.cleanup_incoming_call(session_id)
+
     # Helper methods for Jingle XML building
 
     def _inject_candidates_into_jingle(self, jingle: ET.Element, candidates: List[Dict[str, Any]]):
@@ -1129,84 +1149,107 @@ class JingleAdapter:
 
     async def _on_bridge_ice_candidate(self, session_id: str, candidate: Dict[str, Any]):
         """
-        Handle ICE candidate from CallBridge (Go service).
+        Handle ICE candidate from CallBridge (C++ service).
 
-        Sends the candidate to peer via Jingle transport-info.
-        Uses centralized queuing decision (_should_queue_candidate).
+        Routing logic:
+        - OUTGOING calls: Queue until session-initiate sent, then send via transport-info
+        - INCOMING calls: Send immediately via transport-info (trickle ICE)
 
         Args:
             session_id: Jingle session ID
             candidate: ICE candidate dict with 'candidate', 'sdpMid', 'sdpMLineIndex'
         """
-        self.logger.debug(f"Received ICE candidate from Go for {session_id}")
+        self.logger.debug(f"Received ICE candidate from C++ for {session_id}")
 
-        # Use centralized queuing decision
+        # Check if we should queue (only for outgoing calls before session-initiate)
         if self._should_queue_candidate(session_id):
-            # Queue candidate - will be included in session stanza
+            # OUTGOING CALL PATH: Queue until session-initiate is sent
             if session_id not in self.pending_ice_candidates:
                 self.pending_ice_candidates[session_id] = []
             self.pending_ice_candidates[session_id].append(candidate)
             state = self.sessions.get(session_id, {}).get('state', 'unknown')
-            self.logger.debug(f"Queued ICE candidate for {session_id} (state={state}, queue_size={len(self.pending_ice_candidates[session_id])})")
+            self.logger.debug(f"[OUTGOING] Queued ICE candidate for {session_id} (state={state}, queue_size={len(self.pending_ice_candidates[session_id])})")
             return
 
-        # Session established - send via transport-info (trickle ICE)
-        # Parse ICE candidate string
-        candidate_str = candidate.get('candidate', '')
-        sdp_mid = candidate.get('sdpMid', 'audio')  # Default to audio
-        sdp_mline_index = candidate.get('sdpMLineIndex', 0)
-
-        # Convert SDP candidate string to Jingle XML format
-        # Example: "candidate:1 1 udp 2130706431 192.168.1.100 54321 typ host"
-        parts = candidate_str.split()
-        if len(parts) < 8:
-            self.logger.warning(f"Invalid ICE candidate format: {candidate_str}")
-            return
-
+        # TRICKLE ICE PATH: Send immediately via transport-info
+        # Delegate to existing send_ice_candidate method (handles all XML correctly)
+        self.logger.debug(f"[TRICKLE-ICE] Sending candidate via transport-info for {session_id}")
         try:
-            foundation = parts[0].split(':')[1]  # Remove "candidate:" prefix
-            component = parts[1]
-            protocol = parts[2]
-            priority = parts[3]
-            ip = parts[4]
-            port = parts[5]
-            # parts[6] is "typ"
-            cand_type = parts[7]
-
-            # Build Jingle transport-info IQ
-            iq = self.xmpp.make_iq_set(ito=peer_jid)
-            # Access underlying XML element (slixmpp Iq stanza)
-            jingle = ET.SubElement(iq.xml, '{urn:xmpp:jingle:1}jingle')
-            jingle.set('action', 'transport-info')
-            jingle.set('sid', session_id)
-
-            # Add content element
-            content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
-            content.set('creator', session.get('creator', 'initiator'))
-            content.set('name', sdp_mid)
-
-            # Add transport element with candidate
-            transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
-            candidate_elem = ET.SubElement(transport, '{urn:xmpp:jingle:transports:ice-udp:1}candidate')
-            candidate_elem.set('component', component)
-            candidate_elem.set('foundation', foundation)
-            candidate_elem.set('generation', '0')
-            candidate_elem.set('id', f"cand-{foundation}")
-            candidate_elem.set('ip', ip)
-            candidate_elem.set('network', '0')
-            candidate_elem.set('port', port)
-            candidate_elem.set('priority', priority)
-            candidate_elem.set('protocol', protocol)
-            candidate_elem.set('type', cand_type)
-
-            # Send transport-info
-            iq.send()
-            self.logger.debug(f"Sent ICE candidate transport-info to {peer_jid}")
-
+            await self.send_ice_candidate(session_id, candidate)
         except Exception as e:
             self.logger.error(f"Error sending ICE candidate: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
+
+        # ===================================================================
+        # COMMENTED OUT: Alternative inline implementation (saved for standard ICE)
+        # May be needed if standard ICE requires different XML structure
+        # ===================================================================
+        # # Get peer JID and session data
+        # if session_id not in self.sessions:
+        #     self.logger.warning(f"Cannot send ICE candidate - session {session_id} not found")
+        #     return
+        #
+        # session = self.sessions[session_id]
+        # peer_jid = session['peer_jid']
+        #
+        # # Parse ICE candidate string
+        # candidate_str = candidate.get('candidate', '')
+        # sdp_mid = candidate.get('sdpMid', 'audio')  # Default to audio
+        # sdp_mline_index = candidate.get('sdpMLineIndex', 0)
+        #
+        # # Convert SDP candidate string to Jingle XML format
+        # # Example: "candidate:1 1 udp 2130706431 192.168.1.100 54321 typ host"
+        # parts = candidate_str.split()
+        # if len(parts) < 8:
+        #     self.logger.warning(f"Invalid ICE candidate format: {candidate_str}")
+        #     return
+        #
+        # try:
+        #     foundation = parts[0].split(':')[1]  # Remove "candidate:" prefix
+        #     component = parts[1]
+        #     protocol = parts[2]
+        #     priority = parts[3]
+        #     ip = parts[4]
+        #     port = parts[5]
+        #     # parts[6] is "typ"
+        #     cand_type = parts[7]
+        #
+        #     # Build Jingle transport-info IQ
+        #     iq = self.xmpp.make_iq_set(ito=peer_jid)
+        #     # Access underlying XML element (slixmpp Iq stanza)
+        #     jingle = ET.SubElement(iq.xml, '{urn:xmpp:jingle:1}jingle')
+        #     jingle.set('action', 'transport-info')
+        #     jingle.set('sid', session_id)
+        #
+        #     # Add content element
+        #     content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
+        #     content.set('creator', session.get('creator', 'initiator'))
+        #     content.set('name', sdp_mid)
+        #
+        #     # Add transport element with candidate
+        #     transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
+        #     candidate_elem = ET.SubElement(transport, '{urn:xmpp:jingle:transports:ice-udp:1}candidate')
+        #     candidate_elem.set('component', component)
+        #     candidate_elem.set('foundation', foundation)
+        #     candidate_elem.set('generation', '0')
+        #     candidate_elem.set('id', f"cand-{foundation}")
+        #     candidate_elem.set('ip', ip)
+        #     candidate_elem.set('network', '0')
+        #     candidate_elem.set('port', port)
+        #     candidate_elem.set('priority', priority)
+        #     candidate_elem.set('protocol', protocol)
+        #     candidate_elem.set('type', cand_type)
+        #
+        #     # Send transport-info
+        #     await iq.send()
+        #     self.logger.debug(f"[TRICKLE-ICE] Sent candidate via transport-info to {peer_jid}")
+        #
+        # except Exception as e:
+        #     self.logger.error(f"Error sending ICE candidate: {e}")
+        #     import traceback
+        #     self.logger.error(traceback.format_exc())
+        # ===================================================================
 
     async def _on_bridge_connection_state(self, session_id: str, state: str):
         """
@@ -1266,20 +1309,29 @@ class JingleAdapter:
         """
         Determine if ICE candidate should be queued vs sent immediately.
 
-        Following Dino's pattern (xmpp-vala/xep/0176_jingle_ice_udp):
-        - Queue candidates UNTIL session stanza exchange completes
-        - Bulk-include queued candidates in session-initiate/session-accept
-        - After exchange, send new candidates individually via transport-info
+        ==================================================================================
+        TRICKLE ICE STRATEGY (C++ service always uses trickle ICE):
+        ==================================================================================
 
-        Queueing states (before session stanza exchange):
+        OUTGOING CALLS (we initiate):
+        - Queue candidates while preparing session-initiate (states: proposing, proceeding)
+        - Include queued candidates in session-initiate stanza (hybrid approach)
+        - After session-initiate sent (state: pending/active), send via transport-info
+
+        INCOMING CALLS (peer initiates):
+        - NO QUEUING - send all candidates via transport-info (pure trickle ICE)
+        - Rationale: Session already established in Python when C++ generates candidates
+        - States: incoming, accepted, active → always send via transport-info
+
+        ==================================================================================
+
+        State definitions:
         - proposing: Outgoing call, propose sent, waiting for proceed
         - proceeding: Outgoing call, proceed received, preparing session-initiate
         - pending: Outgoing call, session-initiate sent, waiting for session-accept
         - incoming: Incoming call, session-initiate received, preparing session-accept
         - accepted: Incoming call, session-accept about to be sent
-
-        Active states (session stanza exchange complete):
-        - active: Session established, send via transport-info immediately
+        - active: Session established (both directions)
 
         Args:
             session_id: Jingle session ID
@@ -1293,9 +1345,8 @@ class JingleAdapter:
 
         state = self.sessions[session_id].get('state', 'new')
 
-        # Queue before session stanza exchange completes
-        # After 'active' state, candidates go via transport-info (trickle ICE)
-        return state in ('proposing', 'proceeding', 'pending', 'incoming', 'accepted')
+        # ONLY queue for outgoing calls before session-initiate is sent
+        return state in ('proposing', 'proceeding', 'pending')
 
     async def _flush_pending_candidates(self, session_id: str) -> None:
         """

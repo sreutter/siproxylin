@@ -92,7 +92,7 @@ class GoCallService:
             stdout_file = open(go_log_file.parent / "drunk-call-service-stdout.log", 'a')
 
             self._process = subprocess.Popen(
-                [binary_path, "-log-level", "DEBUG", "-log-path", str(go_log_file)],
+                [binary_path, "--log-level", "DEBUG", "--log-path", str(go_log_file)],
                 stdout=stdout_file,  # Capture libnice debug output!
                 stderr=stderr_file,
                 env=env,

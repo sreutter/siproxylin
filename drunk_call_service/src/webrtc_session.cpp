@@ -206,6 +206,47 @@ void WebRTCSession::create_answer(const SDPMessage &remote_offer, SDPCallback ca
 
         LOG_INFO("[WebRTCSession] Creating answer...");
 
+        // ========================================================================
+        // FIX ATTEMPT: Set transceiver direction BEFORE setting remote description
+        // ========================================================================
+        LOG_INFO("[WebRTCSession] Setting transceiver direction BEFORE set-remote-description");
+        GArray* transceivers_pre = nullptr;
+        g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers_pre);
+
+        if (transceivers_pre && transceivers_pre->len > 0) {
+            LOG_INFO("[WebRTCSession] PRE: Found {} transceiver(s), setting direction to SENDRECV",
+                     transceivers_pre->len);
+
+            for (guint i = 0; i < transceivers_pre->len; i++) {
+                GstWebRTCRTPTransceiver* trans =
+                    g_array_index(transceivers_pre, GstWebRTCRTPTransceiver*, i);
+
+                GstWebRTCRTPTransceiverDirection dir;
+                g_object_get(trans, "direction", &dir, NULL);
+                LOG_INFO("[WebRTCSession] PRE: Transceiver {} direction={}", i, dir);
+
+                // Check sender state
+                GstWebRTCRTPSender *sender = nullptr;
+                g_object_get(trans, "sender", &sender, NULL);
+                if (sender) {
+                    LOG_INFO("[WebRTCSession] PRE: Transceiver {} has sender", i);
+                    g_object_unref(sender);
+                } else {
+                    LOG_WARN("[WebRTCSession] PRE: Transceiver {} has NO sender!", i);
+                }
+
+                g_object_set(trans, "direction",
+                            GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, NULL);
+
+                g_object_get(trans, "direction", &dir, NULL);
+                LOG_INFO("[WebRTCSession] PRE: Transceiver {} direction set to {}", i, dir);
+            }
+            g_array_unref(transceivers_pre);
+        } else {
+            LOG_INFO("[WebRTCSession] PRE: No transceivers yet (will be created from offer)");
+        }
+        // ========================================================================
+
         // First set remote description (the offer)
         if (!set_remote_description(remote_offer)) {
             LOG_ERROR("[WebRTCSession] Failed to set remote offer");
@@ -1036,7 +1077,61 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
 
 void WebRTCSession::on_offer_set_for_answer() {
     try {
-        LOG_INFO("[WebRTCSession] Offer set, creating answer...");
+        LOG_INFO("[WebRTCSession] Offer set, configuring transceivers...");
+
+        // ========================================================================
+        // FIX: Set transceiver direction to SENDRECV before creating answer
+        //
+        // Root Cause: webrtcbin defaults transceivers to RECVONLY when receiving
+        // an offer, resulting in SDP answer with "a=recvonly" instead of
+        // "a=sendrecv". This prevents audio from flowing in our send direction.
+        //
+        // Solution: Explicitly set all transceivers to SENDRECV direction before
+        // calling create-answer. This matches the behavior of the remote offer
+        // which has "a=sendrecv" (Jingle senders="both").
+        //
+        // References:
+        // - GStreamer test: gst-plugins-bad/tests/check/elements/webrtcbin.c:3994
+        // - WebRTC spec: Transceiver direction negotiation
+        // ========================================================================
+        GArray* transceivers = nullptr;
+        g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers);
+
+        if (transceivers && transceivers->len > 0) {
+            LOG_INFO("[WebRTCSession] Found {} transceiver(s), setting direction to SENDRECV",
+                     transceivers->len);
+
+            if (transceivers->len > 1) {
+                LOG_WARN("[WebRTCSession] Multiple transceivers found! This might indicate a problem.");
+            }
+
+            for (guint i = 0; i < transceivers->len; i++) {
+                GstWebRTCRTPTransceiver* trans =
+                    g_array_index(transceivers, GstWebRTCRTPTransceiver*, i);
+
+                // Check current direction
+                GstWebRTCRTPTransceiverDirection dir, current_dir;
+                g_object_get(trans, "direction", &dir, NULL);
+                g_object_get(trans, "current-direction", &current_dir, NULL);
+                LOG_INFO("[WebRTCSession] Transceiver {} BEFORE: direction={}, current-direction={}",
+                         i, dir, current_dir);
+
+                // Set direction to sendrecv (bidirectional audio)
+                g_object_set(trans, "direction",
+                            GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, NULL);
+
+                // Verify it was set
+                g_object_get(trans, "direction", &dir, NULL);
+                g_object_get(trans, "current-direction", &current_dir, NULL);
+                LOG_INFO("[WebRTCSession] Transceiver {} AFTER: direction={}, current-direction={} (expect 4=SENDRECV)",
+                         i, dir, current_dir);
+            }
+            g_array_unref(transceivers);
+        } else {
+            LOG_WARN("[WebRTCSession] No transceivers found after setting remote offer - "
+                       "this may cause audio issues");
+        }
+        // ========================================================================
 
         // Now create answer
         GstPromise *promise = gst_promise_new_with_change_func(

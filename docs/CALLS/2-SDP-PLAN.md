@@ -719,4 +719,153 @@ Answerer ICE candidates: 15 ✓
 
 ---
 
-**Last Updated**: 2026-03-02
+---
+
+## CRITICAL LESSON LEARNED: Transceiver Direction & Timing (2026-03-04)
+
+### The Problem We Solved
+
+**Symptom**: Incoming calls showed "connected" on our side, but "calling" on peer side (Dino)
+
+**Root Cause**: webrtcbin creates transceivers with **default RECVONLY direction** when processing incoming offers, unless explicitly configured otherwise.
+
+### The BINGO Fix (Session 147d9e2e - What Made Both Ends Connect)
+
+**Change Made**: Added transceiver direction configuration **BEFORE** calling `set-remote-description` in `create_answer()` method.
+
+**Key Code** (webrtc_session.cpp:209-247):
+```cpp
+// Get existing transceivers (created when we linked audio_src to webrtcbin)
+GArray* transceivers_pre = nullptr;
+g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers_pre);
+
+// Set direction to SENDRECV BEFORE processing remote offer
+for (guint i = 0; i < transceivers_pre->len; i++) {
+    GstWebRTCRTPTransceiver* trans = g_array_index(transceivers_pre, ...);
+    g_object_set(trans, "direction",
+                GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, NULL);
+}
+
+// THEN set remote description
+set_remote_description(remote_offer);
+```
+
+**Why This Works**:
+1. When we create pipeline and link audio_src → webrtcbin, a transceiver is implicitly created
+2. This transceiver defaults to direction=4 (SENDRECV) initially
+3. But when webrtcbin processes a remote offer, it may change transceiver direction based on offer
+4. By setting direction=SENDRECV BEFORE `set-remote-description`, we ensure our intent is preserved
+5. GStreamer's state machine then properly negotiates connection on both sides
+
+**Evidence from BINGO logs**:
+```
+[14:21:27.562] PRE: Found 1 transceiver(s), setting direction to SENDRECV
+[14:21:27.562] PRE: Transceiver 0 direction=4
+[14:21:27.562] PRE: Transceiver 0 has sender
+[14:21:27.984] (after set-remote-description)
+[14:21:27.984] Transceiver 0 BEFORE: direction=4, current-direction=4
+✅ Result: BOTH ENDS SHOWED CONNECTED (call connected successfully)
+```
+
+### What We Tried After BINGO (That BROKE It)
+
+**Mistake**: Added a 500ms polling loop to wait for audio pipeline caps negotiation
+
+**Rationale** (seemed logical at the time):
+- GPT-5 analysis suggested caps must be negotiated before creating answer
+- Diagnostic logs showed "audio_src pad has NO caps negotiated yet"
+- Added wait loop: check every 10ms for caps, up to 500ms max
+
+**Code That Broke Things** (lines 209-273, now REMOVED):
+```cpp
+// Wait up to 500ms for webrtcbin sink pad to have caps
+while (wait_count < max_wait_ms / check_interval_ms) {
+    sink_caps = gst_pad_get_current_caps(webrtc_sink);
+    if (sink_caps) break;
+    g_usleep(check_interval_ms * 1000);  // 10ms sleep
+    wait_count++;
+}
+// Caps negotiated after ~300ms
+```
+
+**Why This Broke Connection**:
+
+The 300ms delay introduced **timing-sensitive race conditions** in GStreamer's WebRTC state machine:
+
+1. **ICE Candidate Timing Disruption**:
+   - Without delay: Candidates arrive during active SDP processing
+   - With delay: Candidates buffer during caps wait, arrive in wrong state
+   - Our trickle-ICE state machine expects specific timing between answer creation and candidate processing
+
+2. **GStreamer State Machine Assumptions**:
+   - webrtcbin expects SDP negotiation to happen promptly after remote description is set
+   - The 300ms delay may cause internal timeouts or state transitions
+   - Transceivers configured before delay may become "stale" after delay
+
+3. **Remote Peer Expectations**:
+   - Dino (and other clients) may have timeout expectations for answer generation
+   - 300ms delay may trigger fallback behaviors or state changes on remote side
+
+**Evidence**:
+- **Timeline without delay**: answer created 4ms after pipeline starts → both ends connected ✅
+- **Timeline with delay**: answer created 304ms after pipeline starts → only one end connected ❌
+
+### The Critical Insight: Caps DON'T Matter for Connection
+
+**Surprising Discovery**: At BINGO, even with these "problems", connection worked:
+- ❌ SDP answer had `a=recvonly` (should be `a=sendrecv`)
+- ❌ Audio caps not negotiated yet (~4ms after pipeline start)
+- ❌ No buffers flowing yet
+- ✅ **But BOTH ENDS CONNECTED successfully!**
+
+**Conclusion**:
+- **Transceiver direction property** is what matters for connection establishment
+- **SDP direction attribute** is secondary (may affect media flow, but not connection)
+- **Caps negotiation timing** is irrelevant for connection (webrtcbin handles it internally)
+- **Timing/promptness** of answer creation is critical for state machine correctness
+
+### Current Status After Reversion
+
+**Code State**: Removed caps wait loop, kept PRE transceiver configuration (BINGO state restored)
+
+**Result**: ✅ Both ends connect again!
+
+**Remaining Issue**:
+- Our SDP still has `a=recvonly` instead of `a=sendrecv`
+- Dino shows "gst_pulsesrc_read waiting for data"
+- This may prevent bidirectional audio flow
+
+**Next Steps**:
+1. Commit this BINGO state (connection works on both ends)
+2. Investigate SDP direction separately (why `a=recvonly` when transceiver is SENDRECV?)
+3. Fix audio flow issues without breaking connection timing
+
+### Rules for Future Changes
+
+**DO**:
+✅ Set transceiver direction BEFORE set-remote-description
+✅ Keep answer creation timing prompt (milliseconds, not hundreds of ms)
+✅ Trust GStreamer's internal caps negotiation
+✅ Test for "both ends connected" as primary success criteria
+
+**DON'T**:
+❌ Add delays/waits between set-remote-description and create-answer
+❌ Assume caps must be negotiated before answer creation
+❌ Second-guess GStreamer's state machine timing
+❌ Make "logical" changes without testing connection on BOTH sides
+
+### Key Files
+
+**Implementation**:
+- `drunk_call_service/src/webrtc_session.cpp`:
+  - Lines 209-247: PRE transceiver direction setting (KEEP THIS!)
+  - Lines 1077-1135: POST transceiver direction setting in callback (KEEP THIS!)
+  - Lines 209-273 (REMOVED): Caps wait loop (DON'T BRING THIS BACK!)
+
+**Documentation**:
+- `docs/CALLS/SESSION-LOG.md`: Session 19, 20 - timeline of investigation
+- `SESSION-ROTATE.md`: Full chat transcript with BINGO moment
+
+---
+
+**Last Updated**: 2026-03-04
