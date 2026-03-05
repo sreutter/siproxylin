@@ -11,7 +11,7 @@ GST_CFLAGS = $(shell $(PKG_CONFIG) --cflags $(GST_PACKAGES))
 GST_LIBS = $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES))
 
 # Targets (in order of complexity)
-TESTS = test_step0_gstreamer_basic test_step1_pipeline test_step1b_audio_playback test_step2_sdp_negotiation test_step3_ice_connectivity test_step4_audio_loopback test_step5_device_enumeration test_step6_stats test_step7_logger test_step8_thread_safe_queue test_step9_session_manager
+TESTS = test_step0_gstreamer_basic test_step1_pipeline test_step1b_audio_playback test_step2_sdp_negotiation test_step3_ice_connectivity test_step4_audio_loopback test_step5_device_enumeration test_step6_stats test_step7_logger test_step8_thread_safe_queue test_step9_session_manager test_webrtc_caller test_webrtc_answerer
 
 all: $(TESTS)
 
@@ -59,6 +59,16 @@ test_step8_thread_safe_queue: test_step8_thread_safe_queue.cpp
 # Note: Requires proto headers from build/generated/
 test_step9_session_manager: test_step9_session_manager.cpp ../../src/session_manager.cpp ../../build/generated/call.pb.cc
 	$(CXX) $(CXXFLAGS) -I../../build/generated $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) -lprotobuf -pthread
+
+# WebRTC Caller Test: Creates offer, sends audio from real microphone
+# Uses full WebRTCSession class, exchanges SDP/ICE over stdin/stdout
+test_webrtc_caller: test_webrtc_caller.cpp ../../src/webrtc_session.cpp ../../src/rtp_session.cpp ../../src/session_factory.cpp ../../src/logger.cpp
+	$(CXX) $(CXXFLAGS) -I../../src $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) $(shell $(PKG_CONFIG) --cflags --libs spdlog) -pthread
+
+# WebRTC Answerer Test: Receives offer, creates answer, sends audio from real microphone
+# Uses full WebRTCSession class, exchanges SDP/ICE over stdin/stdout
+test_webrtc_answerer: test_webrtc_answerer.cpp ../../src/webrtc_session.cpp ../../src/rtp_session.cpp ../../src/session_factory.cpp ../../src/logger.cpp
+	$(CXX) $(CXXFLAGS) -I../../src $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) $(shell $(PKG_CONFIG) --cflags --libs spdlog) -pthread
 
 clean:
 	rm -f $(TESTS)

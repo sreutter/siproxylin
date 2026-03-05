@@ -89,6 +89,10 @@ public:
     };
     virtual Stats get_stats() const = 0;
 
+    // Stats callback (periodic bandwidth/quality stats)
+    using StatsCallback = std::function<void(const Stats &stats)>;
+    virtual void set_stats_callback(StatsCallback callback) = 0;
+
     // Pipeline access (for debugging/visualization)
     virtual GstElement* get_pipeline() const = 0;
 

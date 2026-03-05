@@ -33,6 +33,105 @@ static std::string extract_candidate_type(const char* candidate) {
     return "unknown";
 }
 
+/**
+ * Parse audio codec from SDP offer and create caps for codec-preferences.
+ * Returns NULL on failure.
+ * CRITICAL: encoding-name must be UPPERCASE (GStreamer requirement)
+ */
+static GstCaps* parse_audio_codec_from_offer(GstSDPMessage *offer) {
+    const GstSDPMedia *media = nullptr;
+    std::string encoding_name;
+    int clock_rate = 0;
+    int payload = -1;
+    int encoding_params = 0;
+
+    // Find first audio m-line
+    for (guint i = 0; i < gst_sdp_message_medias_len(offer); i++) {
+        media = gst_sdp_message_get_media(offer, i);
+        if (strcmp(gst_sdp_media_get_media(media), "audio") == 0) {
+            LOG_INFO("[WebRTCSession] Found audio m-line at index {}", i);
+            break;
+        }
+        media = nullptr;
+    }
+
+    if (!media) {
+        LOG_ERROR("[WebRTCSession] No audio m-line in offer!");
+        return nullptr;
+    }
+
+    // Get first payload type
+    if (gst_sdp_media_formats_len(media) > 0) {
+        const char *payload_str = gst_sdp_media_get_format(media, 0);
+        payload = atoi(payload_str);
+        LOG_INFO("[WebRTCSession] First payload type: {}", payload);
+    } else {
+        LOG_ERROR("[WebRTCSession] No payload formats in audio m-line!");
+        return nullptr;
+    }
+
+    // Find rtpmap for this payload
+    for (guint i = 0; i < gst_sdp_media_attributes_len(media); i++) {
+        const GstSDPAttribute *attr = gst_sdp_media_get_attribute(media, i);
+
+        if (strcmp(attr->key, "rtpmap") == 0) {
+            // Parse "111 opus/48000/2"
+            int attr_payload;
+            char codec_name[32];
+            int rate, params = 0;
+
+            // Try parsing with encoding-params (channels)
+            if (sscanf(attr->value, "%d %31[^/]/%d/%d", &attr_payload, codec_name, &rate, &params) >= 3) {
+                if (attr_payload == payload) {
+                    // CRITICAL: GStreamer uppercases encoding-name!
+                    for (char *p = codec_name; *p; p++) *p = toupper(*p);
+
+                    encoding_name = codec_name;
+                    clock_rate = rate;
+                    encoding_params = params;
+
+                    LOG_INFO("[WebRTCSession] Parsed codec: {}/{}/{}", encoding_name, clock_rate, encoding_params);
+                    break;
+                }
+            }
+            // Try without encoding-params
+            else if (sscanf(attr->value, "%d %31[^/]/%d", &attr_payload, codec_name, &rate) == 3) {
+                if (attr_payload == payload) {
+                    for (char *p = codec_name; *p; p++) *p = toupper(*p);
+
+                    encoding_name = codec_name;
+                    clock_rate = rate;
+
+                    LOG_INFO("[WebRTCSession] Parsed codec: {}/{}", encoding_name, clock_rate);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (encoding_name.empty() || clock_rate == 0) {
+        LOG_ERROR("[WebRTCSession] Could not parse rtpmap for payload {}", payload);
+        return nullptr;
+    }
+
+    // Create caps WITHOUT fixed payload (allows flexible matching)
+    GstCaps *caps = gst_caps_new_simple("application/x-rtp",
+        "media", G_TYPE_STRING, "audio",
+        "encoding-name", G_TYPE_STRING, encoding_name.c_str(),
+        "clock-rate", G_TYPE_INT, clock_rate,
+        nullptr);
+
+    // Add encoding-params if present (for stereo/multi-channel)
+    if (encoding_params > 0) {
+        char params_str[16];
+        snprintf(params_str, sizeof(params_str), "%d", encoding_params);
+        gst_caps_set_simple(caps, "encoding-params", G_TYPE_STRING, params_str, nullptr);
+    }
+
+    LOG_INFO("[WebRTCSession] Created codec-preferences caps (payload NOT fixed)");
+    return caps;
+}
+
 // ============================================================================
 // Constructor / Destructor
 // ============================================================================
@@ -184,6 +283,20 @@ void WebRTCSession::create_offer(SDPCallback callback) {
 
         LOG_INFO("[WebRTCSession] Creating offer...");
 
+        // CRITICAL: For offerers, create audio source pipeline BEFORE create-offer
+        // request_pad_simple() will automatically create the transceiver
+        LOG_INFO("[WebRTCSession] Offerer mode: Creating audio source pipeline...");
+
+        if (!create_audio_source_pipeline()) {
+            LOG_ERROR("[WebRTCSession] Failed to create audio source pipeline!");
+            if (callback) {
+                callback(false, SDPMessage(), "Failed to create audio source pipeline");
+            }
+            return;
+        }
+
+        LOG_INFO("[WebRTCSession] Audio source pipeline created, now creating offer...");
+
         // Create promise for async SDP generation
         GstPromise *promise = gst_promise_new_with_change_func(
             on_offer_created_static, this, nullptr);
@@ -200,52 +313,15 @@ void WebRTCSession::create_offer(SDPCallback callback) {
 }
 
 void WebRTCSession::create_answer(const SDPMessage &remote_offer, SDPCallback callback) {
+    LOG_INFO("[WebRTCSession] ENTERED create_answer() - FIRST LINE");
     try {
         is_outgoing_ = false;
         sdp_callback_ = callback;
 
-        LOG_INFO("[WebRTCSession] Creating answer...");
+        LOG_INFO("[WebRTCSession] Creating answer... (set is_outgoing_=false)");
 
-        // ========================================================================
-        // FIX ATTEMPT: Set transceiver direction BEFORE setting remote description
-        // ========================================================================
-        LOG_INFO("[WebRTCSession] Setting transceiver direction BEFORE set-remote-description");
-        GArray* transceivers_pre = nullptr;
-        g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers_pre);
-
-        if (transceivers_pre && transceivers_pre->len > 0) {
-            LOG_INFO("[WebRTCSession] PRE: Found {} transceiver(s), setting direction to SENDRECV",
-                     transceivers_pre->len);
-
-            for (guint i = 0; i < transceivers_pre->len; i++) {
-                GstWebRTCRTPTransceiver* trans =
-                    g_array_index(transceivers_pre, GstWebRTCRTPTransceiver*, i);
-
-                GstWebRTCRTPTransceiverDirection dir;
-                g_object_get(trans, "direction", &dir, NULL);
-                LOG_INFO("[WebRTCSession] PRE: Transceiver {} direction={}", i, dir);
-
-                // Check sender state
-                GstWebRTCRTPSender *sender = nullptr;
-                g_object_get(trans, "sender", &sender, NULL);
-                if (sender) {
-                    LOG_INFO("[WebRTCSession] PRE: Transceiver {} has sender", i);
-                    g_object_unref(sender);
-                } else {
-                    LOG_WARN("[WebRTCSession] PRE: Transceiver {} has NO sender!", i);
-                }
-
-                g_object_set(trans, "direction",
-                            GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, NULL);
-
-                g_object_get(trans, "direction", &dir, NULL);
-                LOG_INFO("[WebRTCSession] PRE: Transceiver {} direction set to {}", i, dir);
-            }
-            g_array_unref(transceivers_pre);
-        } else {
-            LOG_INFO("[WebRTCSession] PRE: No transceivers yet (will be created from offer)");
-        }
-        // ========================================================================
+        // Follow official GStreamer pattern: Let webrtcbin auto-create transceiver
+        // from the remote offer. No manual transceiver manipulation needed.
 
         // First set remote description (the offer)
         if (!set_remote_description(remote_offer)) {
@@ -285,6 +361,61 @@ bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
             LOG_ERROR("[WebRTCSession] Failed to parse SDP");
             gst_sdp_message_free(sdp_msg);
             return false;
+        }
+
+        // CRITICAL: If answering, create transceiver with codec-preferences BEFORE set-remote-description
+        // This ensures webrtcbin matches our transceiver to the offer (resulting in a=sendrecv not a=recvonly)
+        if (!is_outgoing_ && remote_sdp.type == SDPMessage::Type::OFFER) {
+            LOG_INFO("[WebRTCSession] Answerer mode: parsing codec from offer and creating transceiver...");
+
+            // Parse audio codec from offer
+            GstCaps *codec_caps = parse_audio_codec_from_offer(sdp_msg);
+            if (!codec_caps) {
+                LOG_ERROR("[WebRTCSession] Failed to parse audio codec from offer");
+                gst_sdp_message_free(sdp_msg);
+                return false;
+            }
+
+            // Request pad to create transceiver (WITHOUT linking audio yet!)
+            GstPadTemplate *templ = gst_element_get_pad_template(webrtc_, "sink_%u");
+            if (!templ) {
+                LOG_ERROR("[WebRTCSession] Failed to get webrtcbin sink pad template");
+                gst_caps_unref(codec_caps);
+                gst_sdp_message_free(sdp_msg);
+                return false;
+            }
+
+            // Request pad WITHOUT caps parameter (we'll set codec-preferences instead)
+            GstPad *webrtc_sink = gst_element_request_pad(webrtc_, templ, nullptr, nullptr);
+            if (!webrtc_sink) {
+                LOG_ERROR("[WebRTCSession] Failed to request webrtcbin sink pad");
+                gst_caps_unref(codec_caps);
+                gst_sdp_message_free(sdp_msg);
+                return false;
+            }
+
+            // Set codec-preferences on the transceiver
+            GArray* transceivers = nullptr;
+            g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers);
+
+            if (transceivers && transceivers->len > 0) {
+                GstWebRTCRTPTransceiver* trans =
+                    g_array_index(transceivers, GstWebRTCRTPTransceiver*, transceivers->len - 1);
+
+                // Set direction and codec-preferences
+                g_object_set(trans,
+                    "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV,
+                    "codec-preferences", codec_caps,
+                    nullptr);
+
+                LOG_INFO("[WebRTCSession] ✓ Created transceiver with SENDRECV + codec-preferences");
+                g_array_unref(transceivers);
+            } else {
+                LOG_WARN("[WebRTCSession] No transceivers found after requesting pad!");
+            }
+
+            gst_object_unref(webrtc_sink);
+            gst_caps_unref(codec_caps);
         }
 
         // Create WebRTC session description
@@ -359,6 +490,12 @@ bool WebRTCSession::add_remote_ice_candidate(const ICECandidate &candidate) {
 
 void WebRTCSession::set_state_callback(StateCallback callback) {
     state_callback_ = callback;
+}
+
+void WebRTCSession::set_stats_callback(StatsCallback callback) {
+    stats_callback_ = callback;
+    // TODO: Start g_timeout_add timer when callback is set
+    // For now, just store the callback
 }
 
 // ============================================================================
@@ -464,7 +601,7 @@ MediaSession::Stats WebRTCSession::get_stats() const {
 
 bool WebRTCSession::create_pipeline() {
     try {
-        LOG_DEBUG("[WebRTCSession] Creating pipeline...");
+        LOG_DEBUG("[WebRTCSession] Creating pipeline (webrtcbin only, audio will be added after offer processing)...");
 
         // Create pipeline
         std::string pipeline_name = "call-pipeline-" + config_.session_id;
@@ -483,154 +620,175 @@ bool WebRTCSession::create_pipeline() {
             return false;
         }
 
-        // Create audio source chain
-        // pulsesrc → volume → queue → opusenc → rtpopuspay → webrtcbin
-        const char *audio_src_name = config_.microphone_device.empty() ?
-            "autoaudiosrc" : "pulsesrc";
+        // Add webrtcbin to pipeline
+        gst_bin_add(GST_BIN(pipeline_), webrtc_);
 
-        audio_src_ = gst_element_factory_make(audio_src_name, "audio_src");
-        volume_ = gst_element_factory_make("volume", "volume");
-        GstElement *queue = gst_element_factory_make("queue", "audio_queue");
-        GstElement *opusenc = gst_element_factory_make("opusenc", "opus_encoder");
-        GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "rtp_payloader");
+        // Connect webrtcbin signals
+        g_signal_connect(webrtc_, "on-negotiation-needed",
+                        G_CALLBACK(on_negotiation_needed_static), this);
+        g_signal_connect(webrtc_, "on-ice-candidate",
+                        G_CALLBACK(on_ice_candidate_static), this);
+        g_signal_connect(webrtc_, "pad-added",
+                        G_CALLBACK(on_incoming_stream_static), this);
 
-        // ========================================================================
-        // ISSUE #7 FIX: Add detailed logging for partial pipeline failure
-        // ========================================================================
-        if (!audio_src_ || !volume_ || !queue || !opusenc || !rtpopuspay) {
-            LOG_ERROR("[WebRTCSession] Failed to create audio source elements:");
-            if (!audio_src_) LOG_ERROR("  - audio_src ({}) creation failed", audio_src_name);
-            if (!volume_) LOG_ERROR("  - volume element creation failed");
-            if (!queue) LOG_ERROR("  - queue element creation failed");
-            if (!opusenc) LOG_ERROR("  - opusenc element creation failed - is gst-plugins-base installed?");
-            if (!rtpopuspay) LOG_ERROR("  - rtpopuspay element creation failed - is gst-plugins-good installed?");
-
-            // Cleanup already-created elements
-            if (pipeline_) {
-                gst_object_unref(pipeline_);
-                pipeline_ = nullptr;
-            }
-            return false;
-        }
-
-        // Configure audio device if specified
-        if (!config_.microphone_device.empty() && audio_src_name == std::string("pulsesrc")) {
-            g_object_set(audio_src_, "device", config_.microphone_device.c_str(), nullptr);
-            LOG_INFO("[WebRTCSession] Microphone device: {}", config_.microphone_device);
-        }
-
-        // Configure opus encoder for VoIP
-        g_object_set(opusenc,
-            "bitrate", 32000,
-            "frame-size", 20,
-            nullptr);
-
-        // Add elements to pipeline
-        gst_bin_add_many(GST_BIN(pipeline_), webrtc_, audio_src_, volume_, queue, opusenc, rtpopuspay, nullptr);
-
-        // Link audio source chain
-        if (!gst_element_link_many(audio_src_, volume_, queue, opusenc, rtpopuspay, nullptr)) {
-            LOG_ERROR("[WebRTCSession] Failed to link audio source chain: {} → volume → queue → opusenc → rtpopuspay",
-                     audio_src_name);
-            LOG_ERROR("[WebRTCSession] Possible causes: incompatible caps, missing plugins, or device access denied");
-
-            // Cleanup
-            gst_object_unref(pipeline_);
-            pipeline_ = nullptr;
-            return false;
-        }
-
-        // Link rtpopuspay to webrtcbin
-        // Use capsfilter to specify exact RTP caps
-        GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_caps");
-        if (!capsfilter) {
-            LOG_ERROR("[WebRTCSession] Failed to create capsfilter element");
-
-            // Cleanup
-            gst_object_unref(pipeline_);
-            pipeline_ = nullptr;
-            return false;
-        }
-
-        GstCaps *caps = gst_caps_new_simple("application/x-rtp",
-            "media", G_TYPE_STRING, "audio",
-            "encoding-name", G_TYPE_STRING, "OPUS",
-            "payload", G_TYPE_INT, 97,
-            "clock-rate", G_TYPE_INT, 48000,
-            nullptr);
-        g_object_set(capsfilter, "caps", caps, nullptr);
-        gst_caps_unref(caps);
-
-        gst_bin_add(GST_BIN(pipeline_), capsfilter);
-
-        if (!gst_element_link_many(rtpopuspay, capsfilter, nullptr)) {
-            LOG_ERROR("[WebRTCSession] Failed to link rtpopuspay → capsfilter");
-
-            // Cleanup
-            gst_object_unref(pipeline_);
-            pipeline_ = nullptr;
-            return false;
-        }
-
-        // Now link capsfilter to webrtcbin
-        GstPad *caps_src = gst_element_get_static_pad(capsfilter, "src");
-        GstPad *webrtc_sink = gst_element_request_pad_simple(webrtc_, "sink_%u");
-
-        if (!caps_src || !webrtc_sink) {
-            LOG_ERROR("[WebRTCSession] Failed to get pads for linking capsfilter → webrtcbin");
-            if (!caps_src) LOG_ERROR("  - capsfilter src pad is NULL");
-            if (!webrtc_sink) LOG_ERROR("  - webrtcbin sink pad request failed");
-
-            // Cleanup
-            if (caps_src) gst_object_unref(caps_src);
-            if (webrtc_sink) gst_object_unref(webrtc_sink);
-            gst_object_unref(pipeline_);
-            pipeline_ = nullptr;
-            return false;
-        }
-
-        GstPadLinkReturn link_ret = gst_pad_link(caps_src, webrtc_sink);
-
-        gst_object_unref(caps_src);
-        gst_object_unref(webrtc_sink);
-
-        if (link_ret != GST_PAD_LINK_OK) {
-            const char *link_err = "";
-            switch (link_ret) {
-                case GST_PAD_LINK_WRONG_HIERARCHY: link_err = "wrong hierarchy"; break;
-                case GST_PAD_LINK_WAS_LINKED: link_err = "already linked"; break;
-                case GST_PAD_LINK_WRONG_DIRECTION: link_err = "wrong direction"; break;
-                case GST_PAD_LINK_NOFORMAT: link_err = "incompatible formats"; break;
-                case GST_PAD_LINK_NOSCHED: link_err = "no common scheduler"; break;
-                case GST_PAD_LINK_REFUSED: link_err = "link refused"; break;
-                default: link_err = "unknown error"; break;
-            }
-            LOG_ERROR("[WebRTCSession] Failed to link capsfilter → webrtcbin: {} ({})", link_ret, link_err);
-
-            // Cleanup
-            gst_object_unref(pipeline_);
-            pipeline_ = nullptr;
-            return false;
-        }
-
-        // ========================================================================
-        // ISSUE #6 FIX: Add GStreamer bus error monitoring
-        // Official Pattern: https://gstreamer.freedesktop.org/documentation/application-development/basics/bus.html
-        // ========================================================================
-        GstBus *bus = gst_element_get_bus(pipeline_);
+        // Setup bus watch for errors and state changes
+        GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline_));
         if (bus) {
             gst_bus_add_watch(bus, bus_message_handler_static, this);
             gst_object_unref(bus);
-            LOG_DEBUG("[WebRTCSession] Bus watch added for error monitoring");
-        } else {
-            LOG_ERROR("[WebRTCSession] Failed to get pipeline bus");
+            LOG_DEBUG("[WebRTCSession] Bus watch added");
         }
 
-        LOG_DEBUG("[WebRTCSession] Pipeline created successfully");
+        LOG_INFO("[WebRTCSession] Pipeline created successfully (webrtcbin only)");
+        LOG_INFO("[WebRTCSession] Audio source will be added dynamically after offer processing");
         return true;
 
     } catch (const std::exception &e) {
         LOG_ERROR("[WebRTCSession] create_pipeline exception: {}", e.what());
+        return false;
+    }
+}
+
+bool WebRTCSession::create_audio_source_pipeline() {
+    try {
+        LOG_DEBUG("[WebRTCSession] Creating audio source pipeline...");
+
+        // CRITICAL: Pause pipeline before adding elements to avoid FLUSHING state
+        GstState current_state, pending_state;
+        gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
+        LOG_INFO("[WebRTCSession] Pipeline state before pause: current={}, pending={}",
+                 gst_element_state_get_name(current_state),
+                 gst_element_state_get_name(pending_state));
+
+        LOG_DEBUG("[WebRTCSession] Pausing pipeline to add audio elements...");
+        GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PAUSED);
+        LOG_DEBUG("[WebRTCSession] Pause state change result: {}", ret);
+        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
+        LOG_INFO("[WebRTCSession] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
+
+        // Create audio elements
+        audio_src_ = gst_element_factory_make("autoaudiosrc", "audio_src");
+        GstElement *queue = gst_element_factory_make("queue", "queue_src");
+        GstElement *convert = gst_element_factory_make("audioconvert", "convert");
+        GstElement *resample = gst_element_factory_make("audioresample", "resample");
+        GstElement *opusenc = gst_element_factory_make("opusenc", "opusenc");
+        GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "rtpopuspay");
+        GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_caps");
+
+        if (!audio_src_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
+            LOG_ERROR("[WebRTCSession] Failed to create audio elements");
+            return false;
+        }
+
+        // Configure elements
+        // Note: autoaudiosrc doesn't have "is-live" property (it's on pulsesrc child)
+        // The child pulsesrc is automatically configured as live
+        g_object_set(opusenc, "bitrate", 32000, "frame-size", 20, nullptr);
+
+        // CRITICAL: Set RTP caps on capsfilter - tells webrtcbin what codec we're using
+        // Without this, webrtcbin won't generate m=audio line in offer!
+        GstCaps *rtp_caps = gst_caps_new_simple("application/x-rtp",
+            "media", G_TYPE_STRING, "audio",
+            "encoding-name", G_TYPE_STRING, "OPUS",
+            "payload", G_TYPE_INT, 97,
+            nullptr);
+        g_object_set(capsfilter, "caps", rtp_caps, nullptr);
+        gst_caps_unref(rtp_caps);
+        LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=audio,encoding-name=OPUS,payload=97");
+
+        // Add to pipeline
+        gst_bin_add_many(GST_BIN(pipeline_), audio_src_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+
+        // Link audio chain FIRST (while pipeline is PAUSED, elements are NULL)
+        // Note: capsfilter goes between rtpopuspay and webrtcbin
+        if (!gst_element_link_many(audio_src_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr)) {
+            LOG_ERROR("[WebRTCSession] Failed to link audio chain");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+
+        // REQUEST sink_0 pad (it's a request pad, not static!)
+        // This actually creates the pad if it doesn't exist
+        GstPad *webrtc_sink = gst_element_request_pad_simple(webrtc_, "sink_%u");
+        if (!webrtc_sink) {
+            LOG_ERROR("[WebRTCSession] Failed to request sink pad from webrtcbin!");
+            return false;
+        }
+
+        gchar *pad_name = gst_pad_get_name(webrtc_sink);
+        LOG_INFO("[WebRTCSession] ✓ Requested webrtcbin pad: {}", pad_name);
+        g_free(pad_name);
+
+        // CRITICAL: Get the transceiver for this pad and set direction to SENDRECV
+        // Without this, the transceiver defaults to RECVONLY!
+        GValue val = G_VALUE_INIT;
+        g_object_get_property(G_OBJECT(webrtc_sink), "transceiver", &val);
+        GstWebRTCRTPTransceiver *trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
+
+        if (trans) {
+            LOG_INFO("[WebRTCSession] Setting transceiver direction to SENDRECV...");
+            g_object_set(trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
+            LOG_INFO("[WebRTCSession] ✓ Transceiver direction set to SENDRECV");
+        } else {
+            LOG_WARN("[WebRTCSession] Could not get transceiver from pad");
+        }
+        g_value_unset(&val);
+
+        // Get negotiated caps from sink_0 (already negotiated during answer creation)
+        GstCaps *sink_caps = gst_pad_get_current_caps(webrtc_sink);
+        if (sink_caps) {
+            gchar *caps_str = gst_caps_to_string(sink_caps);
+            LOG_INFO("[WebRTCSession] sink_0 negotiated caps: {}", caps_str);
+            g_free(caps_str);
+        } else {
+            LOG_WARN("[WebRTCSession] sink_0 has no negotiated caps yet");
+        }
+
+        // Link capsfilter to webrtcbin (capsfilter is the last element in the chain)
+        GstPad *caps_src = gst_element_get_static_pad(capsfilter, "src");
+        GstPadLinkReturn link_ret = gst_pad_link(caps_src, webrtc_sink);
+        if (link_ret != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] Failed to link capsfilter to webrtcbin sink_0: {}", link_ret);
+            if (sink_caps) gst_caps_unref(sink_caps);
+            gst_object_unref(caps_src);
+            gst_object_unref(webrtc_sink);
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] ✓ Linked capsfilter to sink_0");
+
+        // Force caps negotiation on the link we just made
+        if (sink_caps) {
+            if (!gst_pad_set_caps(caps_src, sink_caps)) {
+                LOG_WARN("[WebRTCSession] Failed to set caps on capsfilter src pad");
+            } else {
+                LOG_INFO("[WebRTCSession] ✓ Set negotiated caps on capsfilter");
+            }
+            gst_caps_unref(sink_caps);
+        }
+
+        // Check if pads are linked
+        GstPad *peer_of_caps = gst_pad_get_peer(caps_src);
+        GstPad *peer_of_sink = gst_pad_get_peer(webrtc_sink);
+        LOG_DEBUG("[WebRTCSession] Pad peers: caps_src->peer={}, sink_0->peer={}",
+                  (void*)peer_of_caps, (void*)peer_of_sink);
+        if (peer_of_caps) gst_object_unref(peer_of_caps);
+        if (peer_of_sink) gst_object_unref(peer_of_sink);
+
+        gst_object_unref(caps_src);
+        gst_object_unref(webrtc_sink);
+
+        // Resume pipeline to PLAYING
+        LOG_DEBUG("[WebRTCSession] Resuming pipeline to PLAYING...");
+        ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+        LOG_DEBUG("[WebRTCSession] Resume state change result: {}", ret);
+        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
+        LOG_INFO("[WebRTCSession] Pipeline state after resume: {}", gst_element_state_get_name(current_state));
+
+        LOG_INFO("[WebRTCSession] Audio source pipeline created and linked");
+        return true;
+
+    } catch (const std::exception &e) {
+        LOG_ERROR("[WebRTCSession] create_audio_source_pipeline exception: {}", e.what());
         return false;
     }
 }
@@ -1055,9 +1213,23 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
         // Convert SDP to text
         gchar *sdp_text = gst_sdp_message_as_text(answer->sdp);
         std::string sdp_str(sdp_text);
-        g_free(sdp_text);
 
         LOG_INFO("[WebRTCSession] Answer SDP created ({} bytes)", sdp_str.length());
+        LOG_DEBUG("[WebRTCSession] Answer SDP:\n{}", sdp_str);
+
+        g_free(sdp_text);
+
+        // NEW: Create audio source pipeline AFTER answer is created
+        LOG_INFO("[WebRTCSession] DEBUG: is_outgoing_={}, about to check if should create audio", is_outgoing_.load());
+        if (!is_outgoing_) {
+            LOG_INFO("[WebRTCSession] Answerer mode: Creating audio source pipeline now...");
+            if (!create_audio_source_pipeline()) {
+                LOG_ERROR("[WebRTCSession] Failed to create audio source pipeline!");
+                // Continue anyway - callback with answer, but audio won't work
+            }
+        } else {
+            LOG_WARN("[WebRTCSession] Skipping audio creation - is_outgoing_=true (should be false for answerer!)");
+        }
 
         // Call user callback
         if (sdp_callback_) {
@@ -1077,63 +1249,19 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
 
 void WebRTCSession::on_offer_set_for_answer() {
     try {
-        LOG_INFO("[WebRTCSession] Offer set, configuring transceivers...");
+        LOG_INFO("[WebRTCSession] Offer set, creating answer...");
 
-        // ========================================================================
-        // FIX: Set transceiver direction to SENDRECV before creating answer
+        // Pattern from working test:
+        // - Transceiver created with codec-preferences from parsed offer
+        // - set-remote-description completed
+        // - NO audio source linked yet (codec-preferences used, not pad caps)
+        // - Call create-answer → SUCCESS (a=sendrecv)
         //
-        // Root Cause: webrtcbin defaults transceivers to RECVONLY when receiving
-        // an offer, resulting in SDP answer with "a=recvonly" instead of
-        // "a=sendrecv". This prevents audio from flowing in our send direction.
-        //
-        // Solution: Explicitly set all transceivers to SENDRECV direction before
-        // calling create-answer. This matches the behavior of the remote offer
-        // which has "a=sendrecv" (Jingle senders="both").
-        //
-        // References:
-        // - GStreamer test: gst-plugins-bad/tests/check/elements/webrtcbin.c:3994
-        // - WebRTC spec: Transceiver direction negotiation
-        // ========================================================================
-        GArray* transceivers = nullptr;
-        g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers);
+        // webrtcbin will:
+        // 1. Match our transceiver to offer's m-line via codec-preferences intersection
+        // 2. Use transceiver's SENDRECV direction
+        // 3. Generate SDP answer with a=sendrecv
 
-        if (transceivers && transceivers->len > 0) {
-            LOG_INFO("[WebRTCSession] Found {} transceiver(s), setting direction to SENDRECV",
-                     transceivers->len);
-
-            if (transceivers->len > 1) {
-                LOG_WARN("[WebRTCSession] Multiple transceivers found! This might indicate a problem.");
-            }
-
-            for (guint i = 0; i < transceivers->len; i++) {
-                GstWebRTCRTPTransceiver* trans =
-                    g_array_index(transceivers, GstWebRTCRTPTransceiver*, i);
-
-                // Check current direction
-                GstWebRTCRTPTransceiverDirection dir, current_dir;
-                g_object_get(trans, "direction", &dir, NULL);
-                g_object_get(trans, "current-direction", &current_dir, NULL);
-                LOG_INFO("[WebRTCSession] Transceiver {} BEFORE: direction={}, current-direction={}",
-                         i, dir, current_dir);
-
-                // Set direction to sendrecv (bidirectional audio)
-                g_object_set(trans, "direction",
-                            GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, NULL);
-
-                // Verify it was set
-                g_object_get(trans, "direction", &dir, NULL);
-                g_object_get(trans, "current-direction", &current_dir, NULL);
-                LOG_INFO("[WebRTCSession] Transceiver {} AFTER: direction={}, current-direction={} (expect 4=SENDRECV)",
-                         i, dir, current_dir);
-            }
-            g_array_unref(transceivers);
-        } else {
-            LOG_WARN("[WebRTCSession] No transceivers found after setting remote offer - "
-                       "this may cause audio issues");
-        }
-        // ========================================================================
-
-        // Now create answer
         GstPromise *promise = gst_promise_new_with_change_func(
             on_answer_created_static, this, nullptr);
 

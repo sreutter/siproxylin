@@ -17,6 +17,7 @@
 
 #include "media_session.h"
 #include <gst/gst.h>
+#include <atomic>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
@@ -41,11 +42,12 @@ public:
     bool add_remote_ice_candidate(const ICECandidate &candidate) override;
 
     void set_state_callback(StateCallback callback) override;
+    void set_stats_callback(StatsCallback callback) override;  // NEW: periodic stats updates
 
     bool set_mute(bool muted) override;
     bool is_muted() const override { return is_muted_; }
 
-    Stats get_stats() const override;
+    Stats get_stats() const override;  // Synchronous stats (legacy)
 
     GstElement* get_pipeline() const override { return pipeline_; }
     Type get_type() const override { return Type::WEBRTC; }
@@ -61,18 +63,22 @@ private:
     // Configuration
     SessionConfig config_;
     bool is_muted_;
-    bool is_outgoing_;  // true = offerer, false = answerer
+    std::atomic<bool> is_outgoing_;  // true = offerer, false = answerer (thread-safe)
 
     // Callbacks
     SDPCallback sdp_callback_;
     ICECandidateCallback ice_callback_;
     StateCallback state_callback_;
+    StatsCallback stats_callback_;  // NEW: periodic stats callback
 
     // Synchronization for async SDP operations
     std::mutex sdp_mutex_;
     std::condition_variable sdp_ready_;
     SDPMessage local_sdp_;
     bool sdp_done_;
+
+    // Stats monitoring
+    guint stats_timer_id_;  // GLib timer source ID
 
     // GStreamer bus message handler (static)
     static gboolean bus_message_handler_static(GstBus *bus, GstMessage *msg, gpointer user_data);
@@ -91,6 +97,8 @@ private:
                                          gpointer user_data);
     static void on_incoming_stream_static(GstElement *webrtc, GstPad *pad,
                                          gpointer user_data);
+    static gboolean stats_timer_callback_static(gpointer user_data);  // NEW: stats timer
+    static void on_stats_promise_static(GstPromise *promise, gpointer user_data);  // NEW: stats result
 
     // Instance methods called by static handlers
     gboolean bus_message_handler(GstBus *bus, GstMessage *msg);
@@ -102,9 +110,12 @@ private:
     void on_ice_gathering_state();
     void on_signaling_state();
     void on_incoming_stream(GstPad *pad);
+    gboolean stats_timer_callback();  // NEW: instance method for stats timer
+    void on_stats_promise(GstPromise *promise);  // NEW: process stats result
 
     // Helper methods
     bool create_pipeline();
+    bool create_audio_source_pipeline();
     bool configure_webrtcbin();
     bool configure_proxy();
     bool add_turn_servers();
