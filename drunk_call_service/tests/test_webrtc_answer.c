@@ -77,6 +77,9 @@ connect_sender_pipeline(void)
     }
 
     printf("Connecting sender pipeline to webrtcbin...\n");
+    printf("CRITICAL: Must use existing sink_0 pad (NOT request new one!)\n");
+
+    guint count_before = count_transceivers(webrtc, "Before connecting audio");
 
     // Create audio source chain
     GstElement *audiotestsrc = gst_element_factory_make("audiotestsrc", NULL);
@@ -96,27 +99,40 @@ connect_sender_pipeline(void)
         return;
     }
 
-    // Request sink pad from webrtcbin
-    GstPad *webrtc_sink = gst_element_request_pad_simple(webrtc, "sink_%u");
+    // Get EXISTING sink_0 pad (don't request new one!)
+    GstPad *webrtc_sink = gst_element_get_static_pad(webrtc, "sink_0");
     if (!webrtc_sink) {
-        printf("ERROR: Failed to request webrtcbin sink pad\n");
+        printf("ERROR: sink_0 pad doesn't exist! Did transceiver get created?\n");
         return;
     }
+
+    printf("✓ Got existing sink_0 pad\n");
 
     // Link rtpopuspay to webrtcbin
     GstPad *pay_src = gst_element_get_static_pad(rtpopuspay, "src");
     if (gst_pad_link(pay_src, webrtc_sink) != GST_PAD_LINK_OK) {
-        printf("ERROR: Failed to link rtpopuspay to webrtcbin\n");
+        printf("ERROR: Failed to link rtpopuspay to webrtcbin sink_0\n");
         return;
     }
     gst_object_unref(pay_src);
     gst_object_unref(webrtc_sink);
+
+    printf("✓ Linked rtpopuspay to sink_0\n");
 
     // Sync state with pipeline
     gst_element_sync_state_with_parent(audiotestsrc);
     gst_element_sync_state_with_parent(queue);
     gst_element_sync_state_with_parent(opusenc);
     gst_element_sync_state_with_parent(rtpopuspay);
+
+    guint count_after = count_transceivers(webrtc, "After connecting audio");
+
+    if (count_after != count_before) {
+        printf("❌ ERROR: Transceiver count changed! %u -> %u (should stay same!)\n",
+               count_before, count_after);
+    } else {
+        printf("✅ Transceiver count unchanged: %u (correct!)\n", count_after);
+    }
 
     sender_connected = TRUE;
     printf("✓ Sender pipeline connected\n");
@@ -153,6 +169,36 @@ on_answer_created(GstPromise *promise, gpointer user_data)
 
         g_free(sdp_text);
         gst_webrtc_session_description_free(answer);
+
+        // NEW: Connect audio source AFTER answer is created
+        printf("\n========================================\n");
+        printf("Now connecting audio source pipeline...\n");
+        printf("========================================\n");
+        connect_sender_pipeline();
+
+        printf("\n========================================\n");
+        printf("VERIFICATION: Transceiver details\n");
+        printf("========================================\n");
+        print_transceiver_info(webrtc, "After audio connected");
+
+        // Check if mline got assigned (should be 0 for audio)
+        GArray *transceivers = NULL;
+        g_signal_emit_by_name(webrtc, "get-transceivers", &transceivers);
+        if (transceivers && transceivers->len > 0) {
+            GstWebRTCRTPTransceiver *trans = g_array_index(transceivers, GstWebRTCRTPTransceiver*, 0);
+            guint mline;
+            g_object_get(trans, "mlineindex", &mline, NULL);
+
+            if (mline == 0) {
+                printf("✅ Transceiver mline=0 (assigned correctly)\n");
+            } else if (mline == G_MAXUINT) {
+                printf("⚠️  WARNING: Transceiver still UNASSIGNED (mline=%u)\n", mline);
+                printf("    This is OK - mline assigned during SDP negotiation, not after audio link\n");
+            } else {
+                printf("❌ Unexpected mline=%u\n", mline);
+            }
+            g_array_unref(transceivers);
+        }
     } else {
         printf("❌ ERROR: Failed to get answer from promise\n");
     }
