@@ -274,8 +274,20 @@ class CallBarrel:
             if settings_path.exists():
                 with open(settings_path, 'r') as f:
                     settings = json.load(f)
-                    mic = settings.get('microphone_device', '')
-                    speakers = settings.get('speakers_device', '')
+
+                    # Handle both dict (new format) and string (old format) for backward compatibility
+                    mic_setting = settings.get('microphone_device', '')
+                    speakers_setting = settings.get('speakers_device', '')
+
+                    if isinstance(mic_setting, dict):
+                        mic = mic_setting.get('device_id', '')
+                    else:
+                        mic = mic_setting  # Old format (string)
+
+                    if isinstance(speakers_setting, dict):
+                        speakers = speakers_setting.get('device_id', '')
+                    else:
+                        speakers = speakers_setting  # Old format (string)
 
                     # Load audio processing settings if present
                     if 'audio_processing' in settings:

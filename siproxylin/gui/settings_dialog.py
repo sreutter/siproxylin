@@ -360,17 +360,37 @@ class SettingsDialog(QDialog):
 
     def _load_current_settings(self):
         """Load current settings into UI."""
-        # Load microphone device
+        # Load microphone device (handle both dict and string formats for backward compatibility)
         mic_device = self.settings.get('microphone_device', '')
-        mic_index = self.microphone_combo.findData(mic_device)
+        if isinstance(mic_device, dict):
+            mic_device_id = mic_device.get('device_id', '')
+        else:
+            # Old format (string) - could be device_id or display_name
+            mic_device_id = mic_device
+
+        mic_index = self.microphone_combo.findData(mic_device_id)
         if mic_index >= 0:
             self.microphone_combo.setCurrentIndex(mic_index)
+        else:
+            # Device not found (USB unplugged?) - fallback to default
+            logger.warning(f"Saved microphone device not found: {mic_device_id}, using default")
+            self.microphone_combo.setCurrentIndex(0)  # Default (System)
 
-        # Load speakers device
+        # Load speakers device (handle both dict and string formats for backward compatibility)
         speakers_device = self.settings.get('speakers_device', '')
-        speakers_index = self.speakers_combo.findData(speakers_device)
+        if isinstance(speakers_device, dict):
+            speakers_device_id = speakers_device.get('device_id', '')
+        else:
+            # Old format (string) - could be device_id or display_name
+            speakers_device_id = speakers_device
+
+        speakers_index = self.speakers_combo.findData(speakers_device_id)
         if speakers_index >= 0:
             self.speakers_combo.setCurrentIndex(speakers_index)
+        else:
+            # Device not found (USB unplugged?) - fallback to default
+            logger.warning(f"Saved speakers device not found: {speakers_device_id}, using default")
+            self.speakers_combo.setCurrentIndex(0)  # Default (System)
 
         # Load audio processing settings
         audio_processing = self.settings.get('audio_processing', {})
@@ -437,9 +457,21 @@ class SettingsDialog(QDialog):
 
     def _on_save(self):
         """Save settings and close dialog."""
-        # Get selected devices
-        self.settings['microphone_device'] = self.microphone_combo.currentData()
-        self.settings['speakers_device'] = self.speakers_combo.currentData()
+        # Get selected devices (store both ID and display name for robustness)
+        mic_device_id = self.microphone_combo.currentData()
+        mic_display_name = self.microphone_combo.currentText()
+        speakers_device_id = self.speakers_combo.currentData()
+        speakers_display_name = self.speakers_combo.currentText()
+
+        # Store as dict with both fields (for handling USB device disconnect/reconnect)
+        self.settings['microphone_device'] = {
+            'device_id': mic_device_id if mic_device_id else '',
+            'display_name': mic_display_name
+        }
+        self.settings['speakers_device'] = {
+            'device_id': speakers_device_id if speakers_device_id else '',
+            'display_name': speakers_display_name
+        }
 
         # Get audio processing settings
         self.settings['audio_processing'] = {
