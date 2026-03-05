@@ -36,6 +36,7 @@ public:
     bool add_remote_ice_candidate(const ICECandidate &candidate) override;
 
     void set_state_callback(StateCallback callback) override;
+    void set_stats_callback(StatsCallback callback) override;
 
     bool set_mute(bool muted) override;
     bool is_muted() const override { return false; }  // TODO

@@ -1554,12 +1554,8 @@ void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) 
                         if (local_id) ctx->selected_local_candidate_id = local_id;
                         if (remote_id) ctx->selected_remote_candidate_id = remote_id;
 
-                        // Get bytes sent/received
-                        guint64 bytes_sent = 0, bytes_received = 0;
-                        gst_structure_get_uint64(stat, "bytes-sent", &bytes_sent);
-                        gst_structure_get_uint64(stat, "bytes-received", &bytes_received);
-                        ctx->stats->bytes_sent = bytes_sent;
-                        ctx->stats->bytes_received = bytes_received;
+                        // NOTE: candidate-pair bytes_sent/bytes_received are ICE-level stats (STUN/connectivity checks),
+                        // NOT the actual media traffic. Use OUTBOUND_RTP/INBOUND_RTP stats for media bytes.
 
                         // Get RTT (round-trip time)
                         gdouble rtt = 0.0;
@@ -1612,12 +1608,33 @@ void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) 
                         ctx->stats->remote_candidates.push_back(formatted);
                     }
 
+                } else if (type_enum == GST_WEBRTC_STATS_OUTBOUND_RTP) {
+                    // Outgoing RTP stream - bytes sent and packets sent
+                    guint64 bytes_sent = 0;
+                    guint packets_sent = 0;
+                    gst_structure_get_uint64(stat, "bytes-sent", &bytes_sent);
+                    gst_structure_get_uint(stat, "packets-sent", &packets_sent);
+
+                    LOG_TRACE("[WebRTCSession] parse_stats: OUTBOUND_RTP bytes_sent={}, packets_sent={}",
+                             bytes_sent, packets_sent);
+
+                    ctx->stats->bytes_sent += bytes_sent;  // Accumulate in case of multiple streams
+
                 } else if (type_enum == GST_WEBRTC_STATS_INBOUND_RTP) {
-                    // Packet loss
+                    // Incoming RTP stream - bytes received, packets, loss, jitter
+                    guint64 bytes_received = 0;
                     guint packets_lost = 0, packets_received = 0;
+
+                    gst_structure_get_uint64(stat, "bytes-received", &bytes_received);
                     gst_structure_get_uint(stat, "packets-lost", &packets_lost);
                     gst_structure_get_uint(stat, "packets-received", &packets_received);
 
+                    LOG_TRACE("[WebRTCSession] parse_stats: INBOUND_RTP bytes_received={}, packets_received={}, packets_lost={}",
+                             bytes_received, packets_received, packets_lost);
+
+                    ctx->stats->bytes_received += bytes_received;  // Accumulate in case of multiple streams
+
+                    // Packet loss percentage
                     if (packets_received > 0) {
                         ctx->stats->packet_loss_pct =
                             (100.0 * packets_lost) / (packets_lost + packets_received);

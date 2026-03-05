@@ -55,6 +55,10 @@ bool RTPSession::add_remote_ice_candidate(const ICECandidate &candidate) {
 void RTPSession::set_state_callback(StateCallback callback) {
 }
 
+void RTPSession::set_stats_callback(StatsCallback callback) {
+    // TODO: Implement for RTP session
+}
+
 bool RTPSession::set_mute(bool muted) {
     return false;
 }

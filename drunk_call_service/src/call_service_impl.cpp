@@ -360,6 +360,7 @@ grpc::Status CallServiceImpl::CreateAnswer(
         auto state = std::make_shared<SDPCallbackState>();
 
         // Set SDP callback and create answer (will be called from GLib thread)
+        LOG_INFO("GRPC DEBUG: About to call session->webrtc->create_answer() for session {}", session_id);
         session->webrtc->create_answer(remote_offer, [state, session_id](bool success, const SDPMessage& sdp, const std::string& error) {
             // THIS RUNS IN GLIB THREAD!
             std::lock_guard<std::mutex> lock(state->mutex);
