@@ -129,10 +129,30 @@ class JingleSDPConverter:
                     content_name = line.split(':', 1)[1]
                     break
 
+            # Parse SDP direction from media lines
+            # a=sendrecv → senders='both'
+            # a=recvonly → senders='initiator' (only initiator/Dino sends, we receive)
+            # a=sendonly → senders='responder' (we send, initiator receives)
+            # a=inactive → senders='none'
+            sdp_direction = 'sendrecv'  # Default
+            for line in media_lines:
+                if line.strip() in ('a=sendrecv', 'a=recvonly', 'a=sendonly', 'a=inactive'):
+                    sdp_direction = line.strip().split('=')[1]
+                    break
+
+            # Convert SDP direction to Jingle senders attribute
+            jingle_senders_map = {
+                'sendrecv': 'both',
+                'recvonly': 'initiator',  # Only initiator sends (we only receive)
+                'sendonly': 'responder',  # Only responder sends (we only send)
+                'inactive': 'none'
+            }
+            jingle_senders = jingle_senders_map.get(sdp_direction, 'both')
+
             content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
             content.set('creator', 'initiator')
             content.set('name', content_name)
-            content.set('senders', 'both')
+            content.set('senders', jingle_senders)
 
             # Parse m= line for payload types
             # Format: m=audio 9 UDP/TLS/RTP/SAVPF 111 ...
