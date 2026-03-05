@@ -778,3 +778,494 @@ cd tests/standalone && make test
 
 **Last Updated**: 2026-03-03 (Session 13: Code review + 5 critical bug fixes)
 **Next Session**: Fix remaining 4 issues (#6, #7, #8, #9) following official GStreamer patterns
+
+---
+
+### Session 21 (2026-03-04): Device ID Bug + SDP Direction Investigation 🔍
+
+**Status**: Connection WORKS (both ends), Audio BROKEN (0kbps) - Root cause identified
+
+#### Part A: Device ID Bug Discovery & Fix
+
+**Problem Found**: Audio device enumeration was returning wrong field
+- **Proto has**: `name` (device ID) and `description` (display name)
+- **Bug**: C++ was setting `description = device.description` (device class "Audio/Source")
+- **Should be**: `description = device.name` (display name "Family 17h/19h...")
+
+**Device ID Extraction Bug**:
+- **PipeWire/PulseAudio** uses property `node.name` for device ID
+- **Code was checking**: `device.api`, `device.name`, `device` (all NULL!)
+- **Fix**: Check `node.name` first (alsa_input.pci-...)
+
+**Files Fixed**:
+```
+drunk_call_service/src/call_service_impl.cpp:571 - set_description(device.name) not device.description
+drunk_call_service/src/device_enumerator.cpp:75 - check node.name property
+```
+
+**Python Improvements**:
+- Settings dialog now stores BOTH device_id and display_name in JSON
+- Backward compatibility for old string format
+- Fallback to default if saved device unplugged
+
+**JSON Format** (new):
+```json
+{
+  "microphone_device": {
+    "device_id": "alsa_input.pci-0000_05_00.6.analog-stereo",
+    "display_name": "Family 17h/19h HD Audio Controller Analog Stereo"
+  }
+}
+```
+
+**Result**: Device enumeration now works correctly, but revealed deeper issue...
+
+#### Part B: SDP Direction Investigation (a=recvonly Problem)
+
+**THE REAL PROBLEM**: webrtcbin generates `a=recvonly` instead of `a=sendrecv`
+
+**Timeline of Understanding**:
+
+1. **Initial Finding**: SDP answer contains `a=recvonly`
+   - Python was hardcoded to send `senders='both'` regardless
+   - This masked the problem temporarily
+
+2. **Connection Issue Separate from SDP**:
+   - At BINGO (SESSION-ROTATE.md): Both ends connected but SDP had `a=recvonly`
+   - Connection works when `device_id=""` (use default/auto)
+   - SDP direction is a SEPARATE issue from connection
+
+3. **Python Jingle Converter Fix**:
+   - Added proper SDP direction parsing in `jingle_sdp_converter.py:132-155`
+   - Now reads actual SDP direction and converts to Jingle `senders` attribute:
+     - `a=sendrecv` → `senders='both'`
+     - `a=recvonly` → `senders='initiator'` (only Dino sends, we receive)
+     - `a=sendonly` → `senders='responder'` (we send, Dino receives)
+
+4. **Result**: Python now sends HONEST `senders` attribute to Dino
+   - Session 7de03fd5: Sent `senders="initiator"` (receive-only)
+   - Dino offered `a=sendrecv` (wanted bidirectional)
+   - **Incompatible expectations → Dino refuses to send media**
+   - No `pad-added` signal fires (no incoming RTP)
+   - bandwidth=0kbps, no audio in either direction
+
+**Attempts to Fix webrtcbin SDP Generation** (all FAILED):
+
+```cpp
+// TRIED #1: Set transceiver direction BEFORE set-remote-description
+GArray* transceivers = nullptr;
+g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers);
+for (each transceiver) {
+    g_object_set(trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, NULL);
+}
+// Result: Property sets to 4 (SENDRECV) but SDP still has a=recvonly ❌
+
+// TRIED #2: Also set AFTER set-remote-description in callback
+void on_offer_set_for_answer() {
+    // Set transceiver direction again
+    g_object_set(trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, NULL);
+    // create-answer
+}
+// Result: Transceiver shows direction=4 but SDP still has a=recvonly ❌
+
+// TRIED #3: Set is-live=true on audio source
+g_object_set(audio_src_,
+    "is-live", TRUE,
+    "do-timestamp", TRUE,
+    nullptr);
+// Result: Property sets but SDP still has a=recvonly ❌
+```
+
+**Root Cause (Confirmed)**:
+webrtcbin determines SDP direction based on **whether the RTP sender has negotiated caps**, NOT just transceiver direction property!
+
+Evidence:
+- Pipeline starts → caps negotiation begins
+- `create_answer()` called ~4ms later
+- **Caps not negotiated yet** → webrtcbin thinks we can't send
+- webrtcbin generates `a=recvonly`
+- Caps finish negotiating ~300ms later (but SDP already sent)
+
+**Previous attempt**: Added 500ms caps wait loop
+- **Worked for SDP**: Gave time for caps negotiation
+- **BROKE connection**: Delay caused timing issues, Dino stuck at "calling"
+- Lesson: Answer must be created PROMPTLY (milliseconds not 300ms+)
+
+#### Current State
+
+**What Works** ✅:
+- ICE: CHECKING → CONNECTED → COMPLETED (perfect!)
+- Connection: Both ends show "connected"
+- Device enumeration: Correct device IDs
+- Python: Honest SDP→Jingle conversion
+
+**What's Broken** ❌:
+- webrtcbin: Still generates `a=recvonly` despite transceiver=SENDRECV
+- Audio flow: 0 kbps bandwidth
+- No `pad-added` signal (no incoming RTP from Dino)
+- Dino won't send because we offered receive-only
+
+**Test Evidence** (Session 7de03fd5-3325-4b96-9fbd-72f880541e3c):
+```
+Timeline:
+22:35:28.543 - CreateSession
+22:35:28.576 - Pipeline PLAYING
+22:35:28.699 - CreateAnswer (120ms) → SDP with a=recvonly
+22:35:28.899 - ICE CHECKING
+22:35:29.402 - ICE CONNECTED (0.5s)
+22:35:30.965 - ICE COMPLETED (2.4s)
+22:35:30.293 onwards - bandwidth=0kbps (no media)
+
+Jingle sent to Dino:
+<content creator="initiator" name="audio" senders="initiator">
+  (only Dino sends, we receive-only)
+
+No pad-added signal fired = No incoming RTP = Dino not sending
+```
+
+#### Files Modified This Session
+
+**C++**:
+- `drunk_call_service/src/call_service_impl.cpp:571,582` - Fix device description field
+- `drunk_call_service/src/device_enumerator.cpp:75` - Check node.name for device ID
+- `drunk_call_service/src/webrtc_session.cpp:543-547` - Add is-live=true property
+- `drunk_call_service/src/webrtc_session.cpp:1081-1089` - Add SDP direction logging
+
+**Python**:
+- `siproxylin/gui/settings_dialog.py:447-454` - Store both device_id and display_name
+- `siproxylin/gui/settings_dialog.py:365-393` - Load with backward compatibility & fallback
+- `siproxylin/core/barrels/calls.py:282-290` - Handle dict/string format
+- `drunk_call_hook/protocol/jingle_sdp_converter.py:132-155` - Parse SDP direction, convert to Jingle senders
+
+#### Next Steps (Critical Path to Working Audio)
+
+**MUST FIX**: Make webrtcbin generate `a=sendrecv` in SDP answer
+
+**Possible Approaches**:
+
+1. **Pre-negotiate caps** (unclear how, need research)
+   - Force caps on audio_src didn't work
+   - Need caps on RTP sender, not audio_src
+
+2. **Wait for caps WITHOUT breaking timing** (challenge!)
+   - Need < 50ms wait (not 300ms)
+   - Or async answer creation (complex)
+
+3. **Hack SDP in Python** (last resort)
+   - Replace `a=recvonly` with `a=sendrecv` before converting to Jingle
+   - Risky if pipeline actually can't send
+
+4. **Research GStreamer patterns** (recommended)
+   - Check official webrtcbin examples for answer creation
+   - Look for caps negotiation forcing patterns
+   - May need to change pipeline structure
+
+**Test Command for Debugging**:
+```bash
+# Check device properties
+gst-inspect-1.0 pulsesrc
+gst-inspect-1.0 autoaudiosrc
+
+# Test if pipeline can capture audio
+gst-launch-1.0 autoaudiosrc is-live=true ! audioconvert ! audioresample ! \
+  opusenc ! rtpopuspay ! fakesink
+
+# Check caps negotiation timing
+GST_DEBUG=GST_CAPS:5 ./drunk-call-service-linux
+```
+
+**Key Insight**: The connection and SDP direction are TWO DIFFERENT PROBLEMS:
+- Connection: Fixed by transceiver direction (BINGO achievement)
+- Audio flow: Blocked by SDP direction mismatch (still unsolved)
+
+**Documentation References**:
+- `SESSION-ROTATE.md` - BINGO moment transcript
+- `docs/CALLS/2-SDP-PLAN.md` - Updated with critical lesson learned
+- `docs/ADR.md` - Architecture decisions
+
+---
+
+**Last Updated**: 2026-03-04 22:36 (Session 21: Device ID fixed, SDP direction root cause confirmed)
+**Next Session**: Research GStreamer caps forcing or implement SDP hack workaround
+
+#### 📝 NOTE FOR NEXT SESSION
+
+**START HERE**: Analyze GStreamer webrtcbin source code to understand SDP direction logic
+
+**Task**: Find where webrtcbin decides `a=recvonly` vs `a=sendrecv` in answer generation
+
+**GStreamer Source to Check**:
+```bash
+# Clone GStreamer if not already available
+git clone https://gitlab.freedesktop.org/gstreamer/gstreamer.git
+cd gstreamer/subprojects/gst-plugins-bad/ext/webrtc
+
+# Key files to analyze:
+# - gstwebrtcbin.c - Main webrtcbin logic
+# - webrtctransceiver.c - Transceiver direction negotiation
+# Search for: "recvonly", "sendrecv", "create-answer", direction negotiation
+```
+
+**Questions to Answer**:
+1. Where does webrtcbin check if sender has caps?
+2. What exact condition triggers `a=recvonly` generation?
+3. Is there a property/signal to force caps pre-negotiation?
+4. How do official examples handle this timing?
+
+**Alternative**: Check GStreamer webrtc examples in `gst-examples/webrtc/` for answer creation patterns
+
+**Quick Test Ideas**:
+- Add capsfilter between audio_src and opusenc with fixed caps
+- Try `gst_element_sync_state_with_parent()` on audio_src before answer
+- Check if `gst_element_get_state()` with timeout helps
+
+**If Analysis Takes Too Long**: Implement Python SDP hack as temporary workaround:
+```python
+# In jingle_sdp_converter.py after parsing SDP
+if role == 'answer' and 'a=recvonly' in sdp_str:
+    sdp_str = sdp_str.replace('a=recvonly', 'a=sendrecv')
+    # Log warning that we're overriding broken SDP
+```
+
+---
+
+---
+
+### Session 22 (2026-03-05): Root Cause Analysis - Two Transceivers Problem 🔬
+
+**Status**: SDP now has `a=sendrecv` ✅ but still no audio (0kbps bandwidth, 2 transceivers)
+
+#### Progress Made
+
+**Win**: Fixed `a=recvonly` → `a=sendrecv` by adding `encoding-params="2"` to transceiver codec preferences!
+- Added explicit `add-transceiver` call with OPUS caps including stereo channels
+- SDP answer now correctly shows `a=sendrecv`
+
+**Problem**: Still getting 2 transceivers instead of 1
+- Transceiver 0: Created by our `add-transceiver` call
+- Transceiver 1: Created by webrtcbin from remote offer (this one is used - `sink_1`)
+- Bandwidth: 0kbps (no audio flowing)
+
+#### Root Cause Confirmed
+
+By analyzing GStreamer source code (`gst-plugins-bad/ext/webrtc/gstwebrtcbin.c:4521-4568`):
+
+When `create_answer()` is called, webrtcbin:
+1. Tries to find existing transceiver matching offer's caps (lines 4521-4560)
+2. If match found: uses `rtp_trans->direction` (line 4563)
+3. If NO match: creates NEW transceiver with `RECVONLY` (line 4568)
+
+**Our issue**: Caps don't match, so webrtcbin creates second transceiver.
+
+#### Official GStreamer Pattern
+
+Analyzed `/drunk_call_service/tmp/gst-examples/webrtc/sendrecv/gst/webrtc-sendrecv.c`:
+
+```c
+// Pipeline created ONCE for both offerer AND answerer:
+pipe1 = gst_parse_launch(
+    "webrtcbin bundle-policy=max-bundle name=sendrecv "
+    "audiotestsrc is-live=true ! ... ! rtpopuspay ! sendrecv. "
+    "videotestsrc is-live=true ! ... ! rtpvp8pay ! sendrecv. ", &error);
+
+// For answerer:
+on_offer_received(sdp) {
+    set-remote-description(offer);  // webrtcbin creates transceivers from offer
+    // callback fires:
+    create-answer();
+}
+```
+
+**Key insight**: Sources are linked to webrtcbin BEFORE any SDP negotiation. Works for both roles.
+
+#### Why Our Code Has 2 Transceivers
+
+**Current flow**:
+1. Create pipeline, request `sink_%u` pad → creates transceiver 0 with caps from our pipeline
+2. Call `add-transceiver` explicitly → ??? (redundant?)
+3. Receive offer → `set-remote-description` → webrtcbin can't match caps → creates transceiver 1
+4. `create-answer` → uses transceiver 1 (the new RECVONLY one, but we force it to SENDRECV)
+
+**Why caps don't match**: Unknown - need to log actual caps to see mismatch
+
+#### Next Steps to Try
+
+**Option 1: Remove `add-transceiver`, let implicit creation work**
+- Revert to simple `request_pad_simple("sink_%u")` only
+- Problem: This gave us `a=recvonly` before
+- May need to set transceiver direction AFTER it's created but BEFORE set-remote-description
+
+**Option 2: Don't request pad until AFTER set-remote-description**
+- Let webrtcbin create transceiver from remote offer
+- Then link our audio source to it
+- Challenge: Need pad to link pipeline, but pad creates transceiver
+
+**Option 3: Set codec-preferences on our transceiver to match offer exactly**
+- Need to know offer's codecs beforehand (we don't)
+- Or set very permissive caps
+
+**Option 4: Add detailed logging to see exact caps mismatch**
+- Log our transceiver's codec-preferences
+- Log remote offer's codecs  
+- Find exact field that doesn't match
+- This is what the updated code in webrtc_session.cpp:1082-1164 will do
+
+#### Files Modified This Session
+
+**C++**:
+- `drunk_call_service/src/webrtc_session.cpp`:
+  - Lines 565-568: Reverted `add-transceiver` code (kept simple pad request)
+  - Lines 1082-1164: Added detailed transceiver/caps logging in `on_offer_set_for_answer()`
+    - Logs mlineindex, direction, codec-preferences for each transceiver
+    - Checks if sender exists
+    - Forces direction to SENDRECV if not already
+
+**Next Test**: Build with new logging, check what codec-preferences our transceiver has vs what offer contains
+
+#### Evidence
+
+**Logs showing 2 transceivers**:
+```
+[2026-03-05 00:02:48.462] Found 2 transceiver(s) for answer
+[2026-03-05 00:02:48.462] Transceiver 0 direction: 4 (SENDRECV)
+[2026-03-05 00:02:48.462] Transceiver 1 direction: 4 (SENDRECV)
+[2026-03-05 00:02:48.463] Incoming stream on pad: sink_1  ← Using transceiver 1!
+```
+
+**Bandwidth**: 0kbps throughout call (no RTP flowing)
+
+**Audio devices**: Microphone IS capturing (pactl shows source-output), but no playback (no sink-inputs)
+
+---
+
+---
+
+### Session 23 (2026-03-05): Codec-Preferences Set But Transceiver Still Not Matched 🔍
+
+**Status**: Still `a=recvonly`, but discovered the exact problem!
+
+#### What We Did
+
+Added code to set `codec-preferences` on transceiver immediately after creating it (lines 620-652 in webrtc_session.cpp):
+```cpp
+// After requesting pad (which creates transceiver):
+GstCaps *opus_caps = gst_caps_new_simple("application/x-rtp",
+    "media", G_TYPE_STRING, "audio",
+    "encoding-name", G_TYPE_STRING, "OPUS",
+    "clock-rate", G_TYPE_INT, 48000,
+    "encoding-params", G_TYPE_STRING, "2",  // Stereo
+    nullptr);
+g_object_set(trans, "codec-preferences", opus_caps, ...);
+```
+
+Also enhanced logging in `on_offer_set_for_answer()` to show detailed transceiver state (lines 1082-1164).
+
+#### The Discovery
+
+**Logs from test call (session f04fd02f)**:
+```
+[00:14:04.121] Setting codec-preferences on 1 transceiver(s)
+[00:14:04.121] Transceiver 0 configured: OPUS 48kHz stereo, direction=SENDRECV
+...
+[00:14:04.438] Found 1 transceiver(s) after set-remote-description
+[00:14:04.438] Transceiver 0: mline=4294967295, direction=4 (SENDRECV)
+[00:14:04.438] Transceiver 0 codec-preferences: application/x-rtp, media=(string)audio, 
+                encoding-name=(string)OPUS, clock-rate=(int)48000, encoding-params=(string)2
+[00:14:04.438] Transceiver 0 has sender
+```
+
+**Key finding**: `mline=4294967295` (which is `UINT_MAX` or `-1` = **UNASSIGNED**)
+
+This means:
+1. ✅ Codec-preferences ARE being set correctly at pipeline creation
+2. ✅ Direction is SENDRECV
+3. ✅ Transceiver has a sender
+4. ❌ **But mline is unassigned** - webrtcbin didn't match our transceiver to the remote offer!
+
+#### Root Cause Analysis
+
+When webrtcbin processes `set-remote-description` with an offer, it tries to match the offer's m-line with existing transceivers by comparing caps (gstwebrtcbin.c:4521-4560).
+
+**Our caps**:
+```
+application/x-rtp, media=audio, encoding-name=OPUS, clock-rate=48000, encoding-params=2
+```
+
+**Remote offer** (Dino):
+```
+a=rtpmap:111 opus/48000/2
+```
+Which translates to payload type **111**.
+
+**The missing piece**: We don't specify `payload` in our caps! This is likely why the match fails.
+
+#### Why mline=UNASSIGNED Causes a=recvonly
+
+From GStreamer source (gstwebrtcbin.c:4562-4568):
+```c
+if (rtp_trans) {
+    answer_dir = rtp_trans->direction;  // Uses our SENDRECV
+} else {
+    // No matching transceiver found!
+    answer_dir = GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY;
+    GST_WARNING ("did not find compatible transceiver, will only receive");
+}
+```
+
+Since our transceiver's mline is unassigned, webrtcbin treats it as "no matching transceiver" and generates `a=recvonly`.
+
+#### The Solution (To Try Next)
+
+We should NOT be setting codec-preferences ourselves! Looking back at the official GStreamer example (`webrtc-sendrecv.c`), they don't set codec-preferences manually. The caps are negotiated automatically from the pipeline.
+
+**The real issue**: We're requesting a pad (`sink_%u`) which creates a transceiver, but webrtcbin doesn't know what caps to associate with it yet because the pipeline hasn't fully negotiated caps.
+
+**Possible solutions**:
+
+**Option A**: Don't create transceiver until after `set-remote-description`
+- Remove pad request from `create_pipeline()`
+- Let webrtcbin create transceiver from remote offer
+- Then dynamically link our audio source when transceiver is created
+- Challenge: Need to connect to some signal to know when transceiver is ready
+
+**Option B**: Use `add-transceiver` with proper caps including payload type
+- Go back to explicit `add-transceiver` approach
+- But this time include `payload` in caps: `"payload", G_TYPE_INT, 111`
+- This might help webrtcbin match it
+
+**Option C**: Wait for caps negotiation before requesting pad
+- Start pipeline in PAUSED state
+- Wait for caps to be negotiated on our audio chain
+- Then request pad (transceiver gets proper caps)
+- Then call `set-remote-description`
+
+#### Files Modified
+
+**C++**:
+- `drunk_call_service/src/webrtc_session.cpp`:
+  - Lines 620-652: Added codec-preferences setting after pad request
+  - Lines 1082-1164: Enhanced logging to show transceiver state after set-remote-description
+
+#### Evidence
+
+**SDP Answer** (still broken):
+```
+a=recvonly
+```
+
+**Transceiver state**:
+- 1 transceiver (not 2 anymore!) ✅
+- direction=SENDRECV ✅  
+- codec-preferences set correctly ✅
+- **mline=UNASSIGNED** ❌ ← This is the problem!
+
+**Bandwidth**: Still 0kbps (no audio)
+
+#### Next Session TODO
+
+1. Try Option B: Add `"payload", G_TYPE_INT, 111` to codec-preferences caps
+2. If that doesn't work, try Option A: Dynamic linking after set-remote-description
+3. Check if there's a webrtcbin signal that fires when transceiver is ready
+4. Look at GStreamer test suite for answerer examples
+
+---
