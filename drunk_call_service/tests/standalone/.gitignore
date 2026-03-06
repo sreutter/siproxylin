@@ -10,3 +10,4 @@ test_step9_session_manager
 test_webrtc_answerer
 test_webrtc_caller
 *.log
+*.txt
