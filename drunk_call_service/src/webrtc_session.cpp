@@ -1215,16 +1215,28 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
 
         g_free(sdp_text);
 
-        // NEW: Create audio source pipeline AFTER answer is created
-        LOG_INFO("[WebRTCSession] DEBUG: is_outgoing_={}, about to check if should create audio", is_outgoing_.load());
+        // For answerers: create audio pipeline using the pad we created earlier
         if (!is_outgoing_) {
-            LOG_INFO("[WebRTCSession] Answerer mode: Creating audio source pipeline now...");
+            LOG_INFO("[WebRTCSession] Answerer mode: Creating audio source pipeline...");
+
+            if (!negotiated_pad_) {
+                LOG_ERROR("[WebRTCSession] No negotiated pad available!");
+                gst_webrtc_session_description_free(answer);
+                if (sdp_callback_) {
+                    sdp_callback_(false, SDPMessage(), "No negotiated pad");
+                }
+                return;
+            }
+
+            // Create audio source pipeline using stored pad
             if (!create_audio_source_pipeline()) {
                 LOG_ERROR("[WebRTCSession] Failed to create audio source pipeline!");
-                // Continue anyway - callback with answer, but audio won't work
+                gst_webrtc_session_description_free(answer);
+                if (sdp_callback_) {
+                    sdp_callback_(false, SDPMessage(), "Failed to create audio pipeline");
+                }
+                return;
             }
-        } else {
-            LOG_WARN("[WebRTCSession] Skipping audio creation - is_outgoing_=true (should be false for answerer!)");
         }
 
         // Call user callback
@@ -1245,13 +1257,17 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
 
 void WebRTCSession::on_offer_set_for_answer() {
     try {
-        LOG_INFO("[WebRTCSession] Offer set, requesting pad to associate with auto-created transceiver...");
+        LOG_INFO("[WebRTCSession] Offer set, requesting pad and setting SENDRECV...");
 
-        // NEW APPROACH: webrtcbin auto-created transceiver(s) from the remote offer
-        // Request a sink pad - this associates our pad with the auto-created transceiver
+        // CORRECT APPROACH (like FIFO test):
+        // 1. Request a pad - this creates transceiver with proper mline
+        // 2. Set that transceiver's direction to SENDRECV
+        // 3. Create answer - webrtcbin reuses our transceiver
+
+        // Request a sink pad - this creates a transceiver
         GstPad *webrtc_sink = gst_element_request_pad_simple(webrtc_, "sink_%u");
         if (!webrtc_sink) {
-            LOG_ERROR("[WebRTCSession] Failed to request sink pad after set-remote-description!");
+            LOG_ERROR("[WebRTCSession] Failed to request sink pad!");
             if (sdp_callback_) {
                 sdp_callback_(false, SDPMessage(), "Failed to request sink pad");
             }
@@ -1262,7 +1278,7 @@ void WebRTCSession::on_offer_set_for_answer() {
         LOG_INFO("[WebRTCSession] ✓ Requested pad: {}", pad_name);
         g_free(pad_name);
 
-        // Get the transceiver associated with this pad
+        // Get the transceiver for this pad
         GValue val = G_VALUE_INIT;
         g_object_get_property(G_OBJECT(webrtc_sink), "transceiver", &val);
         GstWebRTCRTPTransceiver *trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
@@ -1277,29 +1293,28 @@ void WebRTCSession::on_offer_set_for_answer() {
             return;
         }
 
-        // Set codec-preferences on the auto-created transceiver (if we have them)
+        // Set direction to SENDRECV
+        g_object_set(trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
+        LOG_INFO("[WebRTCSession] ✓ Set transceiver direction to SENDRECV");
+
+        // Set codec-preferences if we have them
         if (offer_codec_caps_) {
-            g_object_set(trans,
-                "codec-preferences", offer_codec_caps_,
-                nullptr);
-
+            g_object_set(trans, "codec-preferences", offer_codec_caps_, nullptr);
             gchar *caps_str = gst_caps_to_string(offer_codec_caps_);
-            LOG_INFO("[WebRTCSession] ✓ Set codec-preferences on transceiver: {}", caps_str);
+            LOG_INFO("[WebRTCSession] ✓ Set codec-preferences: {}", caps_str);
             g_free(caps_str);
-
-            // Clean up - we don't need this anymore
             gst_caps_unref(offer_codec_caps_);
             offer_codec_caps_ = nullptr;
         }
 
         g_value_unset(&val);
 
-        // Store this pad for later reuse in create_audio_source_pipeline()
-        negotiated_pad_ = webrtc_sink;  // Keep our reference
-        LOG_INFO("[WebRTCSession] ✓ Stored negotiated pad for audio pipeline reuse");
+        // Store this pad for audio pipeline creation AFTER answer
+        negotiated_pad_ = webrtc_sink;
+        LOG_INFO("[WebRTCSession] ✓ Stored pad for audio pipeline");
 
-        // Now create the answer
-        LOG_INFO("[WebRTCSession] Creating answer with configured transceiver...");
+        // Create the answer - webrtcbin will reuse our transceiver
+        LOG_INFO("[WebRTCSession] Creating answer...");
         GstPromise *promise = gst_promise_new_with_change_func(
             on_answer_created_static, this, nullptr);
 
