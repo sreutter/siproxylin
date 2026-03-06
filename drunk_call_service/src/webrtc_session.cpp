@@ -132,6 +132,54 @@ static GstCaps* parse_audio_codec_from_offer(GstSDPMessage *offer) {
     return caps;
 }
 
+/**
+ * Extract mid values from SDP and build mline index → mid mapping
+ *
+ * Parses a=mid: attribute from each media section in the SDP.
+ * Returns a map of mline_index → mid value for populating sdpMid in ICE candidates.
+ *
+ * Example SDP:
+ *   m=audio 9 UDP/TLS/RTP/SAVPF 111
+ *   a=mid:audio0   <-- Extracted value
+ *
+ * Result: {0: "audio0"}
+ *
+ * @param sdp The SDP message to parse (typically our local offer)
+ * @return Map of mline index to mid value
+ */
+static std::map<guint, std::string> extract_mid_mapping(GstSDPMessage *sdp) {
+    std::map<guint, std::string> mid_map;
+
+    if (!sdp) {
+        LOG_ERROR("[WebRTCSession] extract_mid_mapping: NULL SDP provided");
+        return mid_map;
+    }
+
+    guint num_media = gst_sdp_message_medias_len(sdp);
+    LOG_DEBUG("[WebRTCSession] Extracting mid values from {} media section(s)", num_media);
+
+    for (guint i = 0; i < num_media; i++) {
+        const GstSDPMedia *media = gst_sdp_message_get_media(sdp, i);
+        if (!media) {
+            LOG_WARN("[WebRTCSession] Media section {} is NULL", i);
+            continue;
+        }
+
+        // Extract a=mid: attribute using GStreamer API
+        const gchar *mid_value = gst_sdp_media_get_attribute_val(media, "mid");
+
+        if (mid_value && mid_value[0] != '\0') {
+            mid_map[i] = std::string(mid_value);
+            LOG_INFO("[WebRTCSession] Extracted mid: mline[{}]={}", i, mid_value);
+        } else {
+            // Mid should always exist in valid WebRTC SDP, but handle gracefully
+            LOG_WARN("[WebRTCSession] Media section {} has no mid attribute", i);
+        }
+    }
+
+    return mid_map;
+}
+
 // ============================================================================
 // Constructor / Destructor
 // ============================================================================
@@ -520,6 +568,63 @@ bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
         // Old buggy code was:
         //   gst_promise_interrupt(promise);  // ❌ BAD!
         //   gst_promise_unref(promise);      // ❌ BAD!
+
+        // For offerer receiving answer: manually connect receive pipeline
+        // webrtcbin creates receive pads synchronously during set-remote-description,
+        // but pad-added signal may not fire (or fires before we're ready).
+        // Solution: Enumerate existing src pads and connect them manually.
+        if (is_outgoing_ && remote_sdp.type == SDPMessage::Type::ANSWER) {
+            LOG_INFO("[WebRTCSession] Offerer mode: Enumerating receive pads...");
+
+            // Give webrtcbin a moment to finish setting up pads
+            g_usleep(10000);  // 10ms delay
+
+            GstIterator *it = gst_element_iterate_src_pads(webrtc_);
+            if (it) {
+                GValue item = G_VALUE_INIT;
+                gboolean done = FALSE;
+                int pad_count = 0;
+
+                while (!done) {
+                    switch (gst_iterator_next(it, &item)) {
+                        case GST_ITERATOR_OK: {
+                            GstPad *pad = GST_PAD(g_value_get_object(&item));
+                            gchar *pad_name = gst_pad_get_name(pad);
+
+                            // Only process src pads (receive pads have "src_" prefix)
+                            if (g_str_has_prefix(pad_name, "src_")) {
+                                LOG_INFO("[WebRTCSession] Found receive pad: {}", pad_name);
+                                pad_count++;
+
+                                // Call the existing on_incoming_stream handler
+                                on_incoming_stream(pad);
+                            }
+
+                            g_free(pad_name);
+                            g_value_reset(&item);
+                            break;
+                        }
+                        case GST_ITERATOR_RESYNC:
+                            gst_iterator_resync(it);
+                            break;
+                        case GST_ITERATOR_ERROR:
+                            LOG_ERROR("[WebRTCSession] Error iterating pads");
+                            done = TRUE;
+                            break;
+                        case GST_ITERATOR_DONE:
+                            done = TRUE;
+                            break;
+                    }
+                }
+
+                g_value_unset(&item);
+                gst_iterator_free(it);
+
+                LOG_INFO("[WebRTCSession] Offerer: Connected {} receive pad(s)", pad_count);
+            } else {
+                LOG_WARN("[WebRTCSession] Failed to create pad iterator");
+            }
+        }
 
         LOG_INFO("[WebRTCSession] Remote description set");
         return true;
@@ -1382,6 +1487,16 @@ void WebRTCSession::on_offer_created(GstPromise *promise) {
         g_signal_emit_by_name(webrtc_, "set-local-description", offer, local_promise);
         // Promise is now owned by GStreamer - don't touch it!
 
+        // Extract mid values from our offer for ICE candidate routing
+        // This is only needed for offerer role - ICE candidates we generate need to know
+        // which media section they belong to (via sdpMid field)
+        media_mid_map_ = extract_mid_mapping(offer->sdp);
+        if (!media_mid_map_.empty()) {
+            LOG_INFO("[WebRTCSession] Extracted {} mid value(s) from offer", media_mid_map_.size());
+        } else {
+            LOG_WARN("[WebRTCSession] No mid values found in offer - ICE candidates may fail routing");
+        }
+
         // Convert SDP to text
         gchar *sdp_text = gst_sdp_message_as_text(offer->sdp);
         std::string sdp_str(sdp_text);
@@ -1631,6 +1746,19 @@ void WebRTCSession::on_ice_candidate(guint mlineindex, const char *candidate) {
 
         if (ice_callback_) {
             ICECandidate ice_cand(candidate, mlineindex);
+
+            // Populate sdpMid from our extracted mid mapping
+            // This is critical for Jingle transport-info content name matching
+            auto it = media_mid_map_.find(mlineindex);
+            if (it != media_mid_map_.end()) {
+                ice_cand.sdp_mid = it->second;
+                LOG_TRACE("[WebRTCSession] ICE candidate sdpMid={} (from mapping)", it->second);
+            } else {
+                // This should not happen for valid offers - log warning
+                LOG_WARN("[WebRTCSession] No mid found for mlineindex={}, sdpMid will be empty",
+                        mlineindex);
+            }
+
             ice_callback_(ice_cand);
         }
 

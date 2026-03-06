@@ -21,6 +21,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <map>
 
 namespace drunk_call {
 
@@ -74,6 +75,11 @@ private:
     // Negotiated codec parameters from answer SDP (used to configure audio pipeline)
     int negotiated_payload_;   // RTP payload type from answer (e.g., 111)
     int negotiated_channels_;  // Audio channels from answer (e.g., 2 for stereo)
+
+    // Media mid mapping: mline index → mid value (from SDP a=mid:)
+    // Extracted from our offer SDP to populate sdpMid in ICE candidates
+    // Example: {0: "audio0"} or {0: "0", 1: "video0"}
+    std::map<guint, std::string> media_mid_map_;
 
     // Callbacks
     SDPCallback sdp_callback_;
