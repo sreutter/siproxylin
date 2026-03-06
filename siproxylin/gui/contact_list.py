@@ -232,7 +232,8 @@ class ContactListWidget(QWidget):
             account_item.setExpanded(True)
 
             # Get MUC rooms from bookmarks, roster, OR conversations with messages
-            # A MUC can be: bookmarked, in roster, or have messages (e.g., invitations)
+            # A MUC can be: bookmarked OR have MUC conversation with messages
+            # Trust the protocol: conversation.type is set from XMPP msg['type']
             rooms = self.db.fetchall("""
                 SELECT
                     j.bare_jid,
@@ -244,23 +245,14 @@ class ContactListWidget(QWidget):
                 LEFT JOIN bookmark b ON b.jid_id = j.id AND b.account_id = ?
                 LEFT JOIN roster r ON r.jid_id = j.id AND r.account_id = ?
                 WHERE (
-                    b.id IS NOT NULL  -- In bookmarks
-                    OR r.id IS NOT NULL  -- In roster
-                    OR EXISTS (  -- OR has MUC conversation with messages (invitations, etc.)
+                    b.id IS NOT NULL  -- Bookmarked (definite MUC)
+                    OR EXISTS (  -- OR has MUC conversation (type=1 from protocol)
                         SELECT 1 FROM conversation c
                         JOIN content_item ci ON ci.conversation_id = c.id
                         WHERE c.account_id = ? AND c.jid_id = j.id AND c.type = 1
                     )
                   )
                   AND j.bare_jid LIKE '%@%'
-                  AND (
-                    -- MUC JIDs typically contain conference/chat/muc keywords
-                    j.bare_jid LIKE '%conference%'
-                    OR j.bare_jid LIKE '%chat.%'
-                    OR j.bare_jid LIKE '%muc.%'
-                    OR j.bare_jid LIKE '%groups.%'
-                    OR b.id IS NOT NULL  -- Or has a bookmark (definite MUC)
-                  )
                 GROUP BY j.bare_jid
                 ORDER BY name, j.bare_jid
             """, (account_id, account_id, account_id))
