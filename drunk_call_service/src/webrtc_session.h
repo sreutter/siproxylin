@@ -125,7 +125,8 @@ private:
 
     // Helper methods
     bool create_pipeline();
-    bool create_audio_source_pipeline();
+    bool setup_answerer_audio_pipeline();  // Incoming calls (answerer mode)
+    bool setup_offerer_audio_pipeline();    // Outgoing calls (offerer mode)
     bool configure_webrtcbin();
     bool configure_proxy();
     bool add_turn_servers();

@@ -147,7 +147,7 @@ WebRTCSession::WebRTCSession()
     , negotiated_pad_(nullptr)
     , offer_codec_caps_(nullptr)
     , negotiated_payload_(-1)
-    , negotiated_channels_(1)
+    , negotiated_channels_(1)  // Default to mono (will be overridden by SDP negotiation)
     , sdp_done_(false)
     , last_bytes_sent_(0)
     , last_bytes_received_(0)
@@ -303,15 +303,56 @@ void WebRTCSession::create_offer(SDPCallback callback) {
         // request_pad_simple() will automatically create the transceiver
         LOG_INFO("[WebRTCSession] Offerer mode: Creating audio source pipeline...");
 
-        if (!create_audio_source_pipeline()) {
-            LOG_ERROR("[WebRTCSession] Failed to create audio source pipeline!");
+        if (!setup_offerer_audio_pipeline()) {
+            LOG_ERROR("[WebRTCSession] Failed to create offerer audio source pipeline!");
             if (callback) {
                 callback(false, SDPMessage(), "Failed to create audio source pipeline");
             }
             return;
         }
 
-        LOG_INFO("[WebRTCSession] Audio source pipeline created, now creating offer...");
+        LOG_INFO("[WebRTCSession] Audio source pipeline created, now setting codec preferences...");
+
+        // CRITICAL: Set codec-preferences on transceiver BEFORE create-offer
+        // This ensures we only offer OPUS (not speex/PCMU/PCMA that we don't support)
+        // and use payload=111 (matching Dino's convention)
+
+        // Get the transceiver for sink_0 (created by create_audio_source_pipeline)
+        GstPad *sink_pad = gst_element_get_static_pad(webrtc_, "sink_0");
+        if (sink_pad) {
+            GValue val = G_VALUE_INIT;
+            g_object_get_property(G_OBJECT(sink_pad), "transceiver", &val);
+            GstWebRTCRTPTransceiver *trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
+
+            if (trans) {
+                // Create codec-preferences: OPUS only, payload=111, stereo
+                GstCaps *codec_prefs = gst_caps_new_simple("application/x-rtp",
+                    "media", G_TYPE_STRING, "audio",
+                    "encoding-name", G_TYPE_STRING, "OPUS",
+                    "clock-rate", G_TYPE_INT, 48000,
+                    "payload", G_TYPE_INT, 111,
+                    nullptr);
+
+                // Add encoding-params for stereo
+                gst_caps_set_simple(codec_prefs, "encoding-params", G_TYPE_STRING, "2", nullptr);
+
+                g_object_set(trans, "codec-preferences", codec_prefs, nullptr);
+
+                gchar *caps_str = gst_caps_to_string(codec_prefs);
+                LOG_INFO("[WebRTCSession] ✓ Set codec-preferences for offerer: {}", caps_str);
+                g_free(caps_str);
+                gst_caps_unref(codec_prefs);
+            } else {
+                LOG_WARN("[WebRTCSession] Could not get transceiver for codec-preferences");
+            }
+
+            g_value_unset(&val);
+            gst_object_unref(sink_pad);
+        } else {
+            LOG_WARN("[WebRTCSession] Could not get sink_0 pad for codec-preferences");
+        }
+
+        LOG_INFO("[WebRTCSession] Creating offer...");
 
         // Create promise for async SDP generation
         GstPromise *promise = gst_promise_new_with_change_func(
@@ -673,9 +714,13 @@ bool WebRTCSession::create_pipeline() {
     }
 }
 
-bool WebRTCSession::create_audio_source_pipeline() {
+// ============================================================================
+// Audio Pipeline Setup - ANSWERER (Incoming Calls)
+// ============================================================================
+
+bool WebRTCSession::setup_answerer_audio_pipeline() {
     try {
-        LOG_DEBUG("[WebRTCSession] Creating audio source pipeline...");
+        LOG_DEBUG("[WebRTCSession] [ANSWERER] Creating audio source pipeline...");
 
         // CRITICAL: Pause pipeline before adding elements to avoid FLUSHING state
         GstState current_state, pending_state;
@@ -737,8 +782,8 @@ bool WebRTCSession::create_audio_source_pipeline() {
         }
 
         // CRITICAL: Use negotiated payload type from answer SDP
-        // If negotiated_payload_ is -1, we're in offerer mode, use default 97
-        int payload = (negotiated_payload_ > 0) ? negotiated_payload_ : 97;
+        // If negotiated_payload_ is -1, we're in offerer mode, use 111 (OPUS standard)
+        int payload = (negotiated_payload_ > 0) ? negotiated_payload_ : 111;
 
         GstCaps *rtp_caps = gst_caps_new_simple("application/x-rtp",
             "media", G_TYPE_STRING, "audio",
@@ -760,30 +805,20 @@ bool WebRTCSession::create_audio_source_pipeline() {
         }
         LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
 
-        // Get webrtcbin sink pad
-        GstPad *webrtc_sink = nullptr;
-
-        if (negotiated_pad_) {
-            // ANSWERER MODE: Reuse the pad we created during set-remote-description
-            // This ensures audio pipeline connects to the same transceiver used for SDP negotiation
-            webrtc_sink = negotiated_pad_;
-            negotiated_pad_ = nullptr;  // Transfer ownership (we'll unref at end of function)
-
-            gchar *pad_name = gst_pad_get_name(webrtc_sink);
-            LOG_INFO("[WebRTCSession] ✓ Reusing negotiated pad: {}", pad_name);
-            g_free(pad_name);
-        } else {
-            // OFFERER MODE: Create new pad (will auto-create transceiver)
-            webrtc_sink = gst_element_request_pad_simple(webrtc_, "sink_%u");
-            if (!webrtc_sink) {
-                LOG_ERROR("[WebRTCSession] Failed to request sink pad from webrtcbin!");
-                return false;
-            }
-
-            gchar *pad_name = gst_pad_get_name(webrtc_sink);
-            LOG_INFO("[WebRTCSession] ✓ Created new pad: {}", pad_name);
-            g_free(pad_name);
+        // Get webrtcbin sink pad - ANSWERER MODE
+        // Reuse the pad we created during set-remote-description
+        // This ensures audio pipeline connects to the same transceiver used for SDP negotiation
+        if (!negotiated_pad_) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] No negotiated pad available!");
+            return false;
         }
+
+        GstPad *webrtc_sink = negotiated_pad_;
+        negotiated_pad_ = nullptr;  // Transfer ownership (we'll unref at end of function)
+
+        gchar *pad_name = gst_pad_get_name(webrtc_sink);
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Reusing negotiated pad: {}", pad_name);
+        g_free(pad_name);
 
         // CRITICAL: Get the transceiver for this pad and set direction to SENDRECV
         // Without this, the transceiver defaults to RECVONLY!
@@ -850,11 +885,140 @@ bool WebRTCSession::create_audio_source_pipeline() {
         gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
         LOG_INFO("[WebRTCSession] Pipeline state after resume: {}", gst_element_state_get_name(current_state));
 
-        LOG_INFO("[WebRTCSession] Audio source pipeline created and linked");
+        LOG_INFO("[WebRTCSession] [ANSWERER] Audio source pipeline created and linked");
         return true;
 
     } catch (const std::exception &e) {
-        LOG_ERROR("[WebRTCSession] create_audio_source_pipeline exception: {}", e.what());
+        LOG_ERROR("[WebRTCSession] [ANSWERER] setup_answerer_audio_pipeline exception: {}", e.what());
+        return false;
+    }
+}
+
+// ============================================================================
+// Audio Pipeline Setup - OFFERER (Outgoing Calls)
+// ============================================================================
+
+bool WebRTCSession::setup_offerer_audio_pipeline() {
+    try {
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Creating audio source pipeline...");
+
+        // CRITICAL: Pause pipeline before adding elements to avoid FLUSHING state
+        GstState current_state, pending_state;
+        gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
+        LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state before pause: current={}, pending={}",
+                 gst_element_state_get_name(current_state),
+                 gst_element_state_get_name(pending_state));
+
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Pausing pipeline to add audio elements...");
+        GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PAUSED);
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Pause state change result: {}", ret);
+        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
+        LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
+
+        // Create audio elements
+        const char *src_name = config_.microphone_device.empty() ?
+            "autoaudiosrc" : "pulsesrc";
+        audio_src_ = gst_element_factory_make(src_name, "audio_src");
+        GstElement *queue = gst_element_factory_make("queue", "queue_src");
+        GstElement *convert = gst_element_factory_make("audioconvert", "convert");
+        GstElement *resample = gst_element_factory_make("audioresample", "resample");
+        GstElement *opusenc = gst_element_factory_make("opusenc", "opusenc");
+        GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "rtpopuspay");
+        GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_caps");
+
+        if (!audio_src_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create audio elements");
+            return false;
+        }
+
+        // Configure microphone device if specified
+        if (!config_.microphone_device.empty() && src_name == std::string("pulsesrc")) {
+            g_object_set(audio_src_, "device", config_.microphone_device.c_str(), nullptr);
+            LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set microphone device: {}", config_.microphone_device);
+        } else {
+            LOG_INFO("[WebRTCSession] [OFFERER] Using autoaudiosrc (no specific microphone device)");
+        }
+
+        // Configure opusenc for stereo (offerer always uses stereo for compatibility)
+        g_object_set(opusenc,
+            "bitrate", 64000,
+            "frame-size", 20,
+            "audio-type", 2049,        // Generic audio (not voice-only)
+            nullptr);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured opusenc for STEREO (channels=2, bitrate=64kbps)");
+
+        // Use payload=111 (matches codec-preferences we'll set)
+        GstCaps *rtp_caps = gst_caps_new_simple("application/x-rtp",
+            "media", G_TYPE_STRING, "audio",
+            "encoding-name", G_TYPE_STRING, "OPUS",
+            "payload", G_TYPE_INT, 111,
+            nullptr);
+        g_object_set(capsfilter, "caps", rtp_caps, nullptr);
+        gst_caps_unref(rtp_caps);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set RTP caps: application/x-rtp,media=audio,encoding-name=OPUS,payload=111");
+
+        // Add to pipeline
+        gst_bin_add_many(GST_BIN(pipeline_), audio_src_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+
+        // Link audio chain
+        if (!gst_element_link_many(audio_src_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link audio chain");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked audio chain: src→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+
+        // Get webrtcbin sink pad - OFFERER MODE
+        // Create new pad (will auto-create transceiver)
+        GstPad *webrtc_sink = gst_element_request_pad_simple(webrtc_, "sink_%u");
+        if (!webrtc_sink) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to request sink pad from webrtcbin!");
+            return false;
+        }
+
+        gchar *pad_name = gst_pad_get_name(webrtc_sink);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Created new pad: {}", pad_name);
+        g_free(pad_name);
+
+        // Set transceiver direction to SENDRECV
+        GValue val = G_VALUE_INIT;
+        g_object_get_property(G_OBJECT(webrtc_sink), "transceiver", &val);
+        GstWebRTCRTPTransceiver *trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
+
+        if (trans) {
+            LOG_INFO("[WebRTCSession] [OFFERER] Setting transceiver direction to SENDRECV...");
+            g_object_set(trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
+            LOG_INFO("[WebRTCSession] [OFFERER] ✓ Transceiver direction set to SENDRECV");
+        } else {
+            LOG_WARN("[WebRTCSession] [OFFERER] Could not get transceiver from pad");
+        }
+        g_value_unset(&val);
+
+        // Link capsfilter to webrtcbin
+        GstPad *caps_src = gst_element_get_static_pad(capsfilter, "src");
+        GstPadLinkReturn link_ret = gst_pad_link(caps_src, webrtc_sink);
+        if (link_ret != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link capsfilter to webrtcbin: {}", link_ret);
+            gst_object_unref(caps_src);
+            gst_object_unref(webrtc_sink);
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked capsfilter to webrtcbin");
+
+        gst_object_unref(caps_src);
+        gst_object_unref(webrtc_sink);
+
+        // Resume pipeline to PLAYING
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Resuming pipeline to PLAYING...");
+        ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Resume state change result: {}", ret);
+        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
+        LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state after resume: {}", gst_element_state_get_name(current_state));
+
+        LOG_INFO("[WebRTCSession] [OFFERER] Audio source pipeline created and linked");
+        return true;
+
+    } catch (const std::exception &e) {
+        LOG_ERROR("[WebRTCSession] [OFFERER] setup_offerer_audio_pipeline exception: {}", e.what());
         return false;
     }
 }
@@ -1346,9 +1510,9 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
                 return;
             }
 
-            // Create audio source pipeline using stored pad
-            if (!create_audio_source_pipeline()) {
-                LOG_ERROR("[WebRTCSession] Failed to create audio source pipeline!");
+            // Create audio source pipeline using stored pad (answerer mode)
+            if (!setup_answerer_audio_pipeline()) {
+                LOG_ERROR("[WebRTCSession] Failed to create answerer audio source pipeline!");
                 gst_webrtc_session_description_free(answer);
                 if (sdp_callback_) {
                     sdp_callback_(false, SDPMessage(), "Failed to create audio pipeline");
