@@ -27,18 +27,20 @@ echo "Starting both processes..."
 echo ""
 
 # Start both simultaneously with pipes properly connected
-./test_webrtc_answerer < /tmp/pipe_c2a > /tmp/pipe_a2c 2>&1 &
+GST_DEBUG="webrtcbin:7,rtpbin:5,dtls:5" ./test_webrtc_answerer < /tmp/pipe_c2a > /tmp/pipe_a2c 2>answerer_stdout.txt &
 ANSWERER_PID=$!
 
-./test_webrtc_caller > /tmp/pipe_c2a < /tmp/pipe_a2c 2>&1 &
+GST_DEBUG="webrtcbin:7,rtpbin:5,dtls:5" ./test_webrtc_caller > /tmp/pipe_c2a < /tmp/pipe_a2c 2>caller_stdout.txt &
 CALLER_PID=$!
 
+SEC_TO_RUN=15
+
 echo "Processes started (PID answerer=$ANSWERER_PID, caller=$CALLER_PID)"
-echo "Waiting 35 seconds for test..."
+echo "Waiting ${SEC_TO_RUN} seconds for test..."
 echo ""
 
 # Wait
-for i in {1..35}; do
+for i in {1..${SEC_TO_RUN}}; do
     echo -n "."
     sleep 1
 
