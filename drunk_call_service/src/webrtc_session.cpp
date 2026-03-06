@@ -146,6 +146,8 @@ WebRTCSession::WebRTCSession()
     , is_outgoing_(false)
     , negotiated_pad_(nullptr)
     , offer_codec_caps_(nullptr)
+    , negotiated_payload_(-1)
+    , negotiated_channels_(1)
     , sdp_done_(false)
     , last_bytes_sent_(0)
     , last_bytes_received_(0)
@@ -394,6 +396,55 @@ bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
             gchar *caps_str = gst_caps_to_string(offer_codec_caps_);
             LOG_INFO("[WebRTCSession] ✓ Parsed codec from offer: {}", caps_str);
             g_free(caps_str);
+        }
+        // For offerer mode receiving answer: parse negotiated payload/channels
+        else if (is_outgoing_ && remote_sdp.type == SDPMessage::Type::ANSWER) {
+            LOG_INFO("[WebRTCSession] Offerer mode: parsing negotiated codec from answer...");
+
+            const GstSDPMedia *audio_media = nullptr;
+            for (guint i = 0; i < gst_sdp_message_medias_len(sdp_msg); i++) {
+                const GstSDPMedia *media = gst_sdp_message_get_media(sdp_msg, i);
+                if (strcmp(gst_sdp_media_get_media(media), "audio") == 0) {
+                    audio_media = media;
+                    break;
+                }
+            }
+
+            if (audio_media && gst_sdp_media_formats_len(audio_media) > 0) {
+                const char *payload_str = gst_sdp_media_get_format(audio_media, 0);
+                negotiated_payload_ = atoi(payload_str);
+
+                for (guint i = 0; i < gst_sdp_media_attributes_len(audio_media); i++) {
+                    const GstSDPAttribute *attr = gst_sdp_media_get_attribute(audio_media, i);
+                    if (strcmp(attr->key, "rtpmap") == 0) {
+                        int attr_payload;
+                        char codec_name[32];
+                        int rate, channels = 0;
+
+                        if (sscanf(attr->value, "%d %31[^/]/%d/%d", &attr_payload, codec_name, &rate, &channels) >= 3) {
+                            if (attr_payload == negotiated_payload_) {
+                                negotiated_channels_ = channels;
+                                LOG_INFO("[WebRTCSession] ✓ Parsed answer: payload={}, {}/{}/{}",
+                                         negotiated_payload_, codec_name, rate, channels);
+                                break;
+                            }
+                        } else if (sscanf(attr->value, "%d %31[^/]/%d", &attr_payload, codec_name, &rate) == 3) {
+                            if (attr_payload == negotiated_payload_) {
+                                negotiated_channels_ = 1;
+                                LOG_INFO("[WebRTCSession] ✓ Parsed answer: payload={}, {}/{} (mono)",
+                                         negotiated_payload_, codec_name, rate);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // TODO: For offerer mode, we may need to reconfigure the audio pipeline
+                // if the negotiated values differ from what we initially set up.
+                // For now, log a warning if there's a mismatch.
+                LOG_INFO("[WebRTCSession] Note: Offerer audio pipeline already created with payload=97");
+                LOG_INFO("[WebRTCSession] Negotiated payload={}, channels={}", negotiated_payload_, negotiated_channels_);
+            }
         }
 
         // Create WebRTC session description
@@ -666,18 +717,37 @@ bool WebRTCSession::create_audio_source_pipeline() {
         // Configure elements
         // Note: autoaudiosrc doesn't have "is-live" property (it's on pulsesrc child)
         // The child pulsesrc is automatically configured as live
-        g_object_set(opusenc, "bitrate", 32000, "frame-size", 20, nullptr);
 
-        // CRITICAL: Set RTP caps on capsfilter - tells webrtcbin what codec we're using
-        // Without this, webrtcbin won't generate m=audio line in offer!
+        // Configure opusenc for negotiated channels (mono vs stereo)
+        if (negotiated_channels_ == 2) {
+            // Stereo configuration
+            g_object_set(opusenc,
+                "bitrate", 64000,          // Higher bitrate for stereo
+                "frame-size", 20,
+                "audio-type", 2049,        // Generic audio (not voice-only)
+                nullptr);
+            LOG_INFO("[WebRTCSession] ✓ Configured opusenc for STEREO (channels=2, bitrate=64kbps)");
+        } else {
+            // Mono configuration (default)
+            g_object_set(opusenc,
+                "bitrate", 32000,
+                "frame-size", 20,
+                nullptr);
+            LOG_INFO("[WebRTCSession] ✓ Configured opusenc for MONO (channels=1, bitrate=32kbps)");
+        }
+
+        // CRITICAL: Use negotiated payload type from answer SDP
+        // If negotiated_payload_ is -1, we're in offerer mode, use default 97
+        int payload = (negotiated_payload_ > 0) ? negotiated_payload_ : 97;
+
         GstCaps *rtp_caps = gst_caps_new_simple("application/x-rtp",
             "media", G_TYPE_STRING, "audio",
             "encoding-name", G_TYPE_STRING, "OPUS",
-            "payload", G_TYPE_INT, 97,
+            "payload", G_TYPE_INT, payload,
             nullptr);
         g_object_set(capsfilter, "caps", rtp_caps, nullptr);
         gst_caps_unref(rtp_caps);
-        LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=audio,encoding-name=OPUS,payload=97");
+        LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=audio,encoding-name=OPUS,payload={}", payload);
 
         // Add to pipeline
         gst_bin_add_many(GST_BIN(pipeline_), audio_src_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
@@ -1214,6 +1284,54 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
         LOG_DEBUG("[WebRTCSession] Answer SDP:\n{}", sdp_str);
 
         g_free(sdp_text);
+
+        // Parse answer SDP to extract negotiated payload and channels for audio pipeline
+        // This is CRITICAL - we must use the payload/channels that were actually negotiated
+        const GstSDPMedia *audio_media = nullptr;
+        for (guint i = 0; i < gst_sdp_message_medias_len(answer->sdp); i++) {
+            const GstSDPMedia *media = gst_sdp_message_get_media(answer->sdp, i);
+            if (strcmp(gst_sdp_media_get_media(media), "audio") == 0) {
+                audio_media = media;
+                break;
+            }
+        }
+
+        if (audio_media && gst_sdp_media_formats_len(audio_media) > 0) {
+            // Get the first (negotiated) payload type
+            const char *payload_str = gst_sdp_media_get_format(audio_media, 0);
+            negotiated_payload_ = atoi(payload_str);
+
+            // Find rtpmap for this payload to get channels
+            for (guint i = 0; i < gst_sdp_media_attributes_len(audio_media); i++) {
+                const GstSDPAttribute *attr = gst_sdp_media_get_attribute(audio_media, i);
+                if (strcmp(attr->key, "rtpmap") == 0) {
+                    int attr_payload;
+                    char codec_name[32];
+                    int rate, channels = 0;
+
+                    // Parse "111 opus/48000/2"
+                    if (sscanf(attr->value, "%d %31[^/]/%d/%d", &attr_payload, codec_name, &rate, &channels) >= 3) {
+                        if (attr_payload == negotiated_payload_) {
+                            negotiated_channels_ = channels;
+                            LOG_INFO("[WebRTCSession] ✓ Parsed negotiated codec: payload={}, {}/{}/{}",
+                                     negotiated_payload_, codec_name, rate, channels);
+                            break;
+                        }
+                    }
+                    // Try without channels (default to mono)
+                    else if (sscanf(attr->value, "%d %31[^/]/%d", &attr_payload, codec_name, &rate) == 3) {
+                        if (attr_payload == negotiated_payload_) {
+                            negotiated_channels_ = 1;
+                            LOG_INFO("[WebRTCSession] ✓ Parsed negotiated codec: payload={}, {}/{} (mono)",
+                                     negotiated_payload_, codec_name, rate);
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            LOG_WARN("[WebRTCSession] Could not parse negotiated payload from answer, using defaults");
+        }
 
         // For answerers: create audio pipeline using the pad we created earlier
         if (!is_outgoing_) {

@@ -71,6 +71,10 @@ private:
     GstPad* negotiated_pad_;  // Pad used for SDP negotiation (answerer only)
     GstCaps* offer_codec_caps_;  // Codec caps parsed from remote offer (answerer only)
 
+    // Negotiated codec parameters from answer SDP (used to configure audio pipeline)
+    int negotiated_payload_;   // RTP payload type from answer (e.g., 111)
+    int negotiated_channels_;  // Audio channels from answer (e.g., 2 for stereo)
+
     // Callbacks
     SDPCallback sdp_callback_;
     ICECandidateCallback ice_callback_;
