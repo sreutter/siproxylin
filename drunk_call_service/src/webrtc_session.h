@@ -65,6 +65,12 @@ private:
     bool is_muted_;
     std::atomic<bool> is_outgoing_;  // true = offerer, false = answerer (thread-safe)
 
+    // Pad management: Track the pad created during negotiation for answerer mode
+    // Answerer: webrtcbin auto-creates transceiver from offer, we get its pad
+    // after negotiation completes, then reuse that pad for audio pipeline
+    GstPad* negotiated_pad_;  // Pad used for SDP negotiation (answerer only)
+    GstCaps* offer_codec_caps_;  // Codec caps parsed from remote offer (answerer only)
+
     // Callbacks
     SDPCallback sdp_callback_;
     ICECandidateCallback ice_callback_;
