@@ -1555,6 +1555,16 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
         g_signal_emit_by_name(webrtc_, "set-local-description", answer, local_promise);
         // Promise is now owned by GStreamer - don't touch it!
 
+        // Extract mid values from our answer for ICE candidate routing
+        // This is needed for answerer role - ICE candidates we generate need to know
+        // which media section they belong to (via sdpMid field)
+        media_mid_map_ = extract_mid_mapping(answer->sdp);
+        if (!media_mid_map_.empty()) {
+            LOG_INFO("[WebRTCSession] Extracted {} mid value(s) from answer", media_mid_map_.size());
+        } else {
+            LOG_WARN("[WebRTCSession] No mid values found in answer - ICE candidates may fail routing");
+        }
+
         // Convert SDP to text
         gchar *sdp_text = gst_sdp_message_as_text(answer->sdp);
         std::string sdp_str(sdp_text);
