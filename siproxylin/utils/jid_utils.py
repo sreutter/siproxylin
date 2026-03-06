@@ -2,33 +2,33 @@
 JID utility functions for XMPP account management.
 """
 
-import zlib
+import secrets
 
 
 def generate_resource(bare_jid: str) -> str:
     """
-    Generate a unique, deterministic resource identifier for an XMPP account.
+    Generate a unique, random resource identifier for an XMPP account.
 
-    Uses CRC32 checksum of the bare JID to create a unique 8-character hex suffix.
-    Format: siproxylin.{8-hex-chars}
+    Uses cryptographically secure random generator to create a 12-character hex suffix.
+    Format: siproxylin.{12-hex-chars}
 
     Examples:
-        user@example.com -> siproxylin.a3f2b1c4
-        alice@jabber.org -> siproxylin.7f8e9d6c
+        user@example.com -> siproxylin.a3f2b1c49e8d
+        user@example.com -> siproxylin.7f8e9d6c2a1b  (different on each call)
 
     Args:
-        bare_jid: The bare JID (user@domain) without resource
+        bare_jid: The bare JID (user@domain) without resource (unused, kept for API compatibility)
 
     Returns:
-        Resource string (19 characters, compliant with RFC 6122/7622 1023 byte limit)
+        Resource string (23 characters, compliant with RFC 6122/7622 1023 byte limit)
 
     Note:
-        - CRC32 produces exactly 32 bits = 8 hex characters
-        - Same JID always produces same resource (deterministic)
-        - Different JIDs produce different resources (good distribution)
+        - Uses secrets.token_hex() for cryptographically secure randomness
+        - Each call produces a DIFFERENT resource (allows multi-device usage)
+        - 12 hex chars = 48 bits of entropy (281 trillion combinations)
+        - Prevents resource conflicts when same account used on multiple devices
     """
-    # Calculate CRC32 checksum of the JID
-    crc = zlib.crc32(bare_jid.encode('utf-8')) & 0xffffffff  # Ensure unsigned 32-bit
+    # Generate 12 random hex characters (48 bits of entropy)
+    random_suffix = secrets.token_hex(6)  # 6 bytes = 12 hex chars
 
-    # Format as 8 lowercase hex characters
-    return f"siproxylin.{crc:08x}"
+    return f"siproxylin.{random_suffix}"
