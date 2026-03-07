@@ -331,12 +331,12 @@ main() {
     log_success "All required files present"
     print_separator
 
-    # Step 3: Build Go service
-    log_step "3/11" "Checking Go call service binary..."
+    # Step 3: Build C++ call service
+    log_step "3/11" "Checking C++ call service binary..."
     if ! check_go_binary "linux"; then
-        log_info "Building Go service..."
-        if ! build_go_service "linux"; then
-            log_error "Failed to build Go service"
+        log_info "Building C++ call service..."
+        if ! build_call_service "linux"; then
+            log_error "Failed to build C++ call service"
             exit 1
         fi
     fi
@@ -359,8 +359,20 @@ main() {
     fi
     print_separator
 
-    # Step 6: Bundle system libraries (one-time with appimage-builder)
-    log_step "6/11.5" "Bundling system libraries..."
+    # Step 6: Copy icon files BEFORE appimage-builder (required for icon bundling)
+    log_step "6/11.5" "Preparing icon files for appimage-builder..."
+    if [ -f "siproxylin/resources/icons/siproxylin.svg" ]; then
+        mkdir -p "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+        cp siproxylin/resources/icons/siproxylin.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/com.siproxylin.svg"
+        log_success "Icon copied for appimage-builder"
+    else
+        log_error "Icon not found: siproxylin/resources/icons/siproxylin.svg"
+        exit 1
+    fi
+    print_separator
+
+    # Step 6.1: Bundle system libraries (one-time with appimage-builder)
+    log_step "6.1/11.5" "Bundling system libraries..."
     if ! bundle_system_libraries "$APPDIR"; then
         exit 1
     fi

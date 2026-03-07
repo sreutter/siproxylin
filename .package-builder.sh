@@ -211,17 +211,17 @@ check_required_files() {
 
 check_go_binary() {
     local platform="${1:-linux}"  # linux, windows, darwin
-    local go_binary=""
+    local call_binary=""
 
     case "$platform" in
         linux)
-            go_binary="drunk_call_service/bin/drunk-call-service-linux"
+            call_binary="drunk_call_service/bin/drunk-call-service-linux"
             ;;
         windows)
-            go_binary="drunk_call_service/bin/drunk-call-service-windows.exe"
+            call_binary="drunk_call_service/bin/drunk-call-service-windows.exe"
             ;;
         darwin)
-            go_binary="drunk_call_service/bin/drunk-call-service-darwin"
+            call_binary="drunk_call_service/bin/drunk-call-service-darwin"
             ;;
         *)
             log_error "Unknown platform: $platform"
@@ -229,13 +229,13 @@ check_go_binary() {
             ;;
     esac
 
-    if [ ! -f "$go_binary" ]; then
-        log_error "Go binary not found: $go_binary"
-        log_info "Build it first: cd drunk_call_service && ./build.sh"
+    if [ ! -f "$call_binary" ]; then
+        log_error "Call service binary not found: $call_binary"
+        log_info "Build it first: cd drunk_call_service && make clean && make && make install"
         return 1
     fi
 
-    log_success "Go binary found: $go_binary"
+    log_success "Call service binary found: $call_binary"
     return 0
 }
 
@@ -243,10 +243,10 @@ check_go_binary() {
 # BUILD FUNCTIONS
 # =============================================================================
 
-build_go_service() {
+build_call_service() {
     local platform="${1:-linux}"
 
-    log_step "BUILD" "Building Go call service for $platform..."
+    log_step "BUILD" "Building C++ call service for $platform..."
 
     if [ ! -d "drunk_call_service" ]; then
         log_error "drunk_call_service/ directory not found"
@@ -258,16 +258,19 @@ build_go_service() {
     case "$platform" in
         linux)
             log_info "Building for Linux (amd64)..."
-            #GOOS=linux GOARCH=amd64 go build -o bin/drunk-call-service-linux
-            ./build.sh
+            make clean && make release
             ;;
         windows)
             log_info "Building for Windows (amd64)..."
-            GOOS=windows GOARCH=amd64 go build -o bin/drunk-call-service-windows.exe
+            log_error "Windows build not yet supported for C++ version"
+            cd ..
+            return 1
             ;;
         darwin)
             log_info "Building for macOS (amd64)..."
-            GOOS=darwin GOARCH=amd64 go build -o bin/drunk-call-service-darwin
+            log_error "macOS build not yet supported for C++ version"
+            cd ..
+            return 1
             ;;
         *)
             log_error "Unknown platform: $platform"
@@ -277,7 +280,7 @@ build_go_service() {
     esac
 
     cd ..
-    log_success "Go service built successfully"
+    log_success "C++ call service built successfully"
     return 0
 }
 
@@ -363,22 +366,22 @@ copy_go_binary() {
     local platform="${2:-linux}"
     local target_path="${3:-usr/local/bin}"
 
-    log_step "COPY" "Copying Go call service binary..."
+    log_step "COPY" "Copying C++ call service binary..."
 
-    local go_binary=""
+    local call_binary=""
     local binary_name=""
 
     case "$platform" in
         linux)
-            go_binary="drunk_call_service/bin/drunk-call-service-linux"
+            call_binary="drunk_call_service/bin/drunk-call-service-linux"
             binary_name="drunk-call-service-linux"
             ;;
         windows)
-            go_binary="drunk_call_service/bin/drunk-call-service-windows.exe"
+            call_binary="drunk_call_service/bin/drunk-call-service-windows.exe"
             binary_name="drunk-call-service.exe"
             ;;
         darwin)
-            go_binary="drunk_call_service/bin/drunk-call-service-darwin"
+            call_binary="drunk_call_service/bin/drunk-call-service-darwin"
             binary_name="drunk-call-service"
             ;;
         *)
@@ -387,18 +390,18 @@ copy_go_binary() {
             ;;
     esac
 
-    if [ ! -f "$go_binary" ]; then
-        log_error "Go binary not found: $go_binary"
+    if [ ! -f "$call_binary" ]; then
+        log_error "Call service binary not found: $call_binary"
         return 1
     fi
 
     local full_target="$dest_dir/$target_path"
     mkdir -p "$full_target"
 
-    cp "$go_binary" "$full_target/$binary_name"
+    cp "$call_binary" "$full_target/$binary_name"
     chmod +x "$full_target/$binary_name"
 
-    log_success "Go binary copied to $target_path/$binary_name"
+    log_success "Call service binary copied to $target_path/$binary_name"
     return 0
 }
 

@@ -28,13 +28,13 @@ jobs:
         restore-keys: |
           appimage-build-apt-
 
-    - name: Cache Go binary
+    - name: Cache C++ call service binary
       uses: actions/cache@v4
       with:
         path: drunk_call_service/bin/drunk-call-service-linux
-        key: go-binary-${{ hashFiles('drunk_call_service/**/*.go', 'drunk_call_service/go.mod', 'drunk_call_service/go.sum') }}
+        key: cpp-binary-${{ hashFiles('drunk_call_service/**/*.cpp', 'drunk_call_service/**/*.h', 'drunk_call_service/CMakeLists.txt', 'drunk_call_service/Makefile') }}
         restore-keys: |
-          go-binary-
+          cpp-binary-
 
     - name: Install system dependencies
       run: |
@@ -43,6 +43,7 @@ jobs:
           wget \
           ca-certificates \
           git \
+          cmake \
           protobuf-compiler \
           protobuf-compiler-grpc \
           python3 \
@@ -52,11 +53,14 @@ jobs:
           build-essential \
           libgstreamer1.0-dev \
           libgstreamer-plugins-base1.0-dev \
+          libgstreamer-plugins-bad1.0-dev \
           gstreamer1.0-plugins-base \
           gstreamer1.0-plugins-good \
           gstreamer1.0-plugins-bad \
           gstreamer1.0-tools \
           gstreamer1.0-pulseaudio \
+          gstreamer1.0-nice \
+          libnice-dev \
           libpulse-dev \
           qt6-base-dev \
           libqt6core6 \
@@ -72,30 +76,20 @@ jobs:
           libdbus-1-3 \
           libenchant-2-2 \
           imagemagick \
-          wget \
           file \
           patchelf \
           desktop-file-utils \
           fuse \
           squashfs-tools \
           zsync \
-          gnupg
-
-    - name: Install Go 1.24
-      run: |
-        wget https://go.dev/dl/go1.24.12.linux-amd64.tar.gz
-        tar -C /usr/local -xzf go1.24.12.linux-amd64.tar.gz
-        export PATH=/usr/local/go/bin:$PATH
-        go version
-
-    - name: Install Go protobuf plugins
-      run: |
-        export PATH=/usr/local/go/bin:$PATH
-        export GOPATH=/usr/local/go-tools
-        go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-        echo "/usr/local/go-tools/bin" >> $GITHUB_PATH
-        ls -la /usr/local/go-tools/bin/
+          gnupg \
+          libunwind-dev \
+          libsrtp2-dev \
+          libgrpc++-dev \
+          libasound2-dev \
+          libspdlog-dev \
+          libc++-dev \
+          libc++abi-dev
 
     - name: Install appimage-builder
       run: |
@@ -121,7 +115,6 @@ jobs:
 
     - name: Build AppImage
       run: |
-        export PATH=/usr/local/go-tools/bin:/usr/local/go/bin:$PATH
         chmod +x build-appimage.sh
         ./build-appimage.sh
 

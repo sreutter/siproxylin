@@ -47,6 +47,11 @@ AppDir:
       - fonts-noto-color-emoji
       - fonts-liberation
       - fontconfig
+      - gstreamer1.0-nice
+      - libnice10
+      - libgrpc++1.51
+      - libgrpc29
+      - libfmt9
 
     exclude:
       - adwaita-icon-theme
