@@ -4,7 +4,699 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.21 - Hangover] - 2026-03-07
+
+> (11c8ab12ab)
+
+    Update .gitignore
+
+> (6788f4e402)
+
+    Cleanup tests (delete accidental binaries)
+
+> (d237e4cbf3)
+
+    Updates to tests
+
+> (8ba4918f89)
+
+    Merge branch 'main' into calls-gst
+
+> (3d981e1825)
+
+    Updated AppImage building code to match new C++ call service
+
+> (314fdf57bc)
+
+    Fix MAM retry loop for empty conversations
+    
+    - Track queried conversations in mam_queried_jids set
+    - Skip MAM query silently if already attempted (no log spam)
+    - Prevents repeated MAM requests every 2 seconds for empty chats
+    - Session-scoped: one MAM attempt per conversation per app session
+
+> (5bf65f646f)
+
+    Updated "resource" (the part added as JID/resource) to be truly random
+
+> (c91dd67a43)
+
+    Fixed some users shown as MUC
+
+> (b78408693b)
+
+    Small tweaks to test script
+
+> (2046d5e397)
+
+    Rotate STDERR log of call service on app restart (holds mostly GStreamer debug messages and occasional exceptions). Increase log level of GStreamer and LibNICE debug
+
+> (c6f5f73ae9)
+
+    !!! Media Mid Map fix which solved incoming call from Conversations issues !!!
+
+> (70dcffccaa)
+
+    Incoming and outgoing calls with Dino (trickle-ICE) now sound works in all directions
+
+> (99b98f4b3b)
+
+    Separating audio setup functions for incoming and outgoing calls. This will introduce some code duplication however reduce bug regressions. Subject to be optimized into sigle codebase later
+
+> (a12cd791d3)
+
+    BREAKTHROUGH! Outgoing call with Dino works!
+
+> (dfc0135454)
+
+    Got "Connecting input stream to rtpbin" message in GStreamer debug, however sound is still not reaching the peer
+
+> (a4ab2c0785)
+
+    Tweak .gitignore and update docs
+
+> (02dd347e2d)
+
+    Call service state when sound from peer can be hear but no sound goes in the opposite direction
+
+> (93db8c5e70)
+
+    Fixed audio bandwidth stats collection
+
+> (f7cd5f5f40)
+
+    Add .gitignore and cleanup
+
+> (7ba3aee874)
+
+    Adding test script and .gitignore
+
+> (25bac982f7)
+
+    Adding some old tests
+
+> (5c5d9aacbb)
+
+    Proper handling audio devices from GUI (needed device_id to operate and device_name to display)
+
+> (306f049868)
+
+    Updated docs + cleanuo
+
+> (a890ae0232)
+
+    Simple WebRTC test added: two binaries - test_webrtc_caller test_webrtc_answerer - that handle basic audio transmission
+
+> (49fe584538)
+
+    IMPORTANT: Working test code which creates one transceiver and SDP answer with a=sendrecv as opposed to a=recvonly
+
+> (fe16183fc8)
+
+    Made Jingle respect SDP direction from the call service answer
+
+> (3fc5238d26)
+
+    Fix incoming call connection
+    
+    This commit fixes the issue where incoming calls showed "connected" on our
+    side but "calling" on the peer side (Dino). The fix involves two major
+    components working together:
+    
+    ● Python: Incoming Call State Machine (Jingle/CallBridge)
+    
+    Reason: Siproxylin has 4 asynchronous components: slimxpp, GUI, gRPC and
+    GStreamer. WebRTC with Jingle requires certain order of messages which
+    is nearly impossible to handle. Added IncomingCallState enum with 6 states
+    to synchronize incoming call setup and prevent race conditions:
+    
+      HAVE_OFFER → RESOURCES_READY → SESSION_CREATED → REMOTE_SET
+        → ANSWER_READY → ACTIVE
+    
+    Key features:
+    - Buffers transport-info candidates until C++ session ready
+    - Prevents "Session not found" errors from trickle-ICE
+    - Sequential state transitions ensure correct timing
+    - Memory-safe cleanup on session termination
+    
+    ● C++: Transceiver Direction Configuration (GStreamer webrtcbin)
+    
+    Fixed webrtcbin defaulting to RECVONLY direction for incoming calls by
+    explicitly setting transceivers to SENDRECV at TWO critical points:
+    
+    1. PRE: BEFORE set-remote-description in create_answer()
+       - Preserves our intent to send bidirectional audio
+       - Prevents webrtcbin from changing direction when processing offer
+    
+    2. POST: AFTER set-remote-description in on_offer_set_for_answer()
+       - Verifies transceiver direction was preserved
+       - Logs direction and current-direction for debugging
+
+> (6c132c4d55)
+
+    Fix 4.7: GStreamer error handling improvements
+    
+    Implemented 4 critical error handling fixes following official GStreamer patterns:
+    
+    Issue #6 (SERIOUS): Add GStreamer bus error monitoring
+    - Added bus watch to monitor ERROR, WARNING, EOS, and STATE_CHANGED messages
+    - Logs errors with source element names and debug info
+    - Foundation for future ErrorEvent propagation to Python
+    - Pattern: https://gstreamer.freedesktop.org/documentation/application-development/basics/bus.html
+    
+    Issue #8 (SERIOUS): Graceful pipeline shutdown with timeout
+    - Wait for state change completion with 5-second timeout
+    - Log warnings/errors if timeout or failure occurs
+    - Force cleanup anyway to prevent resource leaks
+    - Pattern: https://gstreamer.freedesktop.org/documentation/application-development/basics/states.html
+    
+    Issue #9 (MODERATE): Cleanup zombie elements on pad link failure
+    - Remove elements from pipeline and set to NULL state on link failure
+    - Prevents resource leaks when incoming stream linking fails
+    - Pattern: https://gstreamer.freedesktop.org/documentation/application-development/advanced/pipeline-manipulation.html
+    
+    Issue #7 (MODERATE): Detailed logging for partial pipeline failures
+    - Per-element creation failure messages with helpful hints
+    - Descriptive pad link error messages with error type decode
+    - Proper cleanup on all error paths in create_pipeline()
+
+> (655e17f93f)
+
+    Replaced "std::cout" with "LOG_*" macros
+
+> (ef85c4bd69)
+
+    Reduced possible mem-leaks
+
+> (58c63201a8)
+
+    Update docs
+
+> (38ef536ef2)
+
+    Fix test_step9_session_manager for call::CallEvent
+    
+    Issue: Test failed to compile after Phase 4.3 namespace changes
+    - Session 9 changed CallEvent from global struct to call::CallEvent (protobuf)
+    - session_manager.h now forward-declares call::CallEvent and uses it in event_queue
+    - test_step9_session_manager.cpp was never updated to match
+    
+    Root Cause:
+    - Test used ThreadSafeQueue<CallEvent> (missing call:: namespace)
+    - std::deque requires complete type for sizeof(), forward declaration insufficient
+    - Proto headers needed for complete call::CallEvent definition
+
+> (7eb0b6fa6f)
+
+    PipeWire Double-Free bug fix & Phase 4.6 features
+    
+    Bug Fix: PipeWire Double-Free in Device Enumeration
+    - Issue: AddressSanitizer detected double-free when calling ListAudioDevices
+      - PipeWire plugin's internal threads conflicted with GstDeviceMonitor cleanup
+      - Rapid start/stop of monitor triggered threading race condition
+    - Solution: Remove gst_device_monitor_start/stop() calls entirely
+      - Per GStreamer docs: get_devices() probes hardware even if not started
+      - Avoids start/stop cycle that triggers PipeWire double-free bug
+      - Hotplug still works (monitor queries current state each call)
+    - Files: drunk_call_service/src/device_enumerator.cpp
+    
+    Phase 4.6: Implemented Remaining RPCs
+    1. ListAudioDevices RPC
+       - Enumerates microphones (Audio/Source) and speakers (Audio/Sink)
+       - Uses DeviceEnumerator with PipeWire fix
+       - Result: 3 inputs + 1 output detected successfully
+    
+    2. SetMute RPC
+       - Controls microphone mute state via webrtc->set_mute()
+       - Thread-safe session lookup via SessionManager
+    
+    3. GetStats RPC
+       - Returns connection states, bandwidth, ICE candidates
+       - Maps WebRTC Stats struct to proto message
+       - Includes both local and remote candidate lists
+    
+    Test Improvements
+    - Updated test_grpc_service.sh to use real SDP from CreateOffer
+      - Captures SDP from CreateOffer response, uses it for CreateAnswer test
+      - Fallback: Production SDP from working Jingle call (2026-03-02)
+      - Fixes CreateAnswer test (was failing with handcrafted minimal SDP)
+    - Proper test flow: session-1 creates offer, session-2 creates answer
+    - All 11/12 RPCs now fully tested and working
+    
+    Results
+    - CreateAnswer: Generates 650-byte answer with 12 ICE candidates ✅
+    - ListAudioDevices: Enumerates devices without crashes ✅
+    - All Phase 4.6 methods working correctly
+    - Service ready for Phase 4.7 (error handling) and 4.8 (Python integration)
+
+> (32c21c0a62)
+
+    Phase 4.5: Implement AddICECandidate RPC
+    
+    Implemented ICE candidate handling for remote candidates:
+    - Get session from SessionManager
+    - Create ICECandidate struct from proto request
+    - Call webrtc->add_remote_ice_candidate()
+    - Return success or NOT_FOUND/INTERNAL error
+    
+    Changes:
+    - call_service_impl.cpp:439-479 - Full AddICECandidate implementation
+    - test_grpc_service.sh:143-145 - Use real ICE candidate format
+    - test_ice_candidates.sh (NEW) - Comprehensive ICE test suite
+      * Tests host/srflx/relay candidate types
+      * Validates error handling (invalid session)
+      * Stress tests rapid trickle ICE (10 candidates)
+    
+    Testing verified:
+    - Local ICE gathering produces 12 candidates (4 interfaces × 3 transports)
+    - Remote candidates flow: gRPC → WebRTCSession → webrtcbin → libnice
+    - All candidate types processed correctly
+    - Invalid sessions return proper NotFound error
+
+> (0ff628f13a)
+
+    Fix bugs in gRPC shutdown and SDP operations
+    
+    Bug #1: Resource leak on duplicate session creation
+    - When duplicate session detected, orphaned GStreamer pipeline kept running
+    - Fix: Stop pipeline before returning error
+    
+    Bug #2: Signal handler race condition causing shutdown hangs
+    - Signal handler quit GLib loop before cleanup → webrtc->stop() hangs
+    - Fix: Remove g_main_loop_quit() from signal handler, let main shutdown
+      sequence quit loop AFTER session cleanup
+    - Bonus: Reduce shutdown poll interval from 1s to 100ms
+    
+    Bug #3: Use-after-free crash in CreateOffer/CreateAnswer
+    - Lambda captured stack variables by reference [&]
+    - Function returns/times out → stack destroyed → callback crashes
+    - Fix: Use shared_ptr<SDPCallbackState> to keep state alive
+    
+    All three bugs discovered during test_grpc_service.sh testing.
+    Service now handles duplicate sessions, responds to Ctrl+C/SIGTERM
+    correctly, and no longer crashes on SDP operations.
+
+> (cf7b32a945)
+
+    Add verbose logging and shutdown handlers
+    
+    Enhances DEBUG logging for all gRPC methods and implements graceful shutdown
+    for all three scenarios (SIGINT, SIGTERM, gRPC Shutdown) with proper session
+    cleanup. Adds test script for exercising all RPC methods.
+    
+    Logging improvements:
+    - call_service_impl.cpp: Add "gRPC: {method}" DEBUG logs to all RPC handlers
+      - Consistent format: "gRPC: CreateSession - session_id=..."
+      - Makes logs easy to grep for specific RPC calls
+    - Add LOG_WARN for unimplemented methods with phase numbers
+      - Example: "Method not implemented: CreateOffer (Phase 4.4)"
+      - Immediately visible when Python calls unready methods
+    - Heartbeat uses LOG_TRACE to avoid spam (called every 5s)
+    - Main shutdown sequence: Phase 8.x DEBUG logs for each step
+    
+    Graceful shutdown:
+    - call_service_impl.h: Add cleanup_all_sessions() public method
+    - call_service_impl.cpp: Implement cleanup_all_sessions()
+      - Iterates all active sessions, stops WebRTC, shuts down event queues
+      - Logs duration for each cleaned up session
+      - Shutdown RPC: Calls cleanup + sets global g_shutdown_requested flag
+    - main.cpp: Enhanced shutdown sequence (Phase 8.1 through 8.5)
+      - Step 1: Cleanup all active sessions via service.cleanup_all_sessions()
+      - Step 2: Shutdown gRPC server (5s graceful deadline)
+      - Step 3: Stop GLib main loop (check if already stopped by signal)
+      - Step 4: Deinitialize GStreamer
+      - Step 5: Shutdown logger
+    - main.cpp: Keep signal handler async-signal-safe
+      - Only sets atomic flag + quits GLib loop (no logging/cleanup)
+      - Session cleanup happens in main() to avoid safety issues
+    - Proper namespace handling: extern g_shutdown_requested in global namespace
+    
+    Makefile improvements:
+    - make clean: Show detailed output before deletion
+      - File counts, directory sizes, binary sizes
+      - "already clean" message if nothing to delete
+    
+    Testing:
+    - tests/test_grpc_service.sh: Comprehensive gRPC test script
+      - Tests all implemented methods (CreateSession, StreamEvents, EndSession)
+      - Tests all unimplemented methods (shows WARN logs)
+      - Tests session lifecycle with background StreamEvents
+      - Tests graceful shutdown via gRPC Shutdown command
+      - Option: --keep-running to leave service up for manual testing
+      - Color-coded output, shows last 50 log lines with highlighting
+
+> (51d1b0dd6a)
+
+    Phase 4.3: CreateSession, StreamEvents, EndSession
+    
+    Implements core session lifecycle and event streaming for gRPC service.
+    
+    Changes:
+    - call_service_impl.cpp: Implement CreateSession, StreamEvents, EndSession RPCs
+      - CreateSession: Creates WebRTCSession, sets ICE/state callbacks, adds to SessionManager
+      - StreamEvents: Blocks on ThreadSafeQueue, streams CallEvents to client
+      - EndSession: Marks inactive, shuts down queue, stops WebRTC, removes from manager
+    - session_manager.h: Update CallSession to use proto::CallEvent (forward declare call::CallEvent)
+    - CMakeLists.txt: Add library sources (webrtc_session.cpp, session_manager.cpp, device_enumerator.cpp, logger.cpp)
+    
+    Fixes:
+    - TURN config: Build URL for turn_servers vector (was accessing non-existent fields)
+    - State callback: Use MediaSession::ConnectionState signature (not separate ice_state/gathering_state)
+    
+    Testing:
+    - Verified with grpcurl: CreateSession succeeds, StreamEvents blocks/streams, EndSession cleans up
+    - Threading model validated: No deadlocks, clean lifecycle, GLib→Queue→gRPC working correctly
+    - Logs show proper session lifecycle with duration tracking
+
+> (3c4ab39613)
+
+    gRPC Service Skeleton + CLI Interface
+    
+    Implements gRPC server layer bridging Python (Jingle) ↔ C++ (WebRTC):
+    
+    Service Implementation:
+    - main.cpp: GLib main loop thread + gRPC server with proper threading
+    - call_service_impl.{h,cpp}: 12 RPC handlers (stub implementations)
+    - All RPCs return UNIMPLEMENTED (Phase 4.3+ will implement logic)
+    
+    CLI Parameters (matching Go service):
+    - --port <port>         gRPC server port (default: 50051)
+    - --log-level <level>   DEBUG, INFO, WARN, ERROR (default: INFO)
+    - --log-path <path>     Log file path (auto-creates ../app/logs/)
+    - --test-devices        Test device enumeration and exit
+    - --help                Show usage information
+    
+    Build System:
+    - CMakeLists.txt: Platform-specific binary naming (drunk-call-service-linux)
+    - Protobuf/gRPC code generation
+    - Dependencies: GStreamer, gRPC, spdlog, GLib
+    - Debug build with AddressSanitizer + leak suppression (lsan.supp)
+    
+    Threading Model (from docs/CALLS/GSTREAMER-THREADING.md):
+    - Main thread: Initialize, start GLib thread, start gRPC server, wait
+    - GLib thread: Process GStreamer callbacks, push events to queues
+    - gRPC thread pool: Handle RPC calls, pop events from queues
+    
+    Memory Management:
+    - gst_deinit() for proper cleanup
+    - lsan.supp for known GLib/GStreamer internal allocations
+    - Clean shutdown (no deadlocks, verified with timeout tests)
+    
+    Binary: drunk-call-service-linux (13MB debug, ~3MB release)
+    
+    Testing:
+    - Service starts, listens on configurable port
+    - Heartbeat RPC: Returns OK
+    - All other RPCs: Return UNIMPLEMENTED with phase info
+    - Custom port/log-level verified
+    
+    Next: Phase 4.3 (CreateSession + StreamEvents implementation)
+
+> (d3d0f1d533)
+
+    Phase 4.1 Complete: Thread Infrastructure + Tests
+    
+    Phase 4.1 - Thread Infrastructure:
+    - Add ThreadSafeQueue<T> template for cross-thread event streaming
+    - Add SessionManager for thread-safe session map
+    - Comprehensive tests: 13 tests total (6 queue + 7 manager)
+    - Critical test: validate remove-while-in-use pattern (shared_ptr safety)
+    
+    Test Organization:
+    - Rename all tests to test_step{num}_{name} pattern
+    - Add test_step1b_audio_playback (2-second 440Hz tone test)
+    - Update Makefile with consistent targets
+    - 21 tests total, all passing
+    
+    Documentation:
+    - Add THREAD-INFRASTRUCTURE-USAGE.md (quick reference guide)
+    - Add LOGGING-POLICY.md (STDOUT/STDERR/Logger rules)
+
+> (7c244cad69)
+
+    Phase 5 - Extract SSRC to SSRCHandler + Unit Tests
+    
+    Extract SSRC parsing/filtering logic to dedicated handler following the
+    same clean pattern as RtcpMuxHandler and TrickleICEHandler.
+    
+    **Key Changes:**
+    - Add SSRCHandler with 4 static methods (parse, filter, build, extract)
+    - Update JingleSDPConverter to use SSRCHandler (~53 lines → ~7 lines)
+    - Export SSRCHandler from features package
+    - Add 18 comprehensive unit tests for SSRCHandler
+    
+    **SSRCHandler Methods:**
+    - parse_ssrc_from_sdp() - Parse a=ssrc: lines into dict
+    - filter_ssrc_params() - Filter to allowed parameter names
+    - build_jingle_ssrc_elements() - Build Jingle <source> XML elements
+    - extract_ssrc_params() - Extract param names from offer (for echo)
+    
+    **Tests (18 new unit tests):**
+    - parse_ssrc_from_sdp: 5 tests (single/multiple params, malformed, etc.)
+    - filter_ssrc_params: 3 tests (allowed/empty/no-match)
+    - build_jingle_ssrc_elements: 4 tests (offer/answer/multiple/empty)
+    - extract_ssrc_params: 4 tests (single/multiple/none/empty)
+    - Round-trip integration: 2 tests (parse→build→extract, offer-answer)
+
+> (df16680bc9)
+
+    Jingle - Centralize candidate queuing (Phase 4)
+    
+    Centralize scattered ICE candidate queuing logic into single decision point.
+    
+    Key Changes:
+    - Add _should_queue_candidate() - single method for queue decisions
+    - Add _flush_pending_candidates() - centralized flush after session-accept
+    - Update _on_ice_candidate_from_webrtc() to use centralized check
+    - Update _on_bridge_ice_candidate() to use centralized check
+    - Fix MAJOR BUG: Two duplicate queue checks with different state lists!
+      (proposing/proceeding/pending vs proposing/.../pending/incoming/accepted)
+    
+    Pattern:
+    - Queue candidates UNTIL session stanza exchange completes
+    - Bulk-include ALL queued candidates in session-initiate/session-accept
+    - After exchange, send new candidates individually via transport-info
+
+> (466c286cb9)
+
+    Session 3: Jingle Refactor Phase 2 Complete
+    
+    RtcpMuxHandler:
+    - Created dedicated handler for rtcp-mux negotiation (RFC 5761, XEP-0167)
+    - 5 static methods for different negotiation scenarios
+    - Comprehensive documentation and Conversations.im compatibility notes
+    
+    JingleSDPConverter Integration:
+    - Integrated RtcpMuxHandler into sdp_to_jingle() and jingle_to_sdp()
+    - Explicit rtcp-mux logic for offers and answers
+    - Removed implicit "messy" behavior
+    
+    Features Package:
+    - New drunk_call_hook/protocol/features/ directory
+    - Structure ready for future handlers (TrickleICE, SSRC, etc.)
+
+> (0258a64eee)
+
+    Integrate JingleSDPConverter with SSRC support
+    
+    Session 2 Part 2: Jingle Refactor Phase 2
+    
+    SSRC Support (completing Phase 1):
+    - Add SSRC parsing to sdp_to_jingle() method
+    - Implement SSRC filtering: offers include all params, answers filter to match offer
+    - Add 3 comprehensive SSRC tests (offer, answer filtered, answer no-SSRC)
+    - All 12/12 core tests passing
+    
+    Integration (Phase 2):
+    - Import and initialize JingleSDPConverter in JingleAdapter.__init__
+    - Replace _jingle_to_sdp() calls (2 locations: lines 225, 307)
+    - Replace _extract_offer_details() → extract_offer_context() (line 253)
+    - Replace _sdp_to_jingle() calls (2 locations: lines 765-772, 851-860)
+      - Changed from in-place modification to functional pattern
+      - Copy content/group elements from converter output to wrapper
+      - Pass offer_context for answer feature echoing
+    - Delete 4 old methods: _extract_offer_details, _echo_offer_features,
+      _sdp_to_jingle, _jingle_to_sdp (560 lines removed)
+
+> (08b701a6ae)
+
+    Add JingleSDPConverter - SDP ↔ Jingle (Phase 1)
+    
+    Session 2: Jingle Refactor Phase 1 Complete
+    
+    Implementation:
+    - Add JingleSDPConverter class (drunk_call_hook/protocol/jingle_sdp_converter.py)
+      - extract_offer_context(): Extract BUNDLE, rtcp-mux, codecs from offer
+      - sdp_to_jingle(): Convert SDP → Jingle XML (257 lines from jingle.py)
+      - jingle_to_sdp(): Convert Jingle XML → SDP (126 lines from jingle.py)
+      - Pure conversion, NO business logic, NO session state
+    
+    Testing:
+    - Add comprehensive test suite (tests/test_jingle_sdp_converter.py)
+      - 9/9 core tests passing, 3 skipped (future features)
+      - Tests for: basic conversion, rtcp-mux, BUNDLE, round-trip, error handling
+      - TDD approach: tests written first, implementation made them pass
+    
+    Documentation:
+    - Add SESSION-LOG.md: Multi-session progress tracker
+    - Add SESSION-1-SUMMARY.md: Session 1 recap
+    - Add JINGLE-REFACTOR-PLAN.md: 5-phase Python cleanup plan
+    - Add PROTO-IMPROVEMENTS.md: Proto buffer improvements needed
+    - Add GSTREAMER-THREADING.md: Threading model verification
+    - Update 4-GRPC-PLAN.md: Complete gRPC integration architecture
+    
+    Status:
+    - Phase 1 complete: Converter extracted, tested, ready for integration
+    - NO behavior change yet (converter not integrated into JingleAdapter)
+    - Next: Phase 2 - Integrate converter into jingle.py
+
+> (7fc5a383f9)
+
+    Implement stats, video enumeration, and logger
+    
+    Add comprehensive statistics collection with bandwidth tracking:
+    - MediaSession::Stats struct with connection states, bandwidth, quality metrics
+    - WebRTCSession::get_stats() using GStreamer stats API and webrtcbin properties
+    - ICE states from webrtcbin properties (not stats structure)
+    - Bandwidth calculation: delta-based (bytes * 8) / time_ms in Kbps
+    - Stats use gst_structure_get_enum() for GstWebRTCStatsType
+    - Test: test_stats.cpp validates stats collection
+    
+    Add video device enumeration:
+    - VideoDevice struct with device_path field
+    - DeviceEnumerator::list_video_sources() and get_default_video_source()
+    - Cross-platform: Linux/V4L2, Windows/KsVideo, macOS/AVFoundation
+    - Updated test_device_enumeration.cpp with video device listing
+    
+    Add spdlog logger with file rotation:
+    - Logger class with LOG_* macros (TRACE/DEBUG/INFO/WARN/ERROR/CRITICAL)
+    - File output: ~/.siproxylin/logs/drunk-call-service.log (configurable)
+    - Rotating file sink: 10MB max, 3 files
+    - CLI args: -log-level, -log-path (for future gRPC service)
+    - Channel separation: user logs→file, libnice→STDOUT, exceptions→STDERR
+    - Test: test_logger.cpp validates all log levels and file creation
+
+> (fbc79ed804)
+
+    Addding HTTP/SOCKS5 proxy support
+
+> (15c2d372e6)
+
+    Step 3: ICE Candidate Handling & Connectivity
+    
+    Implements full ICE candidate gathering, exchange, and connectivity
+    establishment between WebRTC peers using GStreamer webrtcbin.
+    
+    Implementation (docs/CALLS/3-ICE-PLAN.md):
+    - Add ICE gathering state monitoring (NEW → GATHERING → COMPLETE)
+    - Implement candidate filtering for relay-only mode (privacy)
+    - Add comprehensive ICE connectivity test with trickle ICE simulation
+    - Verify ICE state transitions: NEW → CHECKING → CONNECTED → COMPLETED
+    
+    WebRTCSession enhancements:
+    - on_ice_gathering_state() handler for gathering state transitions
+    - Candidate filtering in on_ice_candidate() (filters host/srflx in relay mode)
+    - Connected signals for notify::ice-gathering-state
+    
+    Test results (test_step3_ice_connectivity):
+    - 15 ICE candidates per session (12 host + 3 srflx via STUN)
+    - Full trickle ICE exchange with background thread
+    - Both sessions reach COMPLETED state (~6.3s)
+    - pad-added signal fires, incoming media streams linked
+    - Clean shutdown, no memory leaks
+
+> (e44c526c92)
+
+    Step 2: SDP Negotiation (docs/CALLS/2-SDP-PLAN.md)
+    
+    - Full offer/answer negotiation between two WebRTCSession instances
+    - Signaling state monitoring: STABLE → HAVE_LOCAL_OFFER/HAVE_REMOTE_OFFER → STABLE
+    - SDP validation: BUNDLE, trickle ICE, DTLS fingerprints all present
+    - Promise-based async SDP operations (create-offer, create-answer, set-remote-description)
+    - Incoming media handling via dynamic pad-added signal
+    
+    Test Results:
+    - test_step0_gstreamer_basic: All plugins available, basic pipeline works
+    - test_step1_pipeline: SDP offer 501 bytes, 15 ICE candidates, mute works, signaling states correct
+    - test_step2_sdp_negotiation: Offer + answer negotiation, both sides 15 candidates each
+
+> (315a41c364)
+
+    Update docs and Implement WebRTCSession class
+    
+    Completed all tasks from docs/CALLS/1-PIPELINE-PLAN.md:
+    - WebRTCSession class implementing MediaSession interface (698 lines)
+    - Full pipeline creation: audio_src → volume → queue → opusenc → rtpopuspay → capsfilter → webrtcbin
+    - Webrtcbin configuration: bundle-policy=max-bundle, STUN/TURN support, ICE transport policy
+    - Signal handlers: on-negotiation-needed, on-ice-candidate, pad-added, ice-connection-state
+    - SDP operations: create_offer, create_answer, set_remote_description (async with callbacks)
+    - ICE candidate handling (local and remote)
+    - Incoming media stream handling (dynamic pad-added)
+    - Mute control via volume element
+    - SessionFactory with plugin detection for dual-path support (webrtcbin/rtpbin)
+
+> (bca3936c6a)
+
+    Adding initial planning documents
+
+> (74b6563667)
+
+    Cleanup of call service
+
+> (c9f066f947)
+
+    Adding debug logs to drunk_call_hook/bridge.py
+
+> (e64cb70c90)
+
+    Cleanup of call service (Go code moved)
+
+> (5a6c08dd85)
+
+    Fix MAM loading for 1:1 chats without UI blocking
+    
+    1. Add on-demand MAM loading for 1:1 conversations
+       - Automatically loads history when opening chats with no local messages
+       - MUC rooms already had this, now 1:1 chats work the same way
+       - Prevents duplicate queries with loading state tracking
+    
+    2. Convert MAM to non-blocking async generator
+       - retrieve_history() now yields pages instead of collecting all messages
+       - Page size reduced from 300 to 25 messages
+       - 1-second async sleep between pages to keep UI responsive
+       - Per-page database commits prevent long-running transactions
+    
+    3. Update all MAM callers for page-based processing
+       - messages.py: load_private_chat_history_on_demand() and _retrieve_private_chat_history()
+       - muc.py: _retrieve_muc_history()
+       - Emit UI refresh signals after each page for incremental display
+
+> (0f08595d52)
+
+    Improve MAM sync and fix message delivery issues
+    
+    Key improvements:
+    - Reduced overlap window from 1 hour to 5 minutes (92% fewer duplicates)
+    - Added early duplicate detection: stops after 10 consecutive duplicates
+    - Removed artificial 500-message limit (now unlimited, XMPP handles safely)
+    - Fixed session resume gap: trigger MAM catchup on XEP-0198 resume
+      (solves "messages only appear after sending or restart" issue)
+    - Added start_id parameter support for future efficient catchup
+    
+    Database changes:
+    - Created v15_to_v16 migration for mam_catchup state tracking table
+    - Added mam_catchup table to schema.sql (single-range approach)
+    
+    Expected impact:
+    - 90-95% reduction in redundant MAM queries per connection
+    - Near-zero duplicate spam in logs after initial sync
+    - Big improvement to message delivery reliability
+
 ## [0.0.20 - High-Proof-Moonshine] - 2026-02-28
+
+> (35968b6a6e)
+
+    Releasing v0.0.20: 1. More admin tools; 2. Emoji picker history
 
 > (795b2bfabc)
 
