@@ -402,6 +402,7 @@ class CallBridge:
 
     async def create_session(self, peer_jid: str, session_id: str,
                              microphone_device: str = "", speakers_device: str = "",
+                             microphone_display_name: str = "", speakers_display_name: str = "",
                              proxy_host: str = "", proxy_port: int = 0,
                              proxy_username: str = "", proxy_password: str = "",
                              proxy_type: str = "",
@@ -416,8 +417,10 @@ class CallBridge:
         Args:
             peer_jid: Remote peer JID
             session_id: Jingle session ID
-            microphone_device: Microphone device name (empty = default)
-            speakers_device: Speakers device name (empty = default)
+            microphone_device: Microphone device ID (empty = default)
+            speakers_device: Speakers device ID (empty = default)
+            microphone_display_name: Human-readable microphone name (for logging only)
+            speakers_display_name: Human-readable speakers name (for logging only)
             proxy_host: Proxy hostname/IP (empty = no proxy)
             proxy_port: Proxy port (e.g., 9050 for Tor, 3128 for HTTP)
             proxy_username: Proxy authentication username (optional)
@@ -439,6 +442,21 @@ class CallBridge:
             self.logger.error("gRPC stub not initialized")
             return False
 
+        # Format device labels for logging (show both display name and ID for disambiguation)
+        if microphone_display_name and microphone_device:
+            mic_label = f"{microphone_display_name} ({microphone_device})"
+        elif microphone_device:
+            mic_label = microphone_device
+        else:
+            mic_label = "default"
+
+        if speakers_display_name and speakers_device:
+            speakers_label = f"{speakers_display_name} ({speakers_device})"
+        elif speakers_device:
+            speakers_label = speakers_device
+        else:
+            speakers_label = "default"
+
         # Log proxy settings (mask password for security)
         proxy_info = f"no proxy"
         if proxy_host and proxy_type:
@@ -453,7 +471,7 @@ class CallBridge:
             if turn_username:
                 turn_info += f" (user: {turn_username})"
 
-        self.logger.info(f"Creating session {session_id} with {peer_jid}, mic={microphone_device or 'default'}, speakers={speakers_device or 'default'}, {proxy_info}, TURN={turn_info}")
+        self.logger.info(f"Creating session {session_id} with {peer_jid}, mic={mic_label}, speakers={speakers_label}, {proxy_info}, TURN={turn_info}")
 
         request = call_pb2.CreateSessionRequest(
             session_id=session_id,

@@ -250,12 +250,12 @@ class CallBarrel:
     # Call Functionality (DrunkCALL Integration)
     # =========================================================================
 
-    def _load_audio_settings(self) -> tuple[str, str, dict]:
+    def _load_audio_settings(self) -> tuple[str, str, str, str, dict]:
         """
         Load audio device and processing settings from calls.json.
 
         Returns:
-            Tuple of (microphone_device, speakers_device, audio_processing_settings).
+            Tuple of (microphone_device_id, microphone_display_name, speakers_device_id, speakers_display_name, audio_processing_settings).
             Empty strings = system default.
             audio_processing_settings is a dict with: echo_cancel, echo_suppression_level,
             noise_suppression, noise_suppression_level, gain_control
@@ -280,27 +280,31 @@ class CallBarrel:
                     speakers_setting = settings.get('speakers_device', '')
 
                     if isinstance(mic_setting, dict):
-                        mic = mic_setting.get('device_id', '')
+                        mic_id = mic_setting.get('device_id', '')
+                        mic_display = mic_setting.get('display_name', '')
                     else:
-                        mic = mic_setting  # Old format (string)
+                        mic_id = mic_setting  # Old format (string)
+                        mic_display = ''
 
                     if isinstance(speakers_setting, dict):
-                        speakers = speakers_setting.get('device_id', '')
+                        speakers_id = speakers_setting.get('device_id', '')
+                        speakers_display = speakers_setting.get('display_name', '')
                     else:
-                        speakers = speakers_setting  # Old format (string)
+                        speakers_id = speakers_setting  # Old format (string)
+                        speakers_display = ''
 
                     # Load audio processing settings if present
                     if 'audio_processing' in settings:
                         audio_processing.update(settings['audio_processing'])
 
                     if self.logger:
-                        self.logger.debug(f"Loaded audio settings: mic={mic or 'default'}, speakers={speakers or 'default'}, processing={audio_processing}")
-                    return mic, speakers, audio_processing
+                        self.logger.debug(f"Loaded audio settings: mic={mic_id or 'default'}, speakers={speakers_id or 'default'}, processing={audio_processing}")
+                    return mic_id, mic_display, speakers_id, speakers_display, audio_processing
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Failed to load audio settings: {e}")
 
-        return '', '', audio_processing  # Default to system defaults
+        return '', '', '', '', audio_processing  # Default to system defaults
 
     async def _setup_call_functionality(self):
         """
@@ -505,11 +509,13 @@ class CallBarrel:
                     self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
 
             # Load audio device and processing settings
-            mic_device, speakers_device, audio_proc = self._load_audio_settings()
+            mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
 
             # Create CallBridge session (WebRTC peer connection)
             await self.call_bridge.create_session(
                 peer_jid, session_id, mic_device, speakers_device,
+                microphone_display_name=mic_display,
+                speakers_display_name=speakers_display,
                 proxy_host=self.proxy_host or "",
                 proxy_port=self.proxy_port or 0,
                 proxy_username=self.proxy_username or "",
