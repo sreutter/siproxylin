@@ -4,7 +4,88 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.22 - Acetaldehyde] - 2026-03-07
+
+> (91a26e3b8d)
+
+    Add audio profile fixing for Linux USB devices
+    
+    - Create audio_profiles.py utility to auto-switch USB audio cards from
+      input-only or output-only profiles to duplex profiles on startup
+    - Makes Linux behave like Windows/Mac where USB headsets expose both
+      mic and speakers simultaneously without manual configuration
+    - Integrates into app startup (Linux-only, no-op on other platforms)
+    - Uses pactl JSON API to query and switch PulseAudio/PipeWire profiles
+    
+    Users can now mix and match any mic/speaker combo (e.g., USB mic with
+    laptop speakers) without manually switching PulseAudio profiles.
+
+> (63a7d09c49)
+
+    Fix audio device enumeration
+    
+    - Enable show_all_devices for GStreamer device monitor to expose devices
+      from hidden providers (fixes PipeWire/ALSA compatibility layer issues)
+    - Filter monitor devices (software loopbacks)
+    - Filter card-level generic devices without proper device IDs
+    - Filter by media.class to exclude wrong device types (show_all_devices
+      returns both sources and sinks regardless of filter)
+    - Add deduplication by device ID to prevent duplicate entries in UI
+    - Fixes inconsistent device counts and missing devices
+
+> (0023f64a57)
+
+    Improve audio device settings dialog
+    
+    - Find CallBridge from available accounts if not passed
+    - Add user-friendly messages when service unavailable
+    - Fix timing: load saved settings after devices are enumerated
+    - Update info labels to show enumeration status
+
+> (82eddcc389)
+
+    Enhance call logging with device display names (Part 2 - forgotten places)
+
+> (f544b26041)
+
+    Added casting to C++ code (Raspberry compiler issues)
+
+> (6b91978d4a)
+
+    Enhance call logging with device display names
+    
+    - Add optional microphone_display_name and speakers_display_name parameters to bridge.create_session()
+    - Update _load_audio_settings() to return both device IDs and display names from JSON
+    - Format logs to show: "Device Name (device_id)" for better disambiguation
+    - Example: "mic=Family 17h HD Audio (alsa_input.pci-0000_05_00.6.analog-stereo)"
+    - C++ call service still receives only device IDs (no breaking changes)
+    - Backward compatible: display names are optional, defaults to showing ID only
+
+> (21af7f31e3)
+
+    Fix audio device choice (the call service side)
+
+> (552ce881a0)
+
+    Updated docs
+
+> (a9c70fe2f5)
+
+    Updated README
+
 ## [0.0.21 - Hangover] - 2026-03-07
+
+> (c027c19b74)
+
+    Updated appimage.yml to trigger build env recreation
+
+> (a25457342d)
+
+    Fixing build env dependencies .github/workflows/release.yml
+
+> (3e9ef0a67a)
+
+    Switching to C++ based called service
 
 > (11c8ab12ab)
 
