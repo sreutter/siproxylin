@@ -1460,7 +1460,7 @@ void WebRTCSession::on_offer_created(GstPromise *promise) {
         // Use proper error handling instead
         GstPromiseResult result = gst_promise_wait(promise);
         if (result != GST_PROMISE_RESULT_REPLIED) {
-            LOG_ERROR("[WebRTCSession] Promise did not reply: {}", result);
+            LOG_ERROR("[WebRTCSession] Promise did not reply: {}", static_cast<int>(result));
             gst_promise_unref(promise);
             if (sdp_callback_) {
                 sdp_callback_(false, SDPMessage(), "Promise failed to reply");
@@ -1528,7 +1528,7 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
         // Use proper error handling instead
         GstPromiseResult result = gst_promise_wait(promise);
         if (result != GST_PROMISE_RESULT_REPLIED) {
-            LOG_ERROR("[WebRTCSession] Promise did not reply: {}", result);
+            LOG_ERROR("[WebRTCSession] Promise did not reply: {}", static_cast<int>(result));
             gst_promise_unref(promise);
             if (sdp_callback_) {
                 sdp_callback_(false, SDPMessage(), "Promise failed to reply");
