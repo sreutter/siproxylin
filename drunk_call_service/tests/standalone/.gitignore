@@ -9,5 +9,7 @@ test_step7_logger
 test_step9_session_manager
 test_webrtc_answerer
 test_webrtc_caller
+test_step1b_audio_playback
+test_step8_thread_safe_queue
 *.log
 *.txt
