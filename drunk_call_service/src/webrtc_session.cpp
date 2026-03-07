@@ -1912,6 +1912,9 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
         // Configure speaker device if specified
         if (!config_.speakers_device.empty() && sink_name == std::string("pulsesink")) {
             g_object_set(audio_sink_, "device", config_.speakers_device.c_str(), nullptr);
+            LOG_INFO("[WebRTCSession] ✓ Set speaker device: {}", config_.speakers_device);
+        } else {
+            LOG_INFO("[WebRTCSession] Using autoaudiosink (no specific speaker device)");
         }
 
         // Add elements to pipeline

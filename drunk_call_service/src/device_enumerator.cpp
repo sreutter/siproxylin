@@ -61,13 +61,24 @@ static std::string extract_device_id(GstDevice *device) {
     // Get device properties
     GstStructure *props = gst_device_get_properties(device);
     if (props) {
+        // DEBUG: Dump all available properties to find the right one
+        gchar *props_str = gst_structure_to_string(props);
+        LOG_DEBUG("[DeviceEnumerator] GStreamer device properties: {}", props_str ? props_str : "(null)");
+        g_free(props_str);
+
         const gchar *id = nullptr;
 
         // Platform-specific property names
         switch (OS_FAMILY[0]) {  // Cheap trick: 'L' = Linux, 'W' = Windows, 'm' = macOS
-            case 'L':  // Linux - PulseAudio
-                id = gst_structure_get_string(props, "device.name");
+            case 'L':  // Linux - PulseAudio/PipeWire
+                // node.name contains the PulseAudio device name (e.g., "alsa_input.pci-...")
+                id = gst_structure_get_string(props, "node.name");
+                if (!id) id = gst_structure_get_string(props, "device.name");
                 if (!id) id = gst_structure_get_string(props, "device");
+                LOG_DEBUG("[DeviceEnumerator] Linux: node.name='{}', device.name='{}', device='{}'",
+                         gst_structure_get_string(props, "node.name") ? gst_structure_get_string(props, "node.name") : "(null)",
+                         gst_structure_get_string(props, "device.name") ? gst_structure_get_string(props, "device.name") : "(null)",
+                         gst_structure_get_string(props, "device") ? gst_structure_get_string(props, "device") : "(null)");
                 break;
 
             case 'W':  // Windows - WASAPI
@@ -87,6 +98,7 @@ static std::string extract_device_id(GstDevice *device) {
 
         if (id) {
             device_id = id;
+            LOG_DEBUG("[DeviceEnumerator] Extracted device ID: '{}'", device_id);
         }
 
         gst_structure_free(props);
@@ -97,6 +109,7 @@ static std::string extract_device_id(GstDevice *device) {
         gchar *name = gst_device_get_display_name(device);
         if (name) {
             device_id = name;
+            LOG_WARN("[DeviceEnumerator] FALLBACK: Using display name as device ID: '{}'", device_id);
             g_free(name);
         }
     }
@@ -182,18 +195,12 @@ std::vector<AudioDevice> DeviceEnumerator::enumerate_devices(const char *classes
             // Get device ID
             audio_dev.id = extract_device_id(device);
 
-            // Get display name
+            // Get display name (human-readable name from PulseAudio)
             gchar *display_name = gst_device_get_display_name(device);
             if (display_name) {
                 audio_dev.name = display_name;
+                audio_dev.description = display_name;  // Use same for description (shown in UI)
                 g_free(display_name);
-            }
-
-            // Get device class (fuller description)
-            gchar *device_class = gst_device_get_device_class(device);
-            if (device_class) {
-                audio_dev.description = device_class;
-                g_free(device_class);
             }
 
             // Check if default
@@ -201,6 +208,8 @@ std::vector<AudioDevice> DeviceEnumerator::enumerate_devices(const char *classes
 
             LOG_INFO("[DeviceEnumerator]   {}{} (id: {})",
                      audio_dev.is_default ? "✓ " : "  ", audio_dev.name, audio_dev.id);
+            LOG_DEBUG("[DeviceEnumerator]     → id='{}', name='{}', description='{}'",
+                     audio_dev.id, audio_dev.name, audio_dev.description);
 
             devices.push_back(audio_dev);
             gst_object_unref(device);

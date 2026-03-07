@@ -571,6 +571,8 @@ grpc::Status CallServiceImpl::ListAudioDevices(
             proto_device->set_name(device.id);
             proto_device->set_description(device.description);
             proto_device->set_device_class("Audio/Source");
+            LOG_DEBUG("  → Input: name='{}', description='{}', class='{}'",
+                     device.id, device.description, "Audio/Source");
         }
 
         // Get audio output devices (speakers)
@@ -582,6 +584,8 @@ grpc::Status CallServiceImpl::ListAudioDevices(
             proto_device->set_name(device.id);
             proto_device->set_description(device.description);
             proto_device->set_device_class("Audio/Sink");
+            LOG_DEBUG("  → Output: name='{}', description='{}', class='{}'",
+                     device.id, device.description, "Audio/Sink");
         }
 
         LOG_INFO("ListAudioDevices: Success, total devices: {}",
