@@ -31,6 +31,7 @@ class SettingsDialog(QDialog):
         self.logging_settings_path = self.paths.config_dir / 'logging.json'
         self.call_bridge = call_bridge
         self.db = get_db()
+        self.parent_window = parent  # Keep reference to main window
 
         # Load existing settings
         self.settings = self._load_settings()
@@ -39,12 +40,28 @@ class SettingsDialog(QDialog):
         # Setup UI
         self._setup_ui()
 
-        # Load current values
-        self._load_current_settings()
+        # Populate device lists from call service
+        # If call_bridge wasn't passed, try to find one from available accounts
+        if not self.call_bridge and hasattr(parent, 'account_manager'):
+            for account in parent.account_manager.accounts.values():
+                if hasattr(account, 'call_bridge') and account.call_bridge:
+                    self.call_bridge = account.call_bridge
+                    logger.debug(f"Found call_bridge from account {account.account_id}")
+                    break
 
-        # Populate device lists from Go service
         if self.call_bridge:
+            # Start device population - _load_current_settings() will be called when it completes
             asyncio.create_task(self._populate_devices())
+        else:
+            logger.warning("No call_bridge available - device list will show Default only")
+            # Update info label to explain why devices aren't listed
+            self.devices_info_label.setText(
+                "⚠ Device enumeration unavailable. Connect an account to see available devices.\n"
+                "You can still save settings - they will apply when you make calls."
+            )
+            self.devices_info_label.setStyleSheet("color: #cc6600; font-size: 10pt;")
+            # Load current settings even without device enumeration (will show saved values in other tabs)
+            self._load_current_settings()
 
     def _setup_ui(self):
         """Setup the UI layout."""
@@ -101,11 +118,11 @@ class SettingsDialog(QDialog):
         self.speakers_combo.addItem("Default (System)", "")
         layout.addRow("Speakers:", self.speakers_combo)
 
-        # Info label
-        info_label = QLabel("Devices are enumerated from GStreamer/PulseAudio.")
-        info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: gray; font-size: 10pt;")
-        layout.addRow("", info_label)
+        # Info label (will be updated based on device availability)
+        self.devices_info_label = QLabel("Devices are enumerated from GStreamer/PulseAudio.")
+        self.devices_info_label.setWordWrap(True)
+        self.devices_info_label.setStyleSheet("color: gray; font-size: 10pt;")
+        layout.addRow("", self.devices_info_label)
 
         layout.addRow("", QLabel(""))  # Spacer
 
@@ -279,7 +296,7 @@ class SettingsDialog(QDialog):
         self.noise_level_combo.setEnabled(checked)
 
     async def _populate_devices(self):
-        """Populate device dropdowns from Go service."""
+        """Populate device dropdowns from call service."""
         try:
             devices = await self.call_bridge.list_audio_devices()
 
@@ -302,11 +319,21 @@ class SettingsDialog(QDialog):
 
             logger.info(f"Populated {len(devices)} audio devices")
 
+            # Update info label to show successful enumeration
+            self.devices_info_label.setText("Devices are enumerated from GStreamer/PulseAudio.")
+            self.devices_info_label.setStyleSheet("color: gray; font-size: 10pt;")
+
             # Restore saved selections
             self._load_current_settings()
 
         except Exception as e:
             logger.error(f"Failed to populate devices: {e}")
+            # Show error in info label
+            self.devices_info_label.setText(
+                f"⚠ Failed to enumerate devices: {str(e)}\n"
+                "Using Default (System) only."
+            )
+            self.devices_info_label.setStyleSheet("color: #cc0000; font-size: 10pt;")
 
     def _load_settings(self):
         """Load settings from JSON file."""
