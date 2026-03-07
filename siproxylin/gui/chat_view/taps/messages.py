@@ -110,6 +110,7 @@ class MessageDisplayWidget(QObject):
 
         # MAM loading state (prevent duplicate on-demand queries)
         self.mam_loading_jids = set()    # Set of JIDs currently loading MAM history
+        self.mam_queried_jids = set()    # Set of account:jid keys already queried (even if empty)
 
         # Zone tracking for smart polling control (Phase 2)
         self.in_live_zone = True         # True = live zone (>50% scroll), False = history zone (<=50%)
@@ -322,14 +323,20 @@ class MessageDisplayWidget(QObject):
             # Trigger on-demand MAM loading for empty 1:1 conversations
             # MUC rooms load history automatically on join, but 1:1 chats need explicit MAM query
             if not rows and not self.current_is_muc and self.account_manager:
-                # Check if we're already loading MAM for this JID (prevent duplicate queries)
-                if self.current_jid in self.mam_loading_jids:
-                    logger.debug(f"MAM already loading for {self.current_jid}, skipping duplicate query")
+                # Create unique key for this account+jid combination
+                query_key = f"{self.current_account_id}:{self.current_jid}"
+
+                # Skip silently if already queried (no log spam every 2 sec)
+                if query_key in self.mam_queried_jids:
+                    pass  # Already queried, conversation is empty
+                elif self.current_jid in self.mam_loading_jids:
+                    logger.debug(f"MAM currently loading for {self.current_jid}, skipping duplicate query")
                 else:
                     account = self.account_manager.get_account(self.current_account_id)
                     if account and account.is_connected():
-                        # Capture JID in closure (current_jid may change if user switches conversations)
+                        # Capture values in closure (may change if user switches conversations)
                         loading_jid = self.current_jid
+                        loading_query_key = query_key
 
                         # Mark as loading
                         self.mam_loading_jids.add(loading_jid)
@@ -349,8 +356,9 @@ class MessageDisplayWidget(QObject):
                                 import traceback
                                 logger.error(traceback.format_exc())
                             finally:
-                                # Always remove from loading set when done (success or failure)
+                                # Always remove from loading set and mark as queried when done
                                 self.mam_loading_jids.discard(loading_jid)
+                                self.mam_queried_jids.add(loading_query_key)  # Remember we queried (even if 0 results)
                                 logger.debug(f"MAM loading completed for {loading_jid}")
 
                         # Schedule task (don't await - let it run in background)
