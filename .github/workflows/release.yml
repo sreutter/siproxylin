@@ -87,9 +87,7 @@ jobs:
           libsrtp2-dev \
           libgrpc++-dev \
           libasound2-dev \
-          libspdlog-dev \
-          libc++-dev \
-          libc++abi-dev
+          libspdlog-dev
 
     - name: Install appimage-builder
       run: |
