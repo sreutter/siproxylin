@@ -9,6 +9,8 @@
 #include "logger.h"
 #include <gst/gst.h>
 #include <algorithm>
+#include <cstring>
+#include <unordered_set>
 
 #ifdef _WIN32
     #define OS_FAMILY "Windows"
@@ -24,6 +26,53 @@ namespace drunk_call {
  * Platform-specific device class filters
  * GStreamer automatically selects the appropriate provider per platform
  */
+/**
+ * Check if device should be filtered out (monitors, card-level devices, wrong type)
+ */
+static bool should_skip_device(GstDevice *device, bool is_input) {
+    GstStructure *props = gst_device_get_properties(device);
+    if (!props) {
+        return false;  // No properties - let it through
+    }
+
+    bool skip = false;
+    const gchar *device_class = gst_structure_get_string(props, "device.class");
+    const gchar *media_class = gst_structure_get_string(props, "media.class");
+
+    // Skip monitor devices (software loopbacks that capture playback)
+    if (device_class && strcmp(device_class, "monitor") == 0) {
+        LOG_DEBUG("[DeviceEnumerator] Skipping monitor device");
+        skip = true;
+    }
+
+    // Skip devices with wrong media class (show_all_devices returns both sources and sinks)
+    // This is critical: when show_all_devices=true, GStreamer ignores our filter
+    if (!skip && media_class) {
+        const char *expected_class = is_input ? "Audio/Source" : "Audio/Sink";
+        if (strcmp(media_class, expected_class) != 0) {
+            LOG_DEBUG("[DeviceEnumerator] Skipping device with wrong media.class: '{}' (expected '{}')",
+                     media_class, expected_class);
+            skip = true;
+        }
+    }
+
+    // Skip card-level devices (too generic, no proper device ID)
+    // These don't have node.name or device.name on Linux
+    if (!skip && OS_FAMILY[0] == 'L') {  // Linux only
+        const gchar *node_name = gst_structure_get_string(props, "node.name");
+        const gchar *device_name = gst_structure_get_string(props, "device.name");
+
+        // If neither node.name nor device.name exists, it's a card-level fallback
+        if (!node_name && !device_name) {
+            LOG_DEBUG("[DeviceEnumerator] Skipping card-level device (no node.name/device.name)");
+            skip = true;
+        }
+    }
+
+    gst_structure_free(props);
+    return skip;
+}
+
 static const char* get_audio_source_classes() {
     // GStreamer picks the right provider:
     // - Linux: PulseAudio (pulsesrc)
@@ -182,18 +231,39 @@ std::vector<AudioDevice> DeviceEnumerator::enumerate_devices(const char *classes
         // Add filter for this specific device class
         gst_device_monitor_add_filter(monitor, classes, nullptr);
 
+        // Show all devices, including those from hidden providers (fixes PipeWire compatibility)
+        // This ensures devices from hidden providers (PipeWire, ALSA compat layers) are visible
+        gst_device_monitor_set_show_all_devices(monitor, TRUE);
+
         // Get devices WITHOUT start/stop - avoids PipeWire double-free bug
         // Docs say: "may actually probe the hardware if the monitor is not currently started"
         GList *device_list = gst_device_monitor_get_devices(monitor);
 
+        // Track seen device IDs to deduplicate (show_all_devices can return duplicates)
+        std::unordered_set<std::string> seen_ids;
+
         for (GList *l = device_list; l != nullptr; l = l->next) {
             GstDevice *device = GST_DEVICE(l->data);
+
+            // Filter out monitors, card-level devices, and wrong device types
+            if (should_skip_device(device, is_input)) {
+                gst_object_unref(device);
+                continue;
+            }
 
             AudioDevice audio_dev;
             audio_dev.is_input = is_input;
 
             // Get device ID
             audio_dev.id = extract_device_id(device);
+
+            // Skip duplicate devices (show_all_devices returns same device from multiple providers)
+            if (seen_ids.count(audio_dev.id) > 0) {
+                LOG_DEBUG("[DeviceEnumerator] Skipping duplicate device ID: '{}'", audio_dev.id);
+                gst_object_unref(device);
+                continue;
+            }
+            seen_ids.insert(audio_dev.id);
 
             // Get display name (human-readable name from PulseAudio)
             gchar *display_name = gst_device_get_display_name(device);
