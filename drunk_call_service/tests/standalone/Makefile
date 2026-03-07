@@ -20,32 +20,32 @@ test_step0_gstreamer_basic: test_step0_gstreamer_basic.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS)
 
 # Step 1: Pipeline creation with WebRTCSession class
-test_step1_pipeline: test_step1_pipeline.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+test_step1_pipeline: test_step1_pipeline.cpp ../../src/logger.cpp
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) $(shell $(PKG_CONFIG) --cflags --libs spdlog) -pthread
 
 # Step 1b: Audio playback (2-second tone to default device)
 test_step1b_audio_playback: test_step1b_audio_playback.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
 
 # Step 2: SDP offer/answer negotiation
-test_step2_sdp_negotiation: test_step2_sdp_negotiation.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+test_step2_sdp_negotiation: test_step2_sdp_negotiation.cpp ../../src/logger.cpp
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) $(shell $(PKG_CONFIG) --cflags --libs spdlog) -pthread
 
 # Step 3: ICE candidate exchange and connectivity
-test_step3_ice_connectivity: test_step3_ice_connectivity.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+test_step3_ice_connectivity: test_step3_ice_connectivity.cpp ../../src/logger.cpp
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) $(shell $(PKG_CONFIG) --cflags --libs spdlog) -pthread
 
 # Step 4: Audio loopback (based on GStreamer examples, for reference)
 test_step4_audio_loopback: test_step4_audio_loopback.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS)
 
 # Step 5: Device enumeration test
-test_step5_device_enumeration: test_step5_device_enumeration.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+test_step5_device_enumeration: test_step5_device_enumeration.cpp ../../src/logger.cpp
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) $(shell $(PKG_CONFIG) --cflags --libs spdlog) -pthread
 
 # Step 6: Stats test
-test_step6_stats: test_step6_stats.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ $(GST_CFLAGS) $(GST_LIBS) -pthread
+test_step6_stats: test_step6_stats.cpp ../../src/logger.cpp
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(GST_CFLAGS) $(GST_LIBS) $(shell $(PKG_CONFIG) --cflags --libs spdlog) -pthread
 
 # Step 7: Logger test
 test_step7_logger: test_step7_logger.cpp ../../src/logger.cpp
