@@ -743,7 +743,7 @@ class CallBarrel:
                     self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
 
             # Load audio device and processing settings
-            mic_device, speakers_device, audio_proc = self._load_audio_settings()
+            mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
 
             # State transition: Resources (TURN credentials + devices) ready
             self.jingle_adapter.trickle_ice.set_incoming_state(session_id, IncomingCallState.RESOURCES_READY)
@@ -755,6 +755,8 @@ class CallBarrel:
                 session_id,
                 mic_device,
                 speakers_device,
+                microphone_display_name=mic_display,
+                speakers_display_name=speakers_display,
                 proxy_host=self.proxy_host or "",
                 proxy_port=self.proxy_port or 0,
                 proxy_username=self.proxy_username or "",
@@ -917,11 +919,13 @@ class CallBarrel:
                 self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
 
         # Load audio device and processing settings
-        mic_device, speakers_device, audio_proc = self._load_audio_settings()
+        mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
 
         # Create WebRTC session
         await self.call_bridge.create_session(
             peer_jid, session_id, mic_device, speakers_device,
+            microphone_display_name=mic_display,
+            speakers_display_name=speakers_display,
             proxy_host=self.proxy_host or "",
             proxy_port=self.proxy_port or 0,
             proxy_username=self.proxy_username or "",
