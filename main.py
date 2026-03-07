@@ -143,6 +143,11 @@ def main():
     logger.info(f"Log dir: {paths.log_dir}")
     logger.info(f"Database: {paths.database_path}")
 
+    # Auto-fix audio card profiles (Linux only)
+    # Switches USB audio cards to duplex profiles so both mic and speakers are available
+    from siproxylin.utils.audio_profiles import fix_audio_card_profiles
+    fix_audio_card_profiles()
+
     # Initialize database
     logger.info("Initializing database...")
     try:
