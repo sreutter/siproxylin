@@ -4,6 +4,14 @@
 
 ---
 
+## Breaking News!
+
+**Since v0.0.21 incoming calls from Conversations.im started working.**
+
+The change was switching from Go Pion to C++, however I believe that Pion could have worked either, it was more of a bug on my code side than Pion issues. Anyway, now the AppImage shrank as C++ binary is significanlty smaller, so I plan to stick with C++ and keep Go code just for historical reasons.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -48,7 +56,7 @@ chmod +x Siproxylin-*.AppImage
 
 - ✅ **Text messaging** - 1-to-1 and group chats (MUC)
 - ✅ **OMEMO encryption** - End-to-end encrypted messaging (XEP-0384)
-- ✅ **Audio calls** - Works with Dino, most XMPP clients (outgoing to Conversations.im)
+- ✅ **Audio calls** - Works with Dino and Conversations.im
 - ✅ **File attachments** - HTTP Upload (XEP-0363)
 - ✅ **Message features** - Reactions, replies, corrections, threading
 - ✅ **Per-account proxy** - SOCKS5/HTTP proxy support with zero IP leaks
@@ -127,11 +135,9 @@ So definitely **use it with caution**, and please don't be shy about reporting i
 
 ## Known Issues
 
-- **Conversations.im → Siproxylin calls:** Won't connect due to ICE nomination issue in Conversations' WebRTC stack (Siproxylin → Conversations works fine)
 - **Platform:** Currently Linux-only (Windows/MacOS support planned)
 - **Unread counters:** Sometimes pops up after app restart, investigating
 - **Unclear process of MUC membership:** There is lack of information on how members-only MUC are handled, currently it relies on the mercy of auto-approve by server
-- **MUC dialog lacks real-time:** Some changes do not update dialog GUI on the fly
 
 Report bugs: [GitHub Issues](https://github.com/confund0/siproxylin/issues)
 
@@ -145,7 +151,7 @@ When I was a kid, I enjoyed chemistry. **Pyroxylin** (smokeless powder/nitrocell
 
 ### Tech Stack
 
-**Python + SQLite + Qt6 + slixmpp + gRPC + GStreamer + Pion (WebRTC for Go)**
+**Python + SQLite + Qt6 + slixmpp + gRPC + GStreamer (webrtcbin) + C++**
 
 ### Architecture Overview
 
@@ -153,7 +159,7 @@ I'll confess: I borrowed Dino's DB structure to start, just to not reinvent the 
 
 **Jingle** was difficult. Siproxylin uses XEP-0353 from slixmpp, however XEP-0166, XEP-0167, XEP-0176, XEP-0320 have been added to `./drunk_call_hook/` on the fly. **XEP-0158** (media support for CAPTCHA) also wasn't there and had to be added. A few bugs popped up when dealing with slixmpp — runtime patches have been made for them (see `./drunk_xmpp/slixmpp_patches`).
 
-DrunkXMPP is loaded by Siproxylin Core (`./siproxylin/core/`), which connects with the Qt6-based GUI (`./siproxylin/gui/`). When a call comes in, Jingle requests are passed to CallBridge (`./drunk_call_hook/`), which translates them into **gRPC** requests and passes them to the Go service (`./drunk_call_service/`), which uses **Pion** to handle WebRTC, ICE, TURN, and audio (video and screen sharing coming soon).
+DrunkXMPP is loaded by Siproxylin Core (`./siproxylin/core/`), which connects with the Qt6-based GUI (`./siproxylin/gui/`). When a call comes in, Jingle requests are passed to CallBridge (`./drunk_call_hook/`), which translates them into **gRPC** requests and passes them to the Go service (`./drunk_call_service/`), which uses **GStreamer** to handle WebRTC, tricke-ICE, TURN, and audio (video and screen sharing coming soon).
 
 Siproxylin starts as a single Python process with two threads: one for keeping a heartbeat between CallBridge and the Go service, and another for everything else. The Go service is started by CallBridge at application startup. Each component writes logs (defaults to INFO, can be disabled via global and per-account settings), and the app has a built-in log viewer for convenience.
 
@@ -201,7 +207,7 @@ That includes the calls, proxy settings are passed via gRPC and applied in the G
 
 ## Calls
 
-Siproxylin supports **audio calls** with most XMPP clients. Works perfectly between two Siproxylin's, works with Dino in both directions. **Outgoing calls to Conversations.im work fine**, but incoming calls from Conversations won't connect due to an ICE nomination issue in their WebRTC stack (still investigating). Conversations won't nominate a successful ICE pair even with their own TURN server is advertised on both ends of the call.
+Siproxylin supports **audio calls** with most XMPP clients supporting trickle-ICE. We had issues with incoming calls from Conversations but it seems to be solved since switching from Go/Pion to C++/GStreamer/webrtcbin
 
 ### Call Privacy
 
