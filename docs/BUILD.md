@@ -1,6 +1,6 @@
 # Build & Packaging Documentation
 
-> **Last Updated:** 2026-02-03
+> **Last Updated:** 2026-03-07
 
 ---
 
@@ -8,36 +8,49 @@
 
 **Prerequisites:**
 - Python 3.11+
-- Go 1.21+
-- GStreamer 1.0
+- CMake 3.15+
+- C++ compiler (GCC 12+ or Clang)
+- GStreamer 1.0 + WebRTC plugin
 - Qt6 libraries
+
+**C++ Call Service Dependencies:**
+```bash
+sudo apt install cmake build-essential \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  libgstreamer-plugins-bad1.0-dev gstreamer1.0-nice \
+  libnice-dev libgrpc++-dev libspdlog-dev libunwind-dev \
+  libsrtp2-dev libasound2-dev
+```
 
 **Steps:**
 ```bash
-cd drunk_call_service && ./install-tools.sh && ./build.sh && cd ..
+cd drunk_call_service && make clean && make && make install && cd ..
 pip install -r requirements.txt
 python main.py
 ```
 
 ---
 
-## Alpine Linux Build (Experimental)
+## Call Service Architecture
 
-**Status:** Work in progress (currently in git stash)
+**Technology:** C++ with GStreamer WebRTCBin
 
-**Goal:** Native musl build for Alpine Linux users
+**Build system:** CMake + Makefile wrapper
 
-**Known issues:**
-- Encountering method reference issues that may be related to Python version differences (3.11 on Debian vs 3.12 on Alpine)
-- Root cause not yet identified
-- glibc AppImage won't run on Alpine without workarounds
+**Key components:**
+- `drunk_call_service/` - C++ WebRTC service using GStreamer
+- `drunk_call_hook/` - Python gRPC bridge to call service
+- `drunk_xmpp/calls/` - XMPP Jingle signaling (XEP-0353)
 
-**Planned approach:**
-- System packages: py3-pyside6, gstreamer-dev, python3-dev, build-base
-- Create venv with `--system-site-packages` to use system PySide6
-- Build Go call service natively
+**Build targets:**
+```bash
+make           # Release build (optimized, 1.2MB)
+make debug     # Debug build (with sanitizers, 59MB)
+make test      # Run unit tests
+make clean     # Remove build artifacts
+```
 
-**Note:** This is a theoretical section. Implementation is pending resolution of Python version compatibility issues.
+**Binary location:** `drunk_call_service/bin/drunk-call-service-linux`
 
 ---
 
@@ -181,9 +194,10 @@ git push origin v0.0.4
 3. Creates GitHub release with `Siproxylin-v0.0.4-x86_64.AppImage`
 
 **Cache strategy:**
-- Conservative: APT debs (~300MB), appimagetool, Go binary
-- Invalidates on: appimage.yml changes, Go source changes
+- Conservative: APT debs (~300MB), appimagetool, C++ binary
+- Invalidates on: appimage.yml changes, C++ source/CMakeLists changes
 - Speeds up builds significantly
+- To force cache refresh: Add comment to appimage.yml
 
 **CI-specific settings:**
 - `APPIMAGE_EXTRACT_AND_RUN=1` for appimagetool (no FUSE in containers)
