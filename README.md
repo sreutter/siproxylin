@@ -24,7 +24,7 @@ The change was switching from Go Pion to C++, however I believe that Pion could 
 
 # Install hunspell if you want the spell checker
 
-# Build Go call service
+# Build C++ call service
 cd drunk_call_service
 make clean
 make
