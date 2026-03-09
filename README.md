@@ -15,11 +15,9 @@ The change was switching from Go Pion to C++, however I believe that Pion could 
 ## Quick Start
 
 ```bash
-# Install go 1.24:
-# https://go.dev/dl/
 
 # Install GStreamer libraries:
-# gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-gl, gstreamer1.0-gtk3, gstreamer1.0-libav, gstreamer1.0-nice, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-pulseaudio, gstreamer1.0-tools, gstreamer1.0-x, gstreamer1.0-x, libgstreamer-gl1.0-0, libgstreamer-plugins-bad1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-dev, libgstreamer1.0-0, libgstreamer1.0-0, libgstreamer1.0-dev, libgtk-4-media-gstreamer, qtgstreamer-plugins-qt5
+# gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-gl, gstreamer1.0-gtk3, gstreamer1.0-libav, gstreamer1.0-nice, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-pulseaudio, gstreamer1.0-tools, gstreamer1.0-x, gstreamer1.0-x, libgstreamer-gl1.0-0, libgstreamer-plugins-bad1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-dev, libgstreamer1.0-0, libgstreamer1.0-0, libgstreamer1.0-dev, libgtk-4-media-gstreamer, qtgstreamer-plugins-qt5, libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev libgrpc++ 
 
 # Install Qt6:
 # libqt6*
@@ -28,8 +26,9 @@ The change was switching from Go Pion to C++, however I believe that Pion could 
 
 # Build Go call service
 cd drunk_call_service
-./install-tools.sh 
-./build.sh
+make clean
+make
+make install
 cd -
 
 # Get Python dependencies
