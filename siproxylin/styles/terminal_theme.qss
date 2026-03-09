@@ -14,6 +14,7 @@ QWidget {
     color: #33ff33;
     font-family: "Courier New", "Consolas", monospace;
     font-size: {{BASE_FONT_SIZE}}pt;
+    alternate-background-color: #404040;
 }
 
 QMainWindow {

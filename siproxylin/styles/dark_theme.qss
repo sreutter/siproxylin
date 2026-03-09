@@ -13,6 +13,7 @@ QWidget {
     color: #e0e0e0;
     font-family: "Segoe UI", "DejaVu Sans", sans-serif;
     font-size: {{BASE_FONT_SIZE}}pt;
+    alternate-background-color: #555555;
 }
 
 QMainWindow {
