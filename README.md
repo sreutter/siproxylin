@@ -283,3 +283,7 @@ Found a bug? Have a feature request? [Open an issue](https://github.com/confund0
 - cryptography - BSD-3-Clause/Apache-2.0
 
 All dependencies are compatible with AGPL-3.0.
+
+## Contact
+
+As this is a side solo project there is no offcial support, however you can try your luck in a channel siproxylin@conference.conversations.im.
