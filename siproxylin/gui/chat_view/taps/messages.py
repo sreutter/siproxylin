@@ -145,6 +145,13 @@ class MessageDisplayWidget(QObject):
         scrollbar = self.message_area.verticalScrollBar()
         scrollbar.valueChanged.connect(self._on_scroll_changed)
 
+        # Connect click handler for image viewing
+        self.message_area.clicked.connect(self._on_message_clicked)
+
+        # Enable mouse tracking for cursor changes over images
+        self.message_area.setMouseTracking(True)
+        self.message_area.viewport().installEventFilter(self)
+
     def set_scroll_manager(self, scroll_manager):
         """Set the scroll manager (must be called after initialization)."""
         self.scroll_manager = scroll_manager
@@ -1174,12 +1181,64 @@ class MessageDisplayWidget(QObject):
         self.message_area.scrollToBottom()
         logger.info("Jumped back to live zone")
 
-    def eventFilter(self, obj, event):
-        """Event filter to catch ESC and mouse clicks for clearing highlight."""
-        from PySide6.QtCore import QEvent
-        from PySide6.QtGui import QKeyEvent
+    def _on_message_clicked(self, index):
+        """
+        Handle message item click.
 
-        # Only process if we have an active highlight
+        Opens image viewer for image attachments.
+
+        Args:
+            index: QModelIndex of clicked item
+        """
+        if not index.isValid():
+            return
+
+        # Check if this is an image file
+        file_path = index.data(MessageBubbleDelegate.ROLE_FILE_PATH)
+        mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE)
+
+        # Only handle image files
+        if file_path and mime_type and mime_type.startswith('image/'):
+            from pathlib import Path
+
+            # Verify file exists
+            if Path(file_path).exists():
+                logger.info(f"Opening image viewer for: {file_path}")
+
+                # Import and show image viewer
+                from ...dialogs import ImageViewerDialog
+                dialog = ImageViewerDialog(file_path, self.parent)
+                dialog.setAttribute(Qt.WA_DeleteOnClose)
+                dialog.show()
+            else:
+                logger.warning(f"Image file not found: {file_path}")
+
+    def eventFilter(self, obj, event):
+        """Event filter to catch ESC, mouse clicks for clearing highlight, and cursor changes over images."""
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent, QCursor
+
+        # Handle mouse move over viewport to change cursor for images
+        if obj == self.message_area.viewport() and event.type() == QEvent.MouseMove:
+            pos = event.pos()
+            index = self.message_area.indexAt(pos)
+
+            if index.isValid():
+                # Check if this item has an image
+                mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE)
+                file_path = index.data(MessageBubbleDelegate.ROLE_FILE_PATH)
+
+                if mime_type and mime_type.startswith('image/') and file_path:
+                    # Set pointing hand cursor for images
+                    self.message_area.viewport().setCursor(QCursor(Qt.PointingHandCursor))
+                else:
+                    # Reset to default cursor
+                    self.message_area.viewport().setCursor(QCursor(Qt.ArrowCursor))
+            else:
+                # Reset to default cursor
+                self.message_area.viewport().setCursor(QCursor(Qt.ArrowCursor))
+
+        # Only process highlight-related events if we have an active highlight
         if self.message_delegate.highlighted_index is None:
             return False
 

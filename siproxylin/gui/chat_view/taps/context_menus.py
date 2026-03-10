@@ -89,8 +89,11 @@ class ContextMenuManager:
             remove_reaction_action.triggered.connect(lambda: self._remove_reaction(message_id, current_account_id, current_jid))
             menu.addAction(remove_reaction_action)
 
-        # For all messages: add Copy option
-        if body or file_path:
+        # For text messages and non-image files: add Copy option
+        mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE) or ""
+        is_image = mime_type.startswith('image/')
+
+        if (body or file_path) and not is_image:
             copy_action = QAction("Copy Message", self.parent)
             if body:
                 # Copy message text
@@ -114,6 +117,43 @@ class ContextMenuManager:
                 edit_action = QAction("Edit", self.parent)
                 edit_action.triggered.connect(lambda: self.parent._edit_message_from_context(message_id, body, encrypted))
                 menu.addAction(edit_action)
+
+        # For file attachments: add file-specific options
+        if file_path:
+            file_name = index.data(MessageBubbleDelegate.ROLE_FILE_NAME) or "file"
+            mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE) or ""
+            file_size = index.data(MessageBubbleDelegate.ROLE_FILE_SIZE) or 0
+
+            # Add separator before file options for images
+            if mime_type.startswith('image/'):
+                menu.addSeparator()
+
+            # For image attachments: add Open Image option
+            if mime_type and mime_type.startswith('image/'):
+                from pathlib import Path
+
+                if Path(file_path).exists():
+                    open_action = QAction("Open Image", self.parent)
+                    open_action.triggered.connect(lambda: self._open_image_viewer(file_path))
+                    menu.addAction(open_action)
+
+                    open_with_action = QAction("Open With...", self.parent)
+                    open_with_action.triggered.connect(lambda: self._open_with_external(file_path, mime_type))
+                    menu.addAction(open_with_action)
+
+            # Save As... action
+            save_action = QAction("Save As...", self.parent)
+            save_action.triggered.connect(lambda: self._save_file_as(file_path, file_name))
+            menu.addAction(save_action)
+
+            # Add separator before Properties/Info for images
+            if mime_type.startswith('image/'):
+                menu.addSeparator()
+
+            # Properties action
+            properties_action = QAction("Properties", self.parent)
+            properties_action.triggered.connect(lambda: self._show_file_properties(file_path, file_name, mime_type, file_size))
+            menu.addAction(properties_action)
 
         # Info option for all messages
         if body or file_path:
@@ -181,22 +221,6 @@ class ContextMenuManager:
             info_action = QAction("Info", self.parent)
             info_action.triggered.connect(lambda: self._show_message_info(info_data, current_account_id))
             menu.addAction(info_action)
-
-        # For file attachments: add file-specific options
-        if file_path:
-            file_name = index.data(MessageBubbleDelegate.ROLE_FILE_NAME) or "file"
-            mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE) or ""
-            file_size = index.data(MessageBubbleDelegate.ROLE_FILE_SIZE) or 0
-
-            # Save As... action
-            save_action = QAction("Save As...", self.parent)
-            save_action.triggered.connect(lambda: self._save_file_as(file_path, file_name))
-            menu.addAction(save_action)
-
-            # Properties action
-            properties_action = QAction("Properties", self.parent)
-            properties_action.triggered.connect(lambda: self._show_file_properties(file_path, file_name, mime_type, file_size))
-            menu.addAction(properties_action)
 
         # Only show menu if we have actions
         if menu.actions():
@@ -289,32 +313,25 @@ class ContextMenuManager:
 
     def _save_file_as(self, source_path, default_name):
         """Open file save dialog and copy file from internal storage to chosen location."""
-        import shutil
-        from pathlib import Path
-
-        # Use our timestamped internal filename instead of original random server name
-        internal_filename = Path(source_path).name
-
-        # Open file save dialog
-        file_path, _ = QFileDialog.getSaveFileName(
-            self.parent,
-            "Save File As",
-            internal_filename,  # Use YYYY-mm-dd_HHMMSS.ext format
-            "All Files (*)"
-        )
-
-        if file_path:
-            try:
-                # Copy file from internal storage to chosen location
-                shutil.copy2(source_path, file_path)
-                logger.info(f"File saved to: {file_path}")
-            except Exception as e:
-                logger.error(f"Failed to save file: {e}")
-                # TODO: Show error dialog to user
+        from ....utils import save_file_as
+        save_file_as(source_path, default_filename=default_name, parent_widget=self.parent)
 
     def _show_file_properties(self, file_path, file_name, mime_type, file_size):
         """Show file properties dialog."""
         show_file_properties_dialog(self.parent, file_path, file_name, mime_type, file_size)
+
+    def _open_image_viewer(self, image_path):
+        """Open image in viewer dialog."""
+        from PySide6.QtCore import Qt
+        from ...dialogs import ImageViewerDialog
+        dialog = ImageViewerDialog(image_path, self.parent)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
+
+    def _open_with_external(self, file_path, mime_type):
+        """Open file with OS application chooser."""
+        from ....utils import open_file_with_external_app
+        open_file_with_external_app(file_path, mime_type=mime_type, parent_widget=self.parent)
 
     def _copy_to_clipboard(self, text):
         """Copy text to system clipboard."""

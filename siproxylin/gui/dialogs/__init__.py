@@ -6,5 +6,6 @@ from .incoming_call_dialog import IncomingCallDialog
 from .outgoing_call_dialog import OutgoingCallDialog
 from .invite_contact_dialog import InviteContactDialog
 from .select_muc_dialog import SelectMucDialog
+from .image_viewer_dialog import ImageViewerDialog
 
-__all__ = ['IncomingCallDialog', 'OutgoingCallDialog', 'InviteContactDialog', 'SelectMucDialog']
+__all__ = ['IncomingCallDialog', 'OutgoingCallDialog', 'InviteContactDialog', 'SelectMucDialog', 'ImageViewerDialog']
