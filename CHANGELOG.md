@@ -4,7 +4,69 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.25 - Single malt] - 2026-03-10
+
+> (4315d95183)
+
+    Add image viewer and OS-native file operations
+    
+    Features:
+    - Image viewer dialog with zoom controls (in/out/fit/actual size)
+    - Click images in chat to open viewer (pointer cursor on hover)
+    - Ctrl+scroll and Ctrl+/-/0 keyboard shortcuts for zoom
+    
+    Context menu improvements:
+    - Reorganized image context menu with separators
+    - Added "Open With..." for OS-native app chooser
+      - Windows: Native "Open With" dialog
+      - macOS: Reveal in Finder
+      - Linux: Custom GIO-based application chooser dialog
+    
+    Refactoring:
+    - Centralized file operations in utils/file_utils.py
+      - open_file_with_external_app() for "Open With" functionality
+      - save_file_as() for file save dialog + copy
+    - Removed code duplication between viewer and context menu
+    
+    Technical:
+    - Linux: Uses GIO (PyGObject) for application discovery by MIME type
+    - Requires system python3-gi (already present for GStreamer)
+    - Non-blocking viewer dialog (can open multiple simultaneously)
+    - Proper cleanup with Qt.WA_DeleteOnClose
+
+> (03a9d47256)
+
+    Adding libxcb-cursor0 to AppImage (depencency library for Qt)
+
+> (8b88cd64b0)
+
+    Look and feel improvements
+    
+    - Picture copy/paste (e.g. screenshot) does not dissapear with cleanup
+    - Picture copy/paste resets the input field styling (kept the red font)
+    - Unencrypted messages only displayed with pink background where OMEMO
+      is available and not used. In OMEMO incapable chats colours remain
+    default
+    - Input field got 🛡️🔒 and 🛡️❌  markers respectively to warn user about
+      unavailable / disabled OMEMO
+
+> (f596137de5)
+
+    Message info dialog now allows copy-paste message properties
+
+> (df1676a1ef)
+
+    DST debug vars set
+
+> (d9fe93a590)
+
+    Updated docs
+
 ## [0.0.24 - Oak barrel] - 2026-03-10
+
+> (ea3a981b7a)
+
+    Release: fixed echo/noise/auto_gain controls, fixed Jingle issue of SP->SP calls, fixed call window mute button and network stastics
 
 > (b66d32f0af)
 
