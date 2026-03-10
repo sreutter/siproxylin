@@ -96,6 +96,7 @@ class MessageDisplayWidget(QObject):
         self.current_jid = None
         self.current_conversation_id = None
         self.current_is_muc = False
+        self.current_omemo_capable = False  # Whether current chat supports OMEMO
 
         # Scroll manager will be set later (after message_container is created)
         self.scroll_manager = None
@@ -260,6 +261,49 @@ class MessageDisplayWidget(QObject):
 
         jid_id = jid_row['id']
         # logger.debug(f"_load_messages: Loading messages for jid_id={jid_id}, account={self.current_account_id}")
+
+        # Check if this chat supports OMEMO
+        # Different logic for MUC vs 1-1 chats
+        if self.current_is_muc:
+            # MUC: Check if room is non-anonymous AND members-only (OMEMO requirement)
+            # Use disco_cache from client (in-memory, always fresh)
+            self.current_omemo_capable = False
+            account = self.account_manager.get_account(self.current_account_id) if self.account_manager else None
+            if account and account.client and hasattr(account.client, 'disco_cache'):
+                disco_info = account.client.disco_cache.get(self.current_jid, {})
+                nonanonymous = disco_info.get('muc_nonanonymous', False)
+                membersonly = disco_info.get('muc_membersonly', False)
+                self.current_omemo_capable = nonanonymous and membersonly
+                logger.debug(f"MUC OMEMO capability for {self.current_jid}: nonanonymous={nonanonymous}, membersonly={membersonly}, capable={self.current_omemo_capable}")
+            else:
+                logger.debug(f"MUC OMEMO capability for {self.current_jid}: False (disco_cache not available)")
+        else:
+            # 1-1 chat: Check if we've ever sent/received encrypted messages
+            # If encrypted messages exist, OMEMO is supported and we should warn about unencrypted ones
+            encrypted_msg_check = self.db.fetchone("""
+                SELECT 1
+                FROM message m
+                WHERE m.account_id = ?
+                  AND m.counterpart_id = ?
+                  AND m.encryption = 1
+                LIMIT 1
+            """, (self.current_account_id, jid_id))
+
+            # Also check file transfers (they can be OMEMO encrypted too)
+            if not encrypted_msg_check:
+                encrypted_file_check = self.db.fetchone("""
+                    SELECT 1
+                    FROM file_transfer ft
+                    WHERE ft.account_id = ?
+                      AND ft.counterpart_id = ?
+                      AND ft.encryption = 1
+                    LIMIT 1
+                """, (self.current_account_id, jid_id))
+                self.current_omemo_capable = bool(encrypted_file_check)
+            else:
+                self.current_omemo_capable = True
+
+            logger.debug(f"1-1 chat OMEMO capability for {self.current_jid}: {self.current_omemo_capable} (based on encrypted message history)")
 
         # Get conversation ID (type=0 for chat, type=1 for MUC)
         conv_type = 1 if self.current_is_muc else 0
@@ -629,6 +673,7 @@ class MessageDisplayWidget(QObject):
                 item.setData(message_id, MessageBubbleDelegate.ROLE_MESSAGE_ID)
                 item.setData(quoted_body, MessageBubbleDelegate.ROLE_QUOTED_BODY)
                 item.setData(content_item_id, MessageBubbleDelegate.ROLE_CONTENT_ITEM_ID)
+                item.setData(self.current_omemo_capable, MessageBubbleDelegate.ROLE_OMEMO_CAPABLE)
 
                 # Add to model (prepend if loading more, append if initial load)
                 if insert_at_top:
@@ -681,6 +726,7 @@ class MessageDisplayWidget(QObject):
                 item.setData(is_carbon, MessageBubbleDelegate.ROLE_IS_CARBON)
                 item.setData(message_id, MessageBubbleDelegate.ROLE_MESSAGE_ID)
                 item.setData(content_item_id, MessageBubbleDelegate.ROLE_CONTENT_ITEM_ID)
+                item.setData(self.current_omemo_capable, MessageBubbleDelegate.ROLE_OMEMO_CAPABLE)
 
                 # Add to model (prepend if loading more, append if initial load)
                 if insert_at_top:
@@ -714,6 +760,7 @@ class MessageDisplayWidget(QObject):
                 item.setData(duration, MessageBubbleDelegate.ROLE_CALL_DURATION)
                 item.setData(call_type, MessageBubbleDelegate.ROLE_CALL_TYPE)
                 item.setData(content_item_id, MessageBubbleDelegate.ROLE_CONTENT_ITEM_ID)
+                item.setData(self.current_omemo_capable, MessageBubbleDelegate.ROLE_OMEMO_CAPABLE)
                 # Mark as call by setting body to None (differentiate from messages/files)
                 item.setData(None, MessageBubbleDelegate.ROLE_BODY)
                 item.setData(None, MessageBubbleDelegate.ROLE_FILE_PATH)

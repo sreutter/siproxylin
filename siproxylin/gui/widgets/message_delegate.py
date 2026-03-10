@@ -87,6 +87,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
     ROLE_IS_SEPARATOR = Qt.UserRole + 21    # True if this is a day separator item
     ROLE_SEPARATOR_TEXT = Qt.UserRole + 22  # Text to display (e.g., "Today", "Yesterday", "Fri, 29 Jan")
     ROLE_TIMESTAMP_RAW = Qt.UserRole + 23   # Raw Unix timestamp (for Info dialog full date/time)
+    ROLE_OMEMO_CAPABLE = Qt.UserRole + 24   # True if this chat supports OMEMO (has devices)
 
     def __init__(self, parent=None, theme_name='dark', db=None, account_id=None):
         super().__init__(parent)
@@ -357,6 +358,9 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         # Carbon copy flag
         is_carbon = index.data(self.ROLE_IS_CARBON) or False
 
+        # OMEMO capability flag
+        omemo_capable = index.data(self.ROLE_OMEMO_CAPABLE) or False
+
         # Content item ID for reactions
         content_item_id = index.data(self.ROLE_CONTENT_ITEM_ID)
 
@@ -416,8 +420,9 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         )
 
         # Draw bubble background
-        # Use red-tinted colors for unencrypted messages
-        if not encrypted:
+        # Use red-tinted colors for unencrypted messages ONLY if OMEMO is supported
+        # If OMEMO is not supported, use normal colors (no warning background)
+        if not encrypted and omemo_capable:
             bg_color = self.unencrypted_sent_bg_color if direction == 1 else self.unencrypted_received_bg_color
         else:
             bg_color = self.sent_bg_color if direction == 1 else self.received_bg_color

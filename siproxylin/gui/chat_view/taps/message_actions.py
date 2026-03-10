@@ -143,8 +143,8 @@ class MessageActionsManager:
             # Emit signal for main window to handle file sending
             self.parent.send_file.emit(current_account_id, current_jid, self.parent.selected_file_path, encrypted)
 
-            # Clear file selection (but don't delete temp file yet - message_manager will clean it up after send)
-            self.parent._clear_file_selection(cleanup_temp=False)
+            # Clear file selection (file is already in permanent location, no cleanup needed)
+            self.parent._clear_file_selection()
 
             # Also clear text if any (though typically not used with file)
             self.input_field.clear()
@@ -242,8 +242,8 @@ class MessageActionsManager:
         # Clear input
         self.input_field.clear()
 
-        # Restore UI
-        self.input_field.setPlaceholderText("Type a message...")
+        # Restore UI with shield indicator
+        self.parent._update_input_placeholder()
         self.parent.send_button.setText("Send")
         # Encryption button in header is always enabled
 
@@ -304,8 +304,8 @@ class MessageActionsManager:
         # Clear input
         self.input_field.clear()
 
-        # Restore UI
-        self.input_field.setPlaceholderText("Type a message...")
+        # Restore UI with shield indicator
+        self.parent._update_input_placeholder()
         self.parent.send_button.setText("Send")
 
         logger.debug("Cancelled reply mode")
