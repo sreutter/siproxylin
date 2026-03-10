@@ -595,6 +595,9 @@ class MessageDisplayWidget(QObject):
                     continue
 
                 direction = row['msg_direction']
+                # TODO: Implement visual quote box rendering (like Dino)
+                # For now, show full body with "> " prefixes until visual rendering is implemented
+                # body = self.db.get_message_body_without_fallback(row['msg_id']) if row['msg_id'] else (row['body'] or '')
                 body = row['body'] or ''
                 timestamp = get_bubble_timestamp(row_timestamp)
                 encrypted = bool(row['msg_encryption'])

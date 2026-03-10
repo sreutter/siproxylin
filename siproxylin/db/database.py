@@ -24,7 +24,7 @@ class Database:
     Handles schema initialization, migrations, and query execution.
     """
 
-    SCHEMA_VERSION = 16  # Current schema version (v16 = MAM catchup tracking)
+    SCHEMA_VERSION = 17  # Current schema version (v17 = XEP-0428 Fallback Indication)
 
     def __init__(self, db_path: Optional[Path] = None):
         """
@@ -761,7 +761,8 @@ class Database:
                                stanza_id: Optional[str] = None,
                                counterpart_resource: Optional[str] = None,
                                reply_to_id: Optional[str] = None,
-                               reply_to_jid: Optional[str] = None):
+                               reply_to_jid: Optional[str] = None,
+                               fallbacks: Optional[list] = None):
         """
         Atomically insert message + content_item with deduplication.
 
@@ -786,6 +787,8 @@ class Database:
             counterpart_resource: MUC nickname (optional, only for groupchat)
             reply_to_id: Quoted message ID (optional, for XEP-0461 replies)
             reply_to_jid: Quoted message sender JID (optional, for XEP-0461 replies)
+            fallbacks: List of fallback markers (optional, for XEP-0428)
+                      Each marker is dict with {ns_uri, from_char, to_char}
 
         Returns:
             tuple: (message_id, content_item_id) or (None, None) if duplicate
@@ -884,6 +887,15 @@ class Database:
                     INSERT INTO reply (message_id, quoted_message_id, quoted_message_stanza_id, quoted_message_from)
                     VALUES (?, ?, ?, ?)
                 """, (db_message_id, quoted_message_id, reply_to_id, reply_to_jid))
+
+            # Store fallback markers if present (XEP-0428)
+            if fallbacks:
+                for fallback in fallbacks:
+                    self.execute("""
+                        INSERT INTO fallback (message_id, ns_uri, from_char, to_char)
+                        VALUES (?, ?, ?, ?)
+                    """, (db_message_id, fallback['ns_uri'], fallback['from_char'], fallback['to_char']))
+                logger.debug(f"Stored {len(fallbacks)} fallback marker(s) for message {db_message_id}")
 
             # Insert content_item (content_type=0 for message)
             cursor = self.execute("""
@@ -1301,6 +1313,66 @@ class Database:
         """, (conversation_id, key))
         self.commit()
         logger.debug(f"Deleted conversation {conversation_id} setting {key}")
+
+    def get_message_body_without_fallback(self, message_id: int, ns_uri: str = None) -> str:
+        """
+        Get message body with fallback portions removed (XEP-0428).
+
+        Args:
+            message_id: Message ID (database primary key)
+            ns_uri: Optional namespace filter (e.g., "urn:xmpp:reply:0")
+                   If provided, only strips fallbacks for that namespace.
+                   If None, strips all fallbacks.
+
+        Returns:
+            Clean message body with fallback portions removed
+
+        Example:
+            message.body = "> Quoted text\nActual reply"
+            fallback = {ns_uri: "urn:xmpp:reply:0", from_char: 0, to_char: 15}
+            result = get_message_body_without_fallback(message.id)
+            # Returns: "Actual reply"
+        """
+        # Get message body
+        msg = self.fetchone("SELECT body FROM message WHERE id = ?", (message_id,))
+        if not msg or not msg['body']:
+            return ""
+
+        body = msg['body']
+
+        # Get fallback markers for this message
+        if ns_uri:
+            fallbacks = self.fetchall("""
+                SELECT ns_uri, from_char, to_char
+                FROM fallback
+                WHERE message_id = ? AND ns_uri = ?
+                ORDER BY from_char DESC
+            """, (message_id, ns_uri))
+        else:
+            fallbacks = self.fetchall("""
+                SELECT ns_uri, from_char, to_char
+                FROM fallback
+                WHERE message_id = ?
+                ORDER BY from_char DESC
+            """, (message_id,))
+
+        if not fallbacks:
+            return body
+
+        # Strip fallback portions (process in reverse order to preserve positions)
+        result = body
+        for fallback in fallbacks:
+            from_char = fallback['from_char']
+            to_char = fallback['to_char']
+
+            # Ensure positions are within bounds
+            if from_char < 0 or to_char > len(result):
+                continue
+
+            # Remove the fallback portion
+            result = result[:from_char] + result[to_char:]
+
+        return result
 
 
 # Global database instance

@@ -72,6 +72,8 @@ class ContextMenuManager:
 
         # For all text messages: add Reply option
         if body and message_id:
+            # Use full body (including existing "> " quotes) for reply composition
+            # This preserves the full quote chain when replying to a reply
             reply_action = QAction("Reply", self.parent)
             reply_action.triggered.connect(lambda: self.parent._start_reply(message_id, body))
             menu.addAction(reply_action)
