@@ -58,7 +58,7 @@ class FallbackMarker:
 
 def add_fallback_to_stanza(msg: Message, fallback: FallbackMarker) -> None:
     """
-    Add XEP-0428 fallback indication to a message stanza.
+    Add XEP-0428 fallback indication to a message stanza using slixmpp's API.
 
     Args:
         msg: Slixmpp Message stanza
@@ -69,27 +69,15 @@ def add_fallback_to_stanza(msg: Message, fallback: FallbackMarker) -> None:
             <body xmlns='urn:xmpp:fallback:0' start='0' end='15'/>
         </fallback>
     """
-    fallback_element = msg.xml.makeelement(
-        f'{{{NS_URI}}}fallback',
-        {'for': fallback.ns_uri}
-    )
-
-    # Add body range element
-    body_element = msg.xml.makeelement(
-        f'{{{NS_URI}}}body',
-        {
-            'start': str(fallback.from_char),
-            'end': str(fallback.to_char)
-        }
-    )
-
-    fallback_element.append(body_element)
-    msg.xml.append(fallback_element)
+    # Use slixmpp's native XEP-0428 API instead of manual XML manipulation
+    msg['fallback']['for'] = fallback.ns_uri
+    msg['fallback']['body']['start'] = fallback.from_char
+    msg['fallback']['body']['end'] = fallback.to_char
 
 
 def extract_fallbacks_from_stanza(msg: Message) -> List[FallbackMarker]:
     """
-    Extract XEP-0428 fallback markers from a message stanza.
+    Extract XEP-0428 fallback markers from a message stanza using slixmpp's API.
 
     Args:
         msg: Slixmpp Message stanza
@@ -99,23 +87,22 @@ def extract_fallbacks_from_stanza(msg: Message) -> List[FallbackMarker]:
     """
     fallbacks = []
 
-    # Find all <fallback> elements
-    for fallback_elem in msg.xml.findall(f'.//{{{NS_URI}}}fallback'):
-        ns_uri = fallback_elem.get('for')
-        if not ns_uri:
-            continue
-
-        # Find <body> elements within this <fallback>
-        for body_elem in fallback_elem.findall(f'{{{NS_URI}}}body'):
-            try:
-                from_char = int(body_elem.get('start', '-1'))
-                to_char = int(body_elem.get('end', '-1'))
-
-                if from_char >= 0 and to_char > from_char:
-                    fallbacks.append(FallbackMarker(ns_uri, from_char, to_char))
-            except (ValueError, TypeError):
-                # Invalid attributes, skip
+    # Use slixmpp's native XEP-0428 API to iterate fallback elements
+    for fallback_elem in msg['fallbacks']:
+        try:
+            ns_uri = fallback_elem['for']
+            if not ns_uri:
                 continue
+
+            # Get character positions from body element
+            from_char = fallback_elem['body']['start']
+            to_char = fallback_elem['body']['end']
+
+            if from_char >= 0 and to_char > from_char:
+                fallbacks.append(FallbackMarker(ns_uri, from_char, to_char))
+        except (KeyError, ValueError, TypeError, AttributeError):
+            # Invalid or missing attributes, skip
+            continue
 
     return fallbacks
 
