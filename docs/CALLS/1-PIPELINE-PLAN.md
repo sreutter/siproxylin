@@ -53,6 +53,7 @@ GST_DEBUG=3 ./drunk-call-service
 - `dtls` (DTLS-SRTP)
 - `srtp` (SRTP encryption)
 - `pulseaudio` (pulsesrc, pulsesink) OR `autodetect` (autoaudiosrc, autoaudiosink)
+- `webrtcdsp` (webrtcdsp, webrtcechoprobe) - **Optional**: For audio processing (echo cancel, noise suppression, AGC)
 
 **Implementation**:
 ```c++
@@ -247,6 +248,71 @@ pactl list sinks short
 - Device doesn't exist → pulsesrc will error when pipeline starts
 - Empty string → uses default device (acceptable)
 - Device busy → runtime error when pipeline starts
+
+---
+
+### Task 1.7.1: Configure Audio Processing (DSP)
+
+**What**: Conditionally add webrtcdsp and webrtcechoprobe to audio pipeline for echo cancellation, noise suppression, and AGC
+
+**Implementation**:
+```cpp
+// 1. Create webrtcechoprobe during pipeline initialization (before audio source)
+GstElement *echoprobe = gst_element_factory_make("webrtcechoprobe", "webrtcechoprobe0");
+gst_bin_add(GST_BIN(pipeline), echoprobe);
+// Note: probe is NOT linked yet - will be linked when incoming stream arrives
+
+// 2. Check if DSP features are enabled
+bool use_dsp = config.echo_cancel || config.noise_suppression || config.gain_control;
+
+// 3. Conditionally create and configure webrtcdsp
+GstElement *webrtcdsp = nullptr;
+if (use_dsp) {
+    webrtcdsp = gst_element_factory_make("webrtcdsp", "webrtcdsp");
+    g_object_set(webrtcdsp,
+        "probe", "webrtcechoprobe0",  // Reference to probe element
+        "echo-cancel", config.echo_cancel,
+        "echo-suppression-level", config.echo_suppression_level,
+        "noise-suppression", config.noise_suppression,
+        "noise-suppression-level", config.noise_suppression_level,
+        "gain-control", config.gain_control,
+        NULL);
+}
+
+// 4. Link pipeline with or without DSP
+if (use_dsp) {
+    // pulsesrc → webrtcdsp → volume → ... → opusenc
+    gst_element_link_many(pulsesrc, webrtcdsp, volume, queue, ...);
+} else {
+    // pulsesrc → volume → ... → opusenc (bypass DSP)
+    gst_element_link_many(pulsesrc, volume, queue, ...);
+}
+
+// 5. Link echoprobe when incoming stream arrives (in on_incoming_stream callback)
+// depay → opusdec → queue → echoprobe → pulsesink
+```
+
+**Reference**: `webrtc_session.cpp:814-827` (probe creation), `webrtc_session.cpp:877-924` (DSP config)
+
+**Test**:
+```bash
+# Enable DSP debug logging:
+GST_DEBUG=webrtcdsp:7 ./drunk-call-service
+
+# Expected logs when DSP enabled:
+# "Enabling Echo Cancellation"
+# "Enabling Noise Suppression"
+# "Enabling High Pass filter"
+# "webrtcechoprobe setup: ... Hz and 2 channels"
+
+# When DSP disabled:
+# "DSP disabled (all features off)"
+```
+
+**Failure modes**:
+- webrtcdsp plugin missing → fallback to no DSP (log warning)
+- Echo probe not created → echo cancellation fails (noise/AGC still work)
+- Probe name mismatch → echo cancellation disabled
 
 ---
 

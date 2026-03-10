@@ -288,17 +288,54 @@ Use PulseAudio API or parse `pactl list sources/sinks`
 
 ## Audio Processing (WebRTC DSP)
 
-**Element**: `webrtcdsp` (gst-plugins-bad)
+**Elements**: `webrtcdsp` + `webrtcechoprobe` (gst-plugins-bad)
 
-**Properties**:
-- `echo-cancel`: boolean
-- `echo-suppression-level`: 0-2
-- `noise-suppression`: boolean
-- `gain-control`: boolean
+**Architecture**:
+- **Echo probe** (`webrtcechoprobe`): Inserted in playback (speaker) pipeline to capture reference audio for echo cancellation
+- **DSP processor** (`webrtcdsp`): Inserted in capture (microphone) pipeline for noise suppression, echo cancellation, and AGC
+- **Conditional injection**: DSP elements only added to pipeline when at least one feature is enabled (zero overhead when disabled)
 
-**Pipeline**: Insert between source and encoder: `pulsesrc → webrtcdsp → opusenc`
+**Configuration Parameters** (from protobuf):
+- `echo_cancel`: boolean - Enable acoustic echo cancellation
+- `echo_suppression_level`: 0=low, 1=moderate, 2=high - Aggressiveness of echo suppression
+- `noise_suppression`: boolean - Enable noise suppression
+- `noise_suppression_level`: 0=low, 1=moderate, 2=high, 3=very-high - Noise reduction level
+- `gain_control`: boolean - Enable automatic gain control (volume normalization)
 
-**Note**: Verify availability with `gst-inspect-1.0 webrtcdsp`
+**Pipeline Topology**:
+```
+With DSP enabled:
+  Capture:  pulsesrc → webrtcdsp → volume → queue → convert → resample → opusenc → rtpopuspay → webrtcbin
+  Playback: webrtcbin → rtpopusdepay → opusdec → queue → webrtcechoprobe → pulsesink
+
+Without DSP (all features disabled):
+  Capture:  pulsesrc → volume → queue → convert → resample → opusenc → rtpopuspay → webrtcbin
+  Playback: webrtcbin → rtpopusdepay → opusdec → queue → pulsesink
+```
+
+**Implementation Details**:
+- Echo probe created during pipeline initialization (before audio source setup)
+- DSP processor references probe by name: `probe="webrtcechoprobe0"`
+- Both elements required for echo cancellation to function
+- Noise suppression and AGC work independently without probe
+
+**Testing**:
+```bash
+# Verify DSP is processing (check logs):
+GST_DEBUG=webrtcdsp:7 ./drunk-call-service
+
+# Expected output when enabled:
+# "Enabling Echo Cancellation"
+# "Enabling Noise Suppression"
+# "Enabling High Pass filter"
+```
+
+**Effects**:
+- Echo cancellation: Prevents remote side from hearing themselves (test: play music near mic)
+- Noise suppression: Reduces background noise (fans, AC, typing)
+- Gain control: Normalizes volume across varying speech levels
+
+**Reference**: `webrtc_session.cpp:814-827` (probe creation), `webrtc_session.cpp:877-924` (DSP configuration)
 
 ---
 
