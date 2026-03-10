@@ -4,7 +4,74 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.23 - Sober morning] - 2026-03-10
+
+> (bb74b960d0)
+
+    Quick update to use slixmpp XEP-0428
+
+> (a0ea417b30)
+
+    Add XEP-0428 replies and fix message error logging
+    
+    Implements XEP-0428 to properly handle reply fallback text using
+    character position markers instead of string parsing. This fixes
+    nested reply chains and enables future visual quote rendering.
+    
+    Also fixes spurious warning logs for auto-response failures.
+    
+    XEP-0428 Implementation:
+    - Add drunk_xmpp/xep_0428.py implementing XEP-0428 spec
+    - Store fallback markers in new database table (migration v16→v17)
+    - Extract markers from incoming stanzas (MUC, private, carbons)
+    - Format outgoing replies with proper nested quoting (>> not > >)
+    - Fix quote detection to work with any quote level (not just "> ")
+    - Use format_reply_with_fallback as single source of truth
+    - Fix format mismatch between slixmpp and custom formatter
+    
+    Message Error Logging Fix:
+    - Downgrade auto-response errors to DEBUG level
+    - slixmpp auto-acks chat state notifications (XEP-0184)
+    - When remote session ends, receipt fails with "User session not found"
+    - This is expected behavior - not a real error
+    - Errors without origin-id are auto-responses, not user messages
+    - Clean logs: only show warnings for actual message failures
+    
+    Key features:
+    - Nested quotes work correctly: ">> " instead of "> > "
+    - Marker positions accurate for fallback stripping
+    - Consistent formatting between GUI storage and XMPP sending
+    - Backward compatible with legacy clients
+    - Clean logs without spurious warnings
+    
+    Related: XEP-0461 (Message Replies), XEP-0184 (Delivery Receipts), XEP-0085 (Chat States)
+    Database: Schema version 16 → 17
+
+> (d4857c82f6)
+
+    Fixing MAM retrieval for MUC. Adding message IDs to logging of MAM message processing
+
+> (d789003aa6)
+
+    Added alternate background color property to QSS for darker themes to avoid snowy white contrast
+
+> (6b2837d7d2)
+
+    Update README.md
+
+> (8b3e0369d6)
+
+    Update README.md
+
+> (9ae0d06641)
+
+    Update README.md
+
 ## [0.0.22 - Acetaldehyde] - 2026-03-07
+
+> (84515e5af8)
+
+    Improved handling audio devices
 
 > (91a26e3b8d)
 
