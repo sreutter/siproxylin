@@ -11,6 +11,7 @@
 #include <gst/webrtc/webrtc.h>
 #include <stdexcept>
 #include <cstring>
+#include <sstream>
 
 namespace drunk_call {
 
@@ -647,6 +648,18 @@ bool WebRTCSession::add_remote_ice_candidate(const ICECandidate &candidate) {
     try {
         LOG_TRACE("[WebRTCSession] Adding remote ICE candidate: mline={}", candidate.sdp_mline_index);
 
+        // Collect remote candidate for stats reporting
+        CollectedCandidate cand;
+        if (parse_ice_candidate(candidate.candidate, cand)) {
+            // Set proper ID based on GStreamer format
+            std::string component = std::to_string(candidate.sdp_mline_index + 1);
+            cand.id = "ice-candidate-remote_" + component + "_" + cand.ip + "_" + std::to_string(cand.port);
+
+            std::lock_guard<std::mutex> lock(candidates_mutex_);
+            collected_remote_candidates_.push_back(cand);
+            LOG_DEBUG("[WebRTCSession] Collected remote candidate: {} (type={})", cand.ip + ":" + std::to_string(cand.port), cand.type);
+        }
+
         g_signal_emit_by_name(webrtc_, "add-ice-candidate",
                              candidate.sdp_mline_index,
                              candidate.candidate.c_str());
@@ -707,23 +720,7 @@ MediaSession::Stats WebRTCSession::get_stats() const {
             return stats;
         }
 
-        // Get stats synchronously using get-stats action
-        GstPromise *promise = gst_promise_new();
-        g_signal_emit_by_name(webrtc_, "get-stats", nullptr, promise);
-
-        // Wait for promise (blocking, but stats should be fast)
-        GstPromiseResult result = gst_promise_wait(promise);
-
-        if (result == GST_PROMISE_RESULT_REPLIED) {
-            const GstStructure *reply = gst_promise_get_reply(promise);
-            if (reply) {
-                parse_stats(reply, stats);
-            }
-        }
-
-        gst_promise_unref(promise);
-
-        // Get ICE states from webrtcbin properties (not in stats structure)
+        // Get ICE states from webrtcbin properties FIRST (parse_stats needs these)
         GstWebRTCICEConnectionState ice_conn_state;
         GstWebRTCICEGatheringState ice_gather_state;
         g_object_get(webrtc_,
@@ -741,6 +738,22 @@ MediaSession::Stats WebRTCSession::get_stats() const {
         if (ice_gather_state < 3) {
             stats.ice_gathering_state = ice_gather_names[ice_gather_state];
         }
+
+        // Get stats synchronously using get-stats action
+        GstPromise *promise = gst_promise_new();
+        g_signal_emit_by_name(webrtc_, "get-stats", nullptr, promise);
+
+        // Wait for promise (blocking, but stats should be fast)
+        GstPromiseResult result = gst_promise_wait(promise);
+
+        if (result == GST_PROMISE_RESULT_REPLIED) {
+            const GstStructure *reply = gst_promise_get_reply(promise);
+            if (reply) {
+                parse_stats(reply, stats);
+            }
+        }
+
+        gst_promise_unref(promise);
 
         // Calculate bandwidth based on deltas
         auto now = std::chrono::steady_clock::now();
@@ -844,6 +857,7 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
         const char *src_name = config_.microphone_device.empty() ?
             "autoaudiosrc" : "pulsesrc";
         audio_src_ = gst_element_factory_make(src_name, "audio_src");
+        volume_ = gst_element_factory_make("volume", "volume");
         GstElement *queue = gst_element_factory_make("queue", "queue_src");
         GstElement *convert = gst_element_factory_make("audioconvert", "convert");
         GstElement *resample = gst_element_factory_make("audioresample", "resample");
@@ -851,7 +865,7 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
         GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "rtpopuspay");
         GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_caps");
 
-        if (!audio_src_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
+        if (!audio_src_ || !volume_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
             LOG_ERROR("[WebRTCSession] Failed to create audio elements");
             return false;
         }
@@ -900,15 +914,15 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
         LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=audio,encoding-name=OPUS,payload={}", payload);
 
         // Add to pipeline
-        gst_bin_add_many(GST_BIN(pipeline_), audio_src_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+        gst_bin_add_many(GST_BIN(pipeline_), audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
 
         // Link audio chain FIRST (while pipeline is PAUSED, elements are NULL)
         // Note: capsfilter goes between rtpopuspay and webrtcbin
-        if (!gst_element_link_many(audio_src_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr)) {
+        if (!gst_element_link_many(audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr)) {
             LOG_ERROR("[WebRTCSession] Failed to link audio chain");
             return false;
         }
-        LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+        LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
 
         // Get webrtcbin sink pad - ANSWERER MODE
         // Reuse the pad we created during set-remote-description
@@ -1024,6 +1038,7 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
         const char *src_name = config_.microphone_device.empty() ?
             "autoaudiosrc" : "pulsesrc";
         audio_src_ = gst_element_factory_make(src_name, "audio_src");
+        volume_ = gst_element_factory_make("volume", "volume");
         GstElement *queue = gst_element_factory_make("queue", "queue_src");
         GstElement *convert = gst_element_factory_make("audioconvert", "convert");
         GstElement *resample = gst_element_factory_make("audioresample", "resample");
@@ -1031,7 +1046,7 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
         GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "rtpopuspay");
         GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_caps");
 
-        if (!audio_src_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
+        if (!audio_src_ || !volume_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create audio elements");
             return false;
         }
@@ -1063,14 +1078,14 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set RTP caps: application/x-rtp,media=audio,encoding-name=OPUS,payload=111");
 
         // Add to pipeline
-        gst_bin_add_many(GST_BIN(pipeline_), audio_src_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+        gst_bin_add_many(GST_BIN(pipeline_), audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
 
         // Link audio chain
-        if (!gst_element_link_many(audio_src_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr)) {
+        if (!gst_element_link_many(audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr)) {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link audio chain");
             return false;
         }
-        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked audio chain: src→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked audio chain: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
 
         // Get webrtcbin sink pad - OFFERER MODE
         // Create new pad (will auto-create transceiver)
@@ -1754,6 +1769,18 @@ void WebRTCSession::on_ice_candidate(guint mlineindex, const char *candidate) {
         LOG_TRACE("[WebRTCSession] ICE candidate: mline={} type={}",
                  mlineindex, extract_candidate_type(candidate));
 
+        // Collect candidate for stats reporting (before filtering for privacy)
+        CollectedCandidate cand;
+        if (parse_ice_candidate(candidate, cand)) {
+            // Set proper ID based on GStreamer format
+            std::string component = std::to_string(mlineindex + 1);  // Component is typically mlineindex + 1
+            cand.id = "ice-candidate-local_" + component + "_" + cand.ip + "_" + std::to_string(cand.port);
+
+            std::lock_guard<std::mutex> lock(candidates_mutex_);
+            collected_local_candidates_.push_back(cand);
+            LOG_DEBUG("[WebRTCSession] Collected local candidate: {} (type={})", cand.ip + ":" + std::to_string(cand.port), cand.type);
+        }
+
         if (ice_callback_) {
             ICECandidate ice_cand(candidate, mlineindex);
 
@@ -1979,16 +2006,33 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
 
 void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) const {
     try {
-        // Helper struct to pass around parsing context
-        struct ParseContext {
-            Stats *stats;
-            std::string selected_local_candidate_id;
-            std::string selected_remote_candidate_id;
+        // Helper structs for two-pass parsing
+        struct CandidatePairInfo {
+            std::string id;
+            std::string local_candidate_id;
+            std::string remote_candidate_id;
+            bool selected;
+            int rtt_ms;
         };
 
-        ParseContext ctx = { &stats, "", "" };
+        struct CandidateInfo {
+            std::string id;
+            std::string type;
+            std::string ip;
+            int port;
+        };
 
-        // Iterate through all stats entries
+        struct ParseContext {
+            Stats *stats;
+            std::string selected_pair_id;  // From TRANSPORT
+            std::vector<CandidatePairInfo> candidate_pairs;
+            std::vector<CandidateInfo> local_candidates;
+            std::vector<CandidateInfo> remote_candidates;
+        };
+
+        ParseContext ctx = { &stats, "", {}, {}, {} };
+
+        // PASS 1: Collect all stats data
         gst_structure_foreach(stats_struct,
             [](GQuark field_id, const GValue *value, gpointer user_data) -> gboolean {
                 ParseContext *ctx = static_cast<ParseContext*>(user_data);
@@ -2009,39 +2053,36 @@ void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) 
                     return TRUE;  // Skip entries without type
                 }
 
-                // Parse by stat type
+                // Collect stats data by type
                 if (type_enum == GST_WEBRTC_STATS_TRANSPORT) {
                     // Selected candidate pair ID
                     const gchar *selected_pair = gst_structure_get_string(stat, "selected-candidate-pair-id");
                     if (selected_pair) {
-                        ctx->selected_local_candidate_id = selected_pair;  // Store for later lookup
+                        ctx->selected_pair_id = selected_pair;
                     }
 
                 } else if (type_enum == GST_WEBRTC_STATS_CANDIDATE_PAIR) {
-                    // Check if this is the selected (nominated) pair
+                    // Collect candidate pair info
+                    CandidatePairInfo pair;
+                    const gchar *pair_id = gst_structure_get_string(stat, "id");
+                    const gchar *local_id = gst_structure_get_string(stat, "local-candidate-id");
+                    const gchar *remote_id = gst_structure_get_string(stat, "remote-candidate-id");
                     gboolean selected = FALSE;
                     gst_structure_get_boolean(stat, "selected", &selected);
+                    gdouble rtt = 0.0;
+                    gst_structure_get_double(stat, "round-trip-time", &rtt);
 
-                    if (selected) {
-                        // Get local and remote candidate IDs
-                        const gchar *local_id = gst_structure_get_string(stat, "local-candidate-id");
-                        const gchar *remote_id = gst_structure_get_string(stat, "remote-candidate-id");
+                    if (pair_id) pair.id = pair_id;
+                    if (local_id) pair.local_candidate_id = local_id;
+                    if (remote_id) pair.remote_candidate_id = remote_id;
+                    pair.selected = selected;
+                    pair.rtt_ms = static_cast<int>(rtt * 1000);
 
-                        if (local_id) ctx->selected_local_candidate_id = local_id;
-                        if (remote_id) ctx->selected_remote_candidate_id = remote_id;
-
-                        // NOTE: candidate-pair bytes_sent/bytes_received are ICE-level stats (STUN/connectivity checks),
-                        // NOT the actual media traffic. Use OUTBOUND_RTP/INBOUND_RTP stats for media bytes.
-
-                        // Get RTT (round-trip time)
-                        gdouble rtt = 0.0;
-                        if (gst_structure_get_double(stat, "round-trip-time", &rtt)) {
-                            ctx->stats->rtt_ms = static_cast<int>(rtt * 1000);  // Convert seconds to ms
-                        }
-                    }
+                    ctx->candidate_pairs.push_back(pair);
 
                 } else if (type_enum == GST_WEBRTC_STATS_LOCAL_CANDIDATE) {
-                    // Parse local candidate info
+                    // Collect local candidate info
+                    CandidateInfo candidate;
                     const gchar *candidate_id = gst_structure_get_string(stat, "id");
                     const gchar *candidate_type = gst_structure_get_string(stat, "candidate-type");
                     const gchar *ip = gst_structure_get_string(stat, "address");
@@ -2049,39 +2090,30 @@ void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) 
                     guint port = 0;
                     gst_structure_get_uint(stat, "port", &port);
 
-                    if (ip && candidate_type) {
-                        // Format: "IP:port (type)"
-                        std::string formatted = std::string(ip) + ":" +
-                                              std::to_string(port) + " (" +
-                                              candidate_type + ")";
-                        ctx->stats->local_candidates.push_back(formatted);
+                    if (candidate_id) candidate.id = candidate_id;
+                    if (candidate_type) candidate.type = candidate_type;
+                    if (ip) candidate.ip = ip;
+                    candidate.port = port;
 
-                        // If this is the selected candidate, use its type for connection_type
-                        if (candidate_id && ctx->selected_local_candidate_id == candidate_id) {
-                            if (g_strcmp0(candidate_type, "host") == 0) {
-                                ctx->stats->connection_type = "P2P (direct)";
-                            } else if (g_strcmp0(candidate_type, "srflx") == 0) {
-                                ctx->stats->connection_type = "P2P (srflx - NAT hole-punching)";
-                            } else if (g_strcmp0(candidate_type, "relay") == 0) {
-                                ctx->stats->connection_type = std::string("TURN relay (") + ip + ")";
-                            }
-                        }
+                    if (!candidate.ip.empty()) {
+                        ctx->local_candidates.push_back(candidate);
                     }
 
                 } else if (type_enum == GST_WEBRTC_STATS_REMOTE_CANDIDATE) {
-                    // Parse remote candidate info
+                    // Collect remote candidate info
+                    CandidateInfo candidate;
                     const gchar *candidate_type = gst_structure_get_string(stat, "candidate-type");
                     const gchar *ip = gst_structure_get_string(stat, "address");
                     if (!ip) ip = gst_structure_get_string(stat, "ip");
                     guint port = 0;
                     gst_structure_get_uint(stat, "port", &port);
 
-                    if (ip && candidate_type) {
-                        // Format: "IP:port (type)"
-                        std::string formatted = std::string(ip) + ":" +
-                                              std::to_string(port) + " (" +
-                                              candidate_type + ")";
-                        ctx->stats->remote_candidates.push_back(formatted);
+                    if (candidate_type) candidate.type = candidate_type;
+                    if (ip) candidate.ip = ip;
+                    candidate.port = port;
+
+                    if (!candidate.ip.empty()) {
+                        ctx->remote_candidates.push_back(candidate);
                     }
 
                 } else if (type_enum == GST_WEBRTC_STATS_OUTBOUND_RTP) {
@@ -2127,6 +2159,105 @@ void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) 
             },
             &ctx);
 
+        // PASS 2: Process collected data
+        LOG_DEBUG("[WebRTCSession] parse_stats: Collected {} candidate pairs from stats", ctx.candidate_pairs.size());
+
+        // Find the selected candidate pair from stats
+        std::string selected_local_id, selected_remote_id;
+        int rtt_ms = 0;
+
+        for (const auto& pair : ctx.candidate_pairs) {
+            LOG_DEBUG("[WebRTCSession] parse_stats: Checking pair id='{}', selected={}, local_id='{}', remote_id='{}'",
+                     pair.id, pair.selected, pair.local_candidate_id, pair.remote_candidate_id);
+
+            bool is_selected = pair.selected ||
+                             (!ctx.selected_pair_id.empty() && pair.id == ctx.selected_pair_id);
+            if (is_selected) {
+                selected_local_id = pair.local_candidate_id;
+                selected_remote_id = pair.remote_candidate_id;
+                rtt_ms = pair.rtt_ms;
+                LOG_INFO("[WebRTCSession] parse_stats: Found selected pair! local_id='{}', remote_id='{}', rtt={}ms",
+                        selected_local_id, selected_remote_id, rtt_ms);
+                break;
+            }
+        }
+
+        // Use our collected candidates (complete list) instead of stats candidates
+        std::lock_guard<std::mutex> lock(candidates_mutex_);
+
+        LOG_DEBUG("[WebRTCSession] parse_stats: Using {} collected local candidates, {} collected remote candidates",
+                 collected_local_candidates_.size(), collected_remote_candidates_.size());
+
+        // Process collected local candidates and determine connection type
+        for (const auto& candidate : collected_local_candidates_) {
+            // Add to display list
+            std::string formatted = candidate.ip + ":" + std::to_string(candidate.port) +
+                                  " (" + candidate.type + ")";
+            stats.local_candidates.push_back(formatted);
+
+            LOG_DEBUG("[WebRTCSession] parse_stats: Local candidate id='{}', type='{}', ip='{}:{}', selected_local_id='{}'",
+                     candidate.id, candidate.type, candidate.ip, candidate.port, selected_local_id);
+
+            // Check if this is the selected candidate
+            if (!selected_local_id.empty() && candidate.id == selected_local_id) {
+                LOG_INFO("[WebRTCSession] parse_stats: MATCH! This is the selected local candidate: {} ({})",
+                        candidate.ip, candidate.type);
+                if (candidate.type == "host") {
+                    stats.connection_type = "P2P (direct)";
+                } else if (candidate.type == "srflx") {
+                    stats.connection_type = "P2P (srflx - NAT hole-punching)";
+                } else if (candidate.type == "relay") {
+                    stats.connection_type = "TURN relay (" + candidate.ip + ")";
+                }
+                stats.rtt_ms = rtt_ms;
+            }
+        }
+
+        // Process collected remote candidates
+        for (const auto& candidate : collected_remote_candidates_) {
+            std::string formatted = candidate.ip + ":" + std::to_string(candidate.port) +
+                                  " (" + candidate.type + ")";
+            stats.remote_candidates.push_back(formatted);
+        }
+
+        // Fallback: If we didn't find a match in collected candidates, try to extract from candidate ID
+        if (stats.connection_type.empty() && !selected_local_id.empty()) {
+            LOG_WARN("[WebRTCSession] parse_stats: No match found for selected candidate ID: '{}', trying fallback", selected_local_id);
+
+            // Try to parse the ID format: ice-candidate-local_1_89.238.78.51_57096
+            std::vector<std::string> id_parts;
+            std::istringstream id_iss(selected_local_id);
+            std::string id_part;
+            while (std::getline(id_iss, id_part, '_')) {
+                id_parts.push_back(id_part);
+            }
+
+            if (id_parts.size() >= 4) {
+                std::string ip = id_parts[2];
+                // Try to match by IP in our collected candidates
+                for (const auto& candidate : collected_local_candidates_) {
+                    if (candidate.ip == ip) {
+                        LOG_INFO("[WebRTCSession] parse_stats: Fallback match by IP: {} ({})", ip, candidate.type);
+                        if (candidate.type == "host") {
+                            stats.connection_type = "P2P (direct)";
+                        } else if (candidate.type == "srflx") {
+                            stats.connection_type = "P2P (srflx - NAT hole-punching)";
+                        } else if (candidate.type == "relay") {
+                            stats.connection_type = "TURN relay (" + candidate.ip + ")";
+                        }
+                        stats.rtt_ms = rtt_ms;
+                        break;
+                    }
+                }
+            }
+
+            // Still no match? Generic fallback
+            if (stats.connection_type.empty()) {
+                LOG_WARN("[WebRTCSession] parse_stats: Could not determine connection type, using generic");
+                stats.connection_type = "Connected via ICE";
+            }
+        }
+
         // Set connection state based on ICE state
         if (stats.ice_connection_state == "completed" || stats.ice_connection_state == "connected") {
             stats.connection_state = "connected";
@@ -2149,6 +2280,64 @@ void WebRTCSession::parse_stats(const GstStructure *stats_struct, Stats &stats) 
 
     } catch (const std::exception &e) {
         LOG_ERROR("[WebRTCSession] parse_stats exception: {}", e.what());
+    }
+}
+
+// ============================================================================
+// ICE Candidate Parsing
+// ============================================================================
+
+bool WebRTCSession::parse_ice_candidate(const std::string& candidate_str, CollectedCandidate& out) {
+    try {
+        // ICE candidate format (RFC 5245):
+        // candidate:<foundation> <component> <protocol> <priority> <ip> <port> typ <type> [...]
+        // Example: "candidate:1 1 UDP 2015363327 192.168.0.118 35211 typ host"
+
+        out.candidate_str = candidate_str;
+
+        // Split by spaces
+        std::vector<std::string> parts;
+        std::istringstream iss(candidate_str);
+        std::string part;
+        while (iss >> part) {
+            parts.push_back(part);
+        }
+
+        if (parts.size() < 8) {
+            LOG_DEBUG("[WebRTCSession] parse_ice_candidate: Not enough parts: {}", parts.size());
+            return false;
+        }
+
+        // Extract IP and port (positions 4 and 5 after "candidate:")
+        out.ip = parts[4];
+        try {
+            out.port = std::stoi(parts[5]);
+        } catch (...) {
+            LOG_DEBUG("[WebRTCSession] parse_ice_candidate: Invalid port: {}", parts[5]);
+            return false;
+        }
+
+        // Extract type (after "typ" keyword at position 6)
+        if (parts[6] != "typ") {
+            LOG_DEBUG("[WebRTCSession] parse_ice_candidate: Missing 'typ' keyword");
+            return false;
+        }
+        out.type = parts[7]; // host, srflx, relay, prflx
+
+        // Generate candidate ID (GStreamer format: ice-candidate-{local|remote}_{component}_{ip}_{port})
+        // We don't know if it's local or remote yet, so we'll use the IP:port as a unique identifier
+        // The actual ID will be set by the caller based on context
+        std::string component = parts[1];
+        out.id = "ice-candidate-unknown_" + component + "_" + out.ip + "_" + std::to_string(out.port);
+
+        LOG_DEBUG("[WebRTCSession] parse_ice_candidate: Parsed candidate: ip={}, port={}, type={}",
+                 out.ip, out.port, out.type);
+
+        return true;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("[WebRTCSession] parse_ice_candidate exception: {}", e.what());
+        return false;
     }
 }
 

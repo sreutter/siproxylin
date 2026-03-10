@@ -96,6 +96,23 @@ private:
     // Stats monitoring
     guint stats_timer_id_;  // GLib timer source ID
 
+    // Candidate collection (for complete stats reporting)
+    struct CollectedCandidate {
+        std::string id;          // Candidate ID (for nominated pair lookup)
+        std::string ip;
+        int port;
+        std::string type;        // host, srflx, relay, prflx
+        std::string candidate_str; // Full candidate string
+
+        CollectedCandidate() : port(0) {}
+    };
+    mutable std::vector<CollectedCandidate> collected_local_candidates_;
+    mutable std::vector<CollectedCandidate> collected_remote_candidates_;
+    mutable std::mutex candidates_mutex_;  // Protect candidate vectors
+
+    // Helper: Parse ICE candidate string to extract info
+    static bool parse_ice_candidate(const std::string& candidate_str, CollectedCandidate& out);
+
     // GStreamer bus message handler (static)
     static gboolean bus_message_handler_static(GstBus *bus, GstMessage *msg, gpointer user_data);
 
