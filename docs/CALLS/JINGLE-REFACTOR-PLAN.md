@@ -917,6 +917,47 @@ Run existing call tests with Conversations.im and Dino to ensure no regressions.
 
 ---
 
+## Trickle-ICE SDP Storage Fix (2026-03-10)
+
+### Problem
+
+SP→SP calls failed with "No stored SDP offer" error when both sides used trickle-ICE (0 candidates in session-initiate).
+
+**Root Cause**: When `should_defer_answer()` detected trickle-only offer, `on_incoming_call()` callback was skipped (jingle.py:280), preventing SDP from being stored in `pending_call_offers`. When user accepted via XEP-0353, `accept_call()` ran before SDP arrived. When SDP finally arrived (after candidates), the code thought user "already accepted" and didn't create the C++ session.
+
+**Why it worked with Conversations.im**: Conversations.im sends candidates IN session-initiate (non-trickle), so `on_incoming_call()` was called immediately and SDP stored before user interaction.
+
+### Solution
+
+**File**: `drunk_call_hook/protocol/jingle.py:271-284`
+
+**Change**: Always call `on_incoming_call()` to store SDP **before** setting up trickle-ICE deferral:
+
+```python
+# Always call on_incoming_call to store SDP (required for accept_call to work)
+# This matches the working Conversations.im flow where SDP is stored immediately
+if self.on_incoming_call:
+    await self.on_incoming_call(sid, peer_jid, sdp_offer, media_types)
+
+# Check if this is a trickle-only offer (0 candidates)
+if self.trickle_ice.should_defer_answer(sdp_offer):
+    # Defer answer creation until candidates arrive via transport-info
+    async def on_timeout(session_id: str):
+        if self.on_candidates_ready:
+            await self.on_candidates_ready(session_id)
+
+    self.trickle_ice.defer_answer(sid, sdp_offer, peer_jid, media_types, on_timeout)
+```
+
+**Result**:
+- ✅ SP→SP calls now work (session de084ce6-7afa-4d8a-b372-5ecf06a1039c verified)
+- ✅ No regression with Conversations.im/Dino
+- ✅ SDP always available when user accepts call
+
+**Minor harmless side effect**: Trickle-ICE timeout still fires 5s after successful calls, but safely returns without action.
+
+---
+
 **Next Steps**:
 1. Review plan with user
 2. Get approval to start Phase 1
@@ -925,5 +966,5 @@ Run existing call tests with Conversations.im and Dino to ensure no regressions.
 
 ---
 
-**Last Updated**: 2026-03-02
-**Status**: Ready for review
+**Last Updated**: 2026-03-10
+**Status**: Ready for review (Trickle-ICE fix applied)
