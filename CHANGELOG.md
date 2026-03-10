@@ -4,7 +4,47 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.24 - Oak barrel] - 2026-03-10
+
+> (b66d32f0af)
+
+    Wired echo/noise/auto_gain controls to the call service
+
+> (aaaf2936f0)
+
+    Updated Jingle issue causing Siproxylin->Siproxylin call connection issues
+
+> (71dff8a7d4)
+
+    Fix call window stats and mute button
+    
+    After migration from Go Pion to C++ GStreamer we faced a limitation of
+    incomplete cnnectivity data exposed by API. As we are trying to keep
+    this app as privacy oriented we want to be able to show all call candidates
+    exposed during a call negotation.
+    
+    Issues fixed:
+    1. Mute button non-functional - added volume element to audio pipelines
+    2. Connection state stuck on "new" - moved ICE state retrieval before parse_stats
+    3. Incomplete peer IPs - now shows all received candidates (not just tested ones)
+    4. "Connected via" showing "--" - added candidate collection and matching system
+    
+    Implementation:
+    - Added CollectedCandidate struct to store all ICE candidates as they arrive
+    - Implemented parse_ice_candidate() to parse RFC 5245 candidate strings
+    - Modified on_ice_candidate() to collect local candidates during ICE gathering
+    - Modified add_remote_ice_candidate() to collect remote candidates as received
+    - Rewrote parse_stats() with two-pass approach:
+      * Pass 1: Collect stats data from webrtcbin (may be incomplete)
+      * Pass 2: Use our collected candidates for complete display
+    - Added fallback matching by IP when candidate ID mismatch occurs
+    - Added volume element to both answerer/offerer audio pipeline chains
+
 ## [0.0.23 - Sober morning] - 2026-03-10
+
+> (dc2e6cc9b6)
+
+    Release: MAM for MUC fixes, nicer background colors in dark theme tables, improved reply handling
 
 > (bb74b960d0)
 
