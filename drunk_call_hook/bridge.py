@@ -87,7 +87,7 @@ class GoCallService:
             env = os.environ.copy()
             # env['GST_DEBUG'] = 'rtpbin:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4'
             # env['GST_DEBUG'] = 'rtpbin:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4,opusenc:5,rtpopuspay:5,pulsesrc:5'
-            env['GST_DEBUG'] = 'webrtcbin:7,rtpbin:5,dtlsdec:5,dtlsenc:5,srtpdec:5,srtpenc:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4,opusenc:5,rtpopuspay:5,pulsesrc:5'
+            env['GST_DEBUG'] = 'webrtcbin:7,rtpbin:5,dtlsdec:5,dtlsenc:5,srtpdec:5,srtpenc:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4,opusenc:5,rtpopuspay:5,pulsesrc:5,webrtcdsp:7'
             env['G_MESSAGES_DEBUG'] = 'libnice,libnice-stun,libnice-socket,libnice-pseudotcp'
             env['NICE_DEBUG'] = 'all'
 
