@@ -191,6 +191,7 @@ WebRTCSession::WebRTCSession()
     , audio_src_(nullptr)
     , audio_sink_(nullptr)
     , volume_(nullptr)
+    , echoprobe_(nullptr)
     , is_muted_(false)
     , is_outgoing_(false)
     , negotiated_pad_(nullptr)
@@ -811,6 +812,21 @@ bool WebRTCSession::create_pipeline() {
         // Add webrtcbin to pipeline
         gst_bin_add(GST_BIN(pipeline_), webrtc_);
 
+        // Create webrtcechoprobe element upfront so webrtcdsp can find it
+        // It will be linked when incoming stream arrives (on_incoming_stream)
+        echoprobe_ = gst_element_factory_make("webrtcechoprobe", "webrtcechoprobe0");
+        if (!echoprobe_) {
+            LOG_ERROR("[WebRTCSession] Failed to create webrtcechoprobe element - is gst-plugins-bad installed?");
+            gst_object_unref(pipeline_);
+            pipeline_ = nullptr;
+            webrtc_ = nullptr;
+            return false;
+        }
+
+        // Add echoprobe to pipeline but don't link yet (will be linked in on_incoming_stream)
+        gst_bin_add(GST_BIN(pipeline_), echoprobe_);
+        LOG_INFO("[WebRTCSession] ✓ Created webrtcechoprobe0 (will be linked when incoming stream arrives)");
+
         // Signals will be connected later in connect_signals() (called from initialize())
         // to avoid duplicate connections
 
@@ -857,6 +873,18 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
         const char *src_name = config_.microphone_device.empty() ?
             "autoaudiosrc" : "pulsesrc";
         audio_src_ = gst_element_factory_make(src_name, "audio_src");
+
+        // Only create webrtcdsp if at least one DSP feature is enabled
+        bool use_dsp = config_.echo_cancel || config_.noise_suppression || config_.gain_control;
+        GstElement *webrtcdsp = nullptr;
+        if (use_dsp) {
+            webrtcdsp = gst_element_factory_make("webrtcdsp", "webrtcdsp");
+            if (!webrtcdsp) {
+                LOG_ERROR("[WebRTCSession] Failed to create webrtcdsp element");
+                return false;
+            }
+        }
+
         volume_ = gst_element_factory_make("volume", "volume");
         GstElement *queue = gst_element_factory_make("queue", "queue_src");
         GstElement *convert = gst_element_factory_make("audioconvert", "convert");
@@ -876,6 +904,23 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
             LOG_INFO("[WebRTCSession] ✓ Set microphone device: {}", config_.microphone_device);
         } else {
             LOG_INFO("[WebRTCSession] Using autoaudiosrc (no specific microphone device)");
+        }
+
+        // Configure webrtcdsp if enabled
+        if (use_dsp) {
+            g_object_set(webrtcdsp,
+                "probe", "webrtcechoprobe0",  // Name of echoprobe created in create_pipeline()
+                "echo-cancel", config_.echo_cancel,
+                "echo-suppression-level", config_.echo_suppression_level,
+                "noise-suppression", config_.noise_suppression,
+                "noise-suppression-level", config_.noise_suppression_level,
+                "gain-control", config_.gain_control,
+                nullptr);
+            LOG_INFO("[WebRTCSession] ✓ Configured webrtcdsp: probe=webrtcechoprobe0, echo_cancel={}, echo_level={}, noise_supp={}, noise_level={}, gain_ctrl={}",
+                    config_.echo_cancel, config_.echo_suppression_level,
+                    config_.noise_suppression, config_.noise_suppression_level, config_.gain_control);
+        } else {
+            LOG_INFO("[WebRTCSession] DSP disabled (all features off)");
         }
 
         // Configure elements
@@ -914,15 +959,33 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
         LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=audio,encoding-name=OPUS,payload={}", payload);
 
         // Add to pipeline
-        gst_bin_add_many(GST_BIN(pipeline_), audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+        if (use_dsp) {
+            gst_bin_add_many(GST_BIN(pipeline_), audio_src_, webrtcdsp, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+        } else {
+            gst_bin_add_many(GST_BIN(pipeline_), audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+        }
 
         // Link audio chain FIRST (while pipeline is PAUSED, elements are NULL)
         // Note: capsfilter goes between rtpopuspay and webrtcbin
-        if (!gst_element_link_many(audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr)) {
+        bool link_ok;
+        if (use_dsp) {
+            // With DSP: src→webrtcdsp→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter
+            link_ok = gst_element_link_many(audio_src_, webrtcdsp, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+            if (link_ok) {
+                LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→webrtcdsp→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+            }
+        } else {
+            // Without DSP: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter
+            link_ok = gst_element_link_many(audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+            if (link_ok) {
+                LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+            }
+        }
+
+        if (!link_ok) {
             LOG_ERROR("[WebRTCSession] Failed to link audio chain");
             return false;
         }
-        LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
 
         // Get webrtcbin sink pad - ANSWERER MODE
         // Reuse the pad we created during set-remote-description
@@ -1038,6 +1101,18 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
         const char *src_name = config_.microphone_device.empty() ?
             "autoaudiosrc" : "pulsesrc";
         audio_src_ = gst_element_factory_make(src_name, "audio_src");
+
+        // Only create webrtcdsp if at least one DSP feature is enabled
+        bool use_dsp = config_.echo_cancel || config_.noise_suppression || config_.gain_control;
+        GstElement *webrtcdsp = nullptr;
+        if (use_dsp) {
+            webrtcdsp = gst_element_factory_make("webrtcdsp", "webrtcdsp");
+            if (!webrtcdsp) {
+                LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create webrtcdsp element");
+                return false;
+            }
+        }
+
         volume_ = gst_element_factory_make("volume", "volume");
         GstElement *queue = gst_element_factory_make("queue", "queue_src");
         GstElement *convert = gst_element_factory_make("audioconvert", "convert");
@@ -1059,6 +1134,23 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
             LOG_INFO("[WebRTCSession] [OFFERER] Using autoaudiosrc (no specific microphone device)");
         }
 
+        // Configure webrtcdsp if enabled
+        if (use_dsp) {
+            g_object_set(webrtcdsp,
+                "probe", "webrtcechoprobe0",  // Name of echoprobe created in create_pipeline()
+                "echo-cancel", config_.echo_cancel,
+                "echo-suppression-level", config_.echo_suppression_level,
+                "noise-suppression", config_.noise_suppression,
+                "noise-suppression-level", config_.noise_suppression_level,
+                "gain-control", config_.gain_control,
+                nullptr);
+            LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured webrtcdsp: probe=webrtcechoprobe0, echo_cancel={}, echo_level={}, noise_supp={}, noise_level={}, gain_ctrl={}",
+                    config_.echo_cancel, config_.echo_suppression_level,
+                    config_.noise_suppression, config_.noise_suppression_level, config_.gain_control);
+        } else {
+            LOG_INFO("[WebRTCSession] [OFFERER] DSP disabled (all features off)");
+        }
+
         // Configure opusenc for stereo (offerer always uses stereo for compatibility)
         g_object_set(opusenc,
             "bitrate", 64000,
@@ -1078,14 +1170,32 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set RTP caps: application/x-rtp,media=audio,encoding-name=OPUS,payload=111");
 
         // Add to pipeline
-        gst_bin_add_many(GST_BIN(pipeline_), audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+        if (use_dsp) {
+            gst_bin_add_many(GST_BIN(pipeline_), audio_src_, webrtcdsp, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+        } else {
+            gst_bin_add_many(GST_BIN(pipeline_), audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+        }
 
         // Link audio chain
-        if (!gst_element_link_many(audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr)) {
+        bool link_ok;
+        if (use_dsp) {
+            // With DSP: src→webrtcdsp→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter
+            link_ok = gst_element_link_many(audio_src_, webrtcdsp, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+            if (link_ok) {
+                LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked audio chain: src→webrtcdsp→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+            }
+        } else {
+            // Without DSP: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter
+            link_ok = gst_element_link_many(audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+            if (link_ok) {
+                LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked audio chain: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+            }
+        }
+
+        if (!link_ok) {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link audio chain");
             return false;
         }
-        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked audio chain: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
 
         // Get webrtcbin sink pad - OFFERER MODE
         // Create new pad (will auto-create transceiver)
@@ -1922,7 +2032,8 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
             return;
         }
 
-        // Create audio sink chain: rtpopusdepay → opusdec → queue → autoaudiosink
+        // Create audio sink chain: rtpopusdepay → opusdec → queue → (echoprobe_) → autoaudiosink
+        // Note: echoprobe_ was already created during pipeline initialization
         GstElement *depay = gst_element_factory_make("rtpopusdepay", "depay");
         GstElement *decoder = gst_element_factory_make("opusdec", "decoder");
         GstElement *queue = gst_element_factory_make("queue", "recv_queue");
@@ -1931,8 +2042,8 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
             "autoaudiosink" : "pulsesink";
         audio_sink_ = gst_element_factory_make(sink_name, "audio_sink");
 
-        if (!depay || !decoder || !queue || !audio_sink_) {
-            LOG_ERROR("[WebRTCSession] Failed to create audio sink elements");
+        if (!depay || !decoder || !queue || !audio_sink_ || !echoprobe_) {
+            LOG_ERROR("[WebRTCSession] Failed to create audio sink elements (or echoprobe missing)");
             return;
         }
 
@@ -1944,11 +2055,13 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
             LOG_INFO("[WebRTCSession] Using autoaudiosink (no specific speaker device)");
         }
 
-        // Add elements to pipeline
+        LOG_INFO("[WebRTCSession] ✓ Using pre-created webrtcechoprobe0 for echo cancellation");
+
+        // Add elements to pipeline (echoprobe_ already in pipeline from initialization)
         gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, queue, audio_sink_, nullptr);
 
-        // Link elements
-        if (!gst_element_link_many(depay, decoder, queue, audio_sink_, nullptr)) {
+        // Link elements: depay → decoder → queue → echoprobe_ → sink
+        if (!gst_element_link_many(depay, decoder, queue, echoprobe_, audio_sink_, nullptr)) {
             LOG_ERROR("[WebRTCSession] Failed to link audio sink chain");
             return;
         }
@@ -1957,6 +2070,7 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
         gst_element_sync_state_with_parent(depay);
         gst_element_sync_state_with_parent(decoder);
         gst_element_sync_state_with_parent(queue);
+        gst_element_sync_state_with_parent(echoprobe_);
         gst_element_sync_state_with_parent(audio_sink_);
 
         // Link webrtcbin pad to depay

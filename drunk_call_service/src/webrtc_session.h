@@ -60,6 +60,7 @@ private:
     GstElement *audio_src_;
     GstElement *audio_sink_;  // Created dynamically on pad-added
     GstElement *volume_;      // For mute functionality
+    GstElement *echoprobe_;   // WebRTC echo probe for echo cancellation
 
     // Configuration
     SessionConfig config_;
