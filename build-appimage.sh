@@ -423,6 +423,8 @@ main() {
     remove_unnecessary_sounds "$APPDIR"
     remove_unused_locales "$APPDIR"
     remove_unused_pyside6_modules "$APPDIR"
+    remove_unused_video_encoders "$APPDIR"
+    remove_flite_tts "$APPDIR"
     # strip_binaries "$APPDIR"  # DISABLED: Breaks appimage-builder's ELF patching
     log_info "Skipping strip (breaks patched binaries)"
     print_separator

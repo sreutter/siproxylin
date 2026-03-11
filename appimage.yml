@@ -25,6 +25,7 @@ AppDir:
       - libvlc5
       - libvlccore9
       - vlc-plugin-base
+      - vlc-plugin-video-output
       - python3-gi
       - gir1.2-glib-2.0
       - libgirepository-1.0-1
