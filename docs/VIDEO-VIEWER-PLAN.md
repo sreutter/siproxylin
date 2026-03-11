@@ -640,5 +640,36 @@ The implementation maintains consistency with existing code style, integration p
 
 ---
 
+## Video Thumbnail Previews (Implemented 2026-03-11)
+
+Added video thumbnail generation and display in message bubbles:
+
+**Implementation:**
+- `siproxylin/utils/video_utils.py` - VLC-based thumbnail generation
+  - `generate_video_thumbnail()` - Extract frame at 1 second using VLC headless
+  - `get_or_generate_thumbnail()` - Cached thumbnail retrieval
+  - Thumbnails cached in `~/.siproxylin/cache/video_thumbnails/`
+
+- `siproxylin/gui/widgets/message_delegate.py` - Thumbnail display
+  - Videos rendered inline like images (320x240 thumbnails)
+  - Play icon overlay (▶) centered on thumbnail
+  - Click to open video player
+  - Same visual treatment as images (rounded bubbles, inline display)
+
+**Technical Details:**
+- Uses `vlc.Instance('--vout=dummy')` for headless frame extraction
+- `video_take_snapshot()` saves PNG thumbnail
+- MD5-based cache filenames to avoid regeneration
+- Thumbnails regenerated if video file modified
+- Graceful fallback to 🎬 emoji if generation fails
+
+**User Experience:**
+- Videos appear as image-like previews in chat
+- Large play button indicates playability
+- Click thumbnail → opens video player with controls
+- Right-click → "Open Video" / "Save As" / "Open With"
+
+---
+
 **Last Updated**: 2026-03-11
-**Status**: Ready for implementation
+**Status**: Implemented (player + thumbnails)

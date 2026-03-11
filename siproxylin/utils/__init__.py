@@ -13,6 +13,7 @@ from .logger import (
 from .jid_utils import generate_resource
 from .audio_devices import get_audio_device_manager, AudioDevice, AudioDeviceManager
 from .file_utils import open_file_with_external_app, save_file_as
+from .video_utils import generate_video_thumbnail, get_or_generate_thumbnail, get_cached_thumbnail_path
 
 __all__ = [
     'get_paths',
@@ -29,4 +30,7 @@ __all__ = [
     'AudioDeviceManager',
     'open_file_with_external_app',
     'save_file_as',
+    'generate_video_thumbnail',
+    'get_or_generate_thumbnail',
+    'get_cached_thumbnail_path',
 ]

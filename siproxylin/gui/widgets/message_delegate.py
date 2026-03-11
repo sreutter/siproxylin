@@ -100,6 +100,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         self._pixmap_cache = {}  # {file_path: QPixmap}
         self._doc_cache = {}      # {cache_key: (QTextDocument, width, height)}
         self._reaction_cache = {}  # {content_item_id: [(emoji, count), ...]}
+        self._video_thumbnail_cache = {}  # {video_path: thumbnail_path}
 
         # Highlight state for search results
         self.highlighted_index = None  # QModelIndex to highlight temporarily
@@ -277,8 +278,18 @@ class MessageBubbleDelegate(QStyledItemDelegate):
             if mime_type and mime_type.startswith('image/') and file_path and Path(file_path).exists():
                 file_url = QUrl.fromLocalFile(file_path).toString()
                 html = f'<img src="{file_url}" style="max-width: 300px;" />'
+            elif mime_type and mime_type.startswith('video/') and file_path and Path(file_path).exists():
+                # Video: generate/get thumbnail - play icon will be painted over it
+                thumbnail_path = self._get_video_thumbnail(file_path)
+                if thumbnail_path:
+                    thumb_url = QUrl.fromLocalFile(thumbnail_path).toString()
+                    # Simple image tag - play icon painted separately in paint() for reliability
+                    html = f'<img src="{thumb_url}" style="max-width: 300px; max-height: 400px;" />'
+                else:
+                    # Fallback if thumbnail generation failed
+                    html = f'<p>🎬 {file_name or "video"}</p>'
             else:
-                # Non-image file: will be rendered with custom paint, not QTextDocument
+                # Non-image/video file: will be rendered with custom paint, not QTextDocument
                 # Return dummy dimensions - actual rendering happens in paint()
                 html = f'<p>📎 {file_name or "file"}</p>'
             doc.setHtml(html)
@@ -325,6 +336,43 @@ class MessageBubbleDelegate(QStyledItemDelegate):
     def _is_image_file(self, mime_type):
         """Check if file is an image type."""
         return mime_type and mime_type.startswith('image/')
+
+    def _is_video_file(self, mime_type):
+        """Check if file is a video type."""
+        return mime_type and mime_type.startswith('video/')
+
+    def _get_video_thumbnail(self, video_path):
+        """
+        Get or generate thumbnail for video file.
+
+        Args:
+            video_path: Path to video file
+
+        Returns:
+            str: Path to thumbnail, or None if failed
+        """
+        # Check cache first
+        if video_path in self._video_thumbnail_cache:
+            return self._video_thumbnail_cache[video_path]
+
+        # Generate thumbnail
+        try:
+            from ...utils import get_or_generate_thumbnail, get_paths
+            paths = get_paths()
+            cache_dir = paths.cache_dir / 'video_thumbnails'
+
+            thumbnail_path = get_or_generate_thumbnail(video_path, cache_dir, width=320, height=0)
+
+            # Cache result (even if None, to avoid repeated failures)
+            self._video_thumbnail_cache[video_path] = thumbnail_path
+            return thumbnail_path
+
+        except Exception as e:
+            import logging
+            logger = logging.getLogger('siproxylin.message_delegate')
+            logger.error(f"Failed to generate video thumbnail: {e}")
+            self._video_thumbnail_cache[video_path] = None
+            return None
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
         """Paint a message bubble or day separator."""
@@ -384,8 +432,8 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         if encrypted:
             timestamp_text += " 🔒"
 
-        # For non-image files, prepend file size to timestamp (right-aligned together)
-        if is_file and not self._is_image_file(mime_type):
+        # For non-image/video files, prepend file size to timestamp (right-aligned together)
+        if is_file and not self._is_image_file(mime_type) and not self._is_video_file(mime_type):
             if file_size_text:
                 timestamp_text = f"({file_size_text})  {timestamp_text}"
 
@@ -478,14 +526,44 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         max_text_width = max_bubble_width - 2 * self.padding
 
         if is_file:
-            # Files: distinguish between images and other files
-            if self._is_image_file(mime_type):
-                # Images: use QTextDocument for inline display
-                doc, _, _ = self._get_content_document(body, is_file, file_path, file_name, mime_type, base_font, max_text_width, text_color)
+            # Files: distinguish between images/videos and other files
+            if self._is_image_file(mime_type) or self._is_video_file(mime_type):
+                # Images/Videos: use QTextDocument for inline display
+                doc, doc_width, doc_height = self._get_content_document(body, is_file, file_path, file_name, mime_type, base_font, max_text_width, text_color)
                 painter.save()
                 painter.translate(body_rect.topLeft())
                 doc.drawContents(painter)
                 painter.restore()
+
+                # For videos: paint play icon overlay using QPainter (cross-platform reliable)
+                if self._is_video_file(mime_type):
+                    # Calculate center of the video thumbnail
+                    thumbnail_rect = QRect(body_rect.topLeft(), QSize(doc_width, doc_height))
+                    center_x = thumbnail_rect.center().x()
+                    center_y = thumbnail_rect.center().y()
+
+                    # Draw play icon background (semi-transparent circle)
+                    from PySide6.QtGui import QBrush
+                    painter.save()
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QBrush(QColor(0, 0, 0, 120)))  # Semi-transparent black
+                    icon_radius = 20
+                    painter.drawEllipse(QPoint(center_x, center_y), icon_radius, icon_radius)
+
+                    # Draw play triangle
+                    painter.setPen(QPen(QColor(255, 255, 255, 230), 2))  # White outline
+                    painter.setBrush(QBrush(QColor(255, 255, 255, 200)))  # Semi-transparent white fill
+
+                    # Triangle points (pointing right)
+                    triangle_size = 10
+                    triangle = [
+                        QPoint(center_x - triangle_size//2, center_y - triangle_size),
+                        QPoint(center_x - triangle_size//2, center_y + triangle_size),
+                        QPoint(center_x + triangle_size, center_y)
+                    ]
+                    from PySide6.QtGui import QPolygon
+                    painter.drawPolygon(QPolygon(triangle))
+                    painter.restore()
             else:
                 # Non-image files:
                 # Line 1: [Icon] filename.ext (left-aligned)
@@ -695,12 +773,12 @@ class MessageBubbleDelegate(QStyledItemDelegate):
             timestamp_height = timestamp_fm.height() + 4  # +4 for spacing
             total_height = call_height + timestamp_height + 8  # +8 for vertical padding
             return QSize(option.rect.width(), total_height)
-        elif is_file and not self._is_image_file(mime_type):
-            # Non-image files: just 1 line for icon+filename
+        elif is_file and not self._is_image_file(mime_type) and not self._is_video_file(mime_type):
+            # Non-image/video files: just 1 line for icon+filename
             # (size is on timestamp line, handled separately)
             text_rect_height = fm.height()
         else:
-            # Text and images: use cached QTextDocument
+            # Text, images, and videos: use cached QTextDocument
             _, _, text_rect_height = self._get_content_document(
                 body, is_file, file_path, file_name, mime_type, font, text_width
             )
@@ -720,8 +798,8 @@ class MessageBubbleDelegate(QStyledItemDelegate):
             nickname_fm = QFontMetrics(nickname_font)
             nickname_height = nickname_fm.height() + 6  # 6px spacing
 
-        # Use larger vertical margin for file attachments (non-images)
-        vertical_margin = self.margin_vertical_file if (is_file and not self._is_image_file(mime_type)) else self.margin_vertical
+        # Use larger vertical margin for file attachments (non-images/videos)
+        vertical_margin = self.margin_vertical_file if (is_file and not self._is_image_file(mime_type) and not self._is_video_file(mime_type)) else self.margin_vertical
 
         total_height = (
             text_rect_height +
