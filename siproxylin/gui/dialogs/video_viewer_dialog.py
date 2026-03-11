@@ -35,6 +35,7 @@ class VideoViewerDialog(QDialog):
         self.media_player = None
         self.is_playing = False
         self.is_seeking = False
+        self.position_timer = None  # Initialize to None in case VLC setup fails
 
         # Try to initialize VLC
         if not self._setup_vlc():
