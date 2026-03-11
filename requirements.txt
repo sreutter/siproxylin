@@ -28,6 +28,9 @@ PyYAML>=6.0.3
 grpcio>=1.68.0
 grpcio-tools>=1.68.0  # For protobuf code generation
 
+# Video attachments and video calls
+python-vlc>=3.0.0
+
 # Audio/Video Calls - GStreamer (Legacy - Phase 1 archive)
 # NOTE: GStreamer + PyGObject are SYSTEM dependencies (cannot install via pip)
 # System packages required:

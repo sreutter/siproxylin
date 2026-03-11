@@ -4,7 +4,32 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.27 - Fermented] - 2026-03-11
+
+> (b183cc2213)
+
+    Add clickable URLs and multi-line code blocks
+    
+    Major improvements to message rendering:
+    
+    - Replace QSyntaxHighlighter with direct HTML conversion for synchronous rendering
+    - Add clickable URL detection with theme-aware colors
+    - Implement URL context menu (Open Link, Copy Link Address)
+    - Support inline code spans (`code`) with gray background
+    - Add multi-line code block support (```language\n...\n```)
+    - Preserve whitespace (spaces and tabs) in code blocks
+    - Apply XEP-0393 formatting: *bold*, _italic_, ~strikethrough~, `monospace`
+    - Fix bubble width calculation to account for monospace font width
+    - Protect URLs inside code blocks from being converted to links
+    
+    All message formatting is now rendered synchronously via HTML,
+    eliminating async rendering issues and bubble overflow.
+
 ## [0.0.26 - Fermented] - 2026-03-11
+
+> (ac6170b06c)
+
+    Added video player, GStreamer settings tab, improved logging settings
 
 > (64ad3d5971)
 
