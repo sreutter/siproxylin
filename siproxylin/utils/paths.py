@@ -178,6 +178,18 @@ class Paths:
         """Main application log path (global, not account-specific)."""
         return self.log_dir / 'main.log'
 
+    def call_service_log_path(self) -> Path:
+        """Call service main log path (Go service structured logs)."""
+        return self.log_dir / 'drunk-call-service.log'
+
+    def call_service_stdout_log_path(self) -> Path:
+        """Call service stdout log path (libnice and other stdout output)."""
+        return self.log_dir / 'drunk-call-service-stdout.log'
+
+    def call_service_stderr_log_path(self) -> Path:
+        """Call service stderr log path (GStreamer debug output and panics)."""
+        return self.log_dir / 'drunk-call-service.err'
+
     def avatar_cache_path(self, jid: str) -> Path:
         """
         Avatar cache path for a JID.

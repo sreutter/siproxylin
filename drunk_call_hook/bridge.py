@@ -70,31 +70,62 @@ class GoCallService:
 
             # Start Go process with proper logging
             # Use proper path system (respects both dev mode and XDG mode)
-            log_dir = get_paths().log_dir
-            go_log_file = log_dir / "drunk-call-service.log"
-            go_err_file = log_dir / "drunk-call-service.err"
+            paths = get_paths()
+            go_log_file = paths.call_service_log_path()
+            go_stdout_file = paths.call_service_stdout_log_path()
+            go_err_file = paths.call_service_stderr_log_path()
 
             self.logger.info(f"Starting Go service: {binary_path}")
             self.logger.info(f"Go logs -> {go_log_file}")
-            self.logger.info(f"Go stderr (panics/crashes) -> {go_err_file}")
+            self.logger.info(f"Go stdout (libnice) -> {go_stdout_file}")
+            self.logger.info(f"Go stderr (GStreamer/panics) -> {go_err_file}")
 
-            # Redirect stderr for panics/crashes
-            # Go writes structured logs to file via -log-path (stdout disabled in Go logger)
+            # Redirect stderr for GStreamer debug output and panics/crashes
+            # Go writes structured logs to file via -log-path
             stderr_file = open(go_err_file, 'w')
 
             # Enable GStreamer debug logging for webrtcbin
             import os
+            import json
             env = os.environ.copy()
-            # env['GST_DEBUG'] = 'rtpbin:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4'
-            # env['GST_DEBUG'] = 'rtpbin:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4,opusenc:5,rtpopuspay:5,pulsesrc:5'
-            env['GST_DEBUG'] = 'webrtcbin:7,rtpbin:5,dtlsdec:5,dtlsenc:5,srtpdec:5,srtpenc:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4,opusenc:5,rtpopuspay:5,pulsesrc:5,webrtcdsp:7'
-            env['G_MESSAGES_DEBUG'] = 'libnice,libnice-stun,libnice-socket,libnice-pseudotcp'
-            env['NICE_DEBUG'] = 'all'
 
-            stdout_file = open(go_log_file.parent / "drunk-call-service-stdout.log", 'a')
+            # Load GStreamer debug settings from config file
+            gstreamer_config_path = get_paths().config_dir / 'gstreamer.json'
+            gstreamer_settings = {}
+
+            if gstreamer_config_path.exists():
+                try:
+                    with open(gstreamer_config_path, 'r') as f:
+                        gstreamer_settings = json.load(f)
+                    self.logger.info(f"Loaded GStreamer debug settings from {gstreamer_config_path}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to load GStreamer settings from {gstreamer_config_path}: {e}")
+
+            # Apply settings (empty by default - user must configure if needed)
+            env['GST_DEBUG'] = gstreamer_settings.get('GST_DEBUG', '')
+            env['G_MESSAGES_DEBUG'] = gstreamer_settings.get('G_MESSAGES_DEBUG', '')
+            env['NICE_DEBUG'] = gstreamer_settings.get('NICE_DEBUG', '')
+
+            self.logger.info(f"GStreamer debug settings: GST_DEBUG={env['GST_DEBUG']}")
+            self.logger.info(f"GStreamer debug settings: G_MESSAGES_DEBUG={env['G_MESSAGES_DEBUG']}")
+            self.logger.info(f"GStreamer debug settings: NICE_DEBUG={env['NICE_DEBUG']}")
+
+            # Load log level from logging settings
+            logging_config_path = paths.config_dir / 'logging.json'
+            log_level = 'INFO'  # Default
+            if logging_config_path.exists():
+                try:
+                    with open(logging_config_path, 'r') as f:
+                        logging_settings = json.load(f)
+                        log_level = logging_settings.get('call_service_log_level', 'INFO')
+                    self.logger.info(f"Loaded call service log level from {logging_config_path}: {log_level}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to load logging settings from {logging_config_path}: {e}")
+
+            stdout_file = open(go_stdout_file, 'a')
 
             self._process = subprocess.Popen(
-                [binary_path, "--log-level", "DEBUG", "--log-path", str(go_log_file)],
+                [binary_path, "--log-level", log_level, "--log-path", str(go_log_file)],
                 stdout=stdout_file,  # Capture libnice debug output!
                 stderr=stderr_file,
                 env=env,
