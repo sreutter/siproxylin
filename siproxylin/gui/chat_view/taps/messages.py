@@ -1185,7 +1185,7 @@ class MessageDisplayWidget(QObject):
         """
         Handle message item click.
 
-        Opens image viewer for image attachments.
+        Opens image viewer for image attachments or video viewer for video attachments.
 
         Args:
             index: QModelIndex of clicked item
@@ -1193,11 +1193,11 @@ class MessageDisplayWidget(QObject):
         if not index.isValid():
             return
 
-        # Check if this is an image file
+        # Check if this is an image or video file
         file_path = index.data(MessageBubbleDelegate.ROLE_FILE_PATH)
         mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE)
 
-        # Only handle image files
+        # Handle image files
         if file_path and mime_type and mime_type.startswith('image/'):
             from pathlib import Path
 
@@ -1212,6 +1212,22 @@ class MessageDisplayWidget(QObject):
                 dialog.show()
             else:
                 logger.warning(f"Image file not found: {file_path}")
+
+        # Handle video files
+        elif file_path and mime_type and mime_type.startswith('video/'):
+            from pathlib import Path
+
+            # Verify file exists
+            if Path(file_path).exists():
+                logger.info(f"Opening video viewer for: {file_path}")
+
+                # Import and show video viewer
+                from ...dialogs import VideoViewerDialog
+                dialog = VideoViewerDialog(file_path, self.parent)
+                dialog.setAttribute(Qt.WA_DeleteOnClose)
+                dialog.show()
+            else:
+                logger.warning(f"Video file not found: {file_path}")
 
     def eventFilter(self, obj, event):
         """Event filter to catch ESC, mouse clicks for clearing highlight, and cursor changes over images."""
@@ -1228,8 +1244,8 @@ class MessageDisplayWidget(QObject):
                 mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE)
                 file_path = index.data(MessageBubbleDelegate.ROLE_FILE_PATH)
 
-                if mime_type and mime_type.startswith('image/') and file_path:
-                    # Set pointing hand cursor for images
+                if mime_type and (mime_type.startswith('image/') or mime_type.startswith('video/')) and file_path:
+                    # Set pointing hand cursor for images and videos
                     self.message_area.viewport().setCursor(QCursor(Qt.PointingHandCursor))
                 else:
                     # Reset to default cursor

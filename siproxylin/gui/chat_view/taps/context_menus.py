@@ -124,8 +124,8 @@ class ContextMenuManager:
             mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE) or ""
             file_size = index.data(MessageBubbleDelegate.ROLE_FILE_SIZE) or 0
 
-            # Add separator before file options for images
-            if mime_type.startswith('image/'):
+            # Add separator before file options for images and videos
+            if mime_type.startswith('image/') or mime_type.startswith('video/'):
                 menu.addSeparator()
 
             # For image attachments: add Open Image option
@@ -141,13 +141,26 @@ class ContextMenuManager:
                     open_with_action.triggered.connect(lambda: self._open_with_external(file_path, mime_type))
                     menu.addAction(open_with_action)
 
+            # For video attachments: add Open Video option
+            elif mime_type and mime_type.startswith('video/'):
+                from pathlib import Path
+
+                if Path(file_path).exists():
+                    open_action = QAction("Open Video", self.parent)
+                    open_action.triggered.connect(lambda: self._open_video_viewer(file_path))
+                    menu.addAction(open_action)
+
+                    open_with_action = QAction("Open With...", self.parent)
+                    open_with_action.triggered.connect(lambda: self._open_with_external(file_path, mime_type))
+                    menu.addAction(open_with_action)
+
             # Save As... action
             save_action = QAction("Save As...", self.parent)
             save_action.triggered.connect(lambda: self._save_file_as(file_path, file_name))
             menu.addAction(save_action)
 
-            # Add separator before Properties/Info for images
-            if mime_type.startswith('image/'):
+            # Add separator before Properties/Info for images and videos
+            if mime_type.startswith('image/') or mime_type.startswith('video/'):
                 menu.addSeparator()
 
             # Properties action
@@ -325,6 +338,14 @@ class ContextMenuManager:
         from PySide6.QtCore import Qt
         from ...dialogs import ImageViewerDialog
         dialog = ImageViewerDialog(image_path, self.parent)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
+
+    def _open_video_viewer(self, video_path):
+        """Open video in viewer dialog."""
+        from PySide6.QtCore import Qt
+        from ...dialogs import VideoViewerDialog
+        dialog = VideoViewerDialog(video_path, self.parent)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
 
