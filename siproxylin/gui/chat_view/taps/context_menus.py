@@ -58,6 +58,14 @@ class ContextMenuManager:
         if not index.isValid():
             return
 
+        # Check if user clicked on a URL (delegate stores this)
+        delegate = message_area.itemDelegate()
+        if hasattr(delegate, 'last_clicked_url') and delegate.last_clicked_url:
+            # Show URL context menu instead
+            self._show_url_context_menu(position, message_area, delegate.last_clicked_url)
+            delegate.last_clicked_url = None  # Clear after use
+            return
+
         # Check direction (0=received, 1=sent)
         direction = index.data(MessageBubbleDelegate.ROLE_DIRECTION)
         is_carbon = index.data(MessageBubbleDelegate.ROLE_IS_CARBON)
@@ -402,3 +410,30 @@ class ContextMenuManager:
                 logger.error(traceback.format_exc())
         else:
             logger.error("Cannot remove reaction: account not connected")
+
+    def _show_url_context_menu(self, position, message_area, url):
+        """
+        Show context menu for a URL.
+
+        Args:
+            position: Click position
+            message_area: QListView containing messages
+            url: The URL that was clicked
+        """
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        menu = QMenu(self.parent)
+
+        # Add "Open Link" action
+        open_action = QAction("Open Link", self.parent)
+        open_action.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        menu.addAction(open_action)
+
+        # Add "Copy Link Address" action
+        copy_action = QAction("Copy Link Address", self.parent)
+        copy_action.triggered.connect(lambda: QApplication.clipboard().setText(url))
+        menu.addAction(copy_action)
+
+        # Show menu at cursor position
+        menu.exec_(message_area.viewport().mapToGlobal(position))
