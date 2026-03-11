@@ -223,7 +223,7 @@ class SettingsDialog(QDialog):
 
         self.main_log_level_combo = QComboBox()
         self.main_log_level_combo.addItems(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
-        self.main_log_level_combo.setCurrentText('INFO')
+        self.main_log_level_combo.setCurrentText('WARNING')
         layout.addRow("Level:", self.main_log_level_combo)
 
         main_log_path_label = QLabel(str(self.paths.main_log_path()))
@@ -239,7 +239,7 @@ class SettingsDialog(QDialog):
         layout.addRow(xml_log_label)
 
         self.xml_log_enabled_checkbox = QCheckBox("Write XMPP protocol log")
-        self.xml_log_enabled_checkbox.setChecked(True)
+        self.xml_log_enabled_checkbox.setChecked(False)
         layout.addRow("", self.xml_log_enabled_checkbox)
 
         xml_log_path_label = QLabel(str(self.paths.log_dir / 'xmpp-protocol.log'))
@@ -261,7 +261,7 @@ class SettingsDialog(QDialog):
 
         self.call_service_log_level_combo = QComboBox()
         self.call_service_log_level_combo.addItems(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
-        self.call_service_log_level_combo.setCurrentText('INFO')
+        self.call_service_log_level_combo.setCurrentText('WARNING')
         layout.addRow("Level:", self.call_service_log_level_combo)
 
         call_service_paths_label = QLabel(
@@ -505,8 +505,9 @@ class SettingsDialog(QDialog):
         """Return default logging settings."""
         return {
             'main_log_enabled': True,
-            'main_log_level': 'INFO',
-            'xml_log_enabled': True
+            'main_log_level': 'WARNING',
+            'xml_log_enabled': False,
+            'call_service_log_level': 'WARNING'
         }
 
     def _load_gstreamer_settings(self):
@@ -745,13 +746,13 @@ class SettingsDialog(QDialog):
             self.logging_settings.get('main_log_enabled', True)
         )
         self.main_log_level_combo.setCurrentText(
-            self.logging_settings.get('main_log_level', 'INFO')
+            self.logging_settings.get('main_log_level', 'WARNING')
         )
         self.xml_log_enabled_checkbox.setChecked(
-            self.logging_settings.get('xml_log_enabled', True)
+            self.logging_settings.get('xml_log_enabled', False)
         )
         self.call_service_log_level_combo.setCurrentText(
-            self.logging_settings.get('call_service_log_level', 'INFO')
+            self.logging_settings.get('call_service_log_level', 'WARNING')
         )
 
         # Load notification settings from database
