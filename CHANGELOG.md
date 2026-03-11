@@ -4,7 +4,92 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.26 - Fermented] - 2026-03-11
+
+> (64ad3d5971)
+
+    Add video thumbnail with play button overlay
+    
+    - VLC-based thumbnail generation at 1 second mark
+    - Aspect ratio preserved (320px width, proportional height)
+    - Play button drawn with QPainter for cross-platform reliability
+    - Thumbnails cached in ~/.siproxylin/cache/video_thumbnails/
+    - Tested on Wayland (Sway)
+    - Should work on X11, Windows, macOS
+
+> (46405d4022)
+
+    Adding a video player for view video attachments
+
+> (934399d405)
+
+    Default log level WARNING and logs menus
+    
+    Reduce default logging verbosity to minimize disk usage and improve
+    performance for regular users. Logs are now behind the Admin Tools
+    setting to keep the UI clean for non-technical users.
+    
+    Logging Changes:
+    - Set default log level to WARNING for all logs (main, call service)
+    - Disable XMPP protocol log by default (xml_log_enabled: false)
+    - Reduces INFO-level noise while preserving warnings and errors
+    
+    UI Changes:
+    - Hide View → Logs menu and separator when Admin Tools is disabled
+    
+    Default behavior:
+    - Main log: enabled, WARNING level
+    - XMPP protocol log: disabled
+    - Call service log: WARNING level
+    - Logs menu: hidden (unless admin tools enabled)
+    
+    Users can still access full logging by enabling Admin Tools in settings.
+
+> (1fc55cc3cf)
+
+    Add GStreamer debug tab with configurable logging
+    
+    Add a new "GStreamer" tab to the settings dialog allowing advanced users
+    to configure GStreamer/libnice debug environment variables for call
+    troubleshooting. The tab provides input validation and some
+    category hints.
+    
+    Settings Dialog Changes:
+    - Add GStreamer tab with inputs for GST_DEBUG, G_MESSAGES_DEBUG, NICE_DEBUG
+    - Add Video tab placeholder (disabled) for future camera settings
+    - Add call service log level configuration in Logging tab
+    
+    Path Management:
+    - Add call_service_log_path(), call_service_stdout_log_path(),
+      call_service_stderr_log_path() methods to paths.py
+    - Centralize all call service log paths for consistency
+    
+    Call Bridge Integration:
+    - Read GStreamer debug settings from gstreamer.json config file
+    - Read call service log level from logging.json config file
+    - Replace hardcoded calls "DEBUG" log level with configurable setting
+    
+    Input Validation:
+    - GST_DEBUG: validates category:level format (levels 0-9)
+    - G_MESSAGES_DEBUG: validates comma-separated categories or "all"
+    - NICE_DEBUG: validates "all" or empty
+    - Real-time validation with visual feedback (red border on error)
+    - Spaces automatically removed before validation
+
 ## [0.0.25 - Single malt] - 2026-03-10
+
+> (ef94cca263)
+
+    Adding python3-gi / gir1.2-glib-2.0 / libgirepository-1.0-1 to the AppImage (dependencies for GIO file operations)
+
+> (bccb221d7e)
+
+    Release:
+    
+    - Add image viewer and "Open With" for attachments
+    - Message info dialog now allows copy-paste message properties
+    - Look and feel improvements
+    - Added libxcb-cursor0 to AppImage to reduce OS dependencies
 
 > (4315d95183)
 
