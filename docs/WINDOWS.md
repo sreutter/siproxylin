@@ -1,4 +1,6 @@
-You can start testing Siproxylin on Windows, what you need to do is:
+You can start testing Siproxylin on Windows, **it is in "win" branch**.
+
+What you need to do is:
 
 1. install Python 3.11.9 (that's latest 3.11 available for windows) - https://www.python.org/downloads/release/python-3119/
 2. install Git https://git-scm.com/download/win
