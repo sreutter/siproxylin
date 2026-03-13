@@ -196,6 +196,8 @@ For production, two command-line parameters are available:
 
 ## Proxies
 
+**Beware of potential leaks during the calls!** After migration from Go / Pion to C++ / GStreamer I noticed that proxies are not applied on all sockets. The work is ongoing an the issues will be fixed.
+
 Siproxylin supports **proxies per account**. Even the **registration wizard** asks if you'd like to use a proxy. SOCKS5 and HTTP are both supported, and if you register an account using a proxy, it's automatically saved with that account's settings.
 
 ### Use Cases
@@ -204,8 +206,8 @@ Siproxylin supports **proxies per account**. Even the **registration wizard** as
 2. **Sensitive group chats** - Joining a group about stuff like flat earth, alcoholism or BDSM for beginers? Install Tor and point Siproxylin to its SOCKS5 socket.
 3. **Corporate network** - Only way out is via Squid proxy? Route your account through the HTTP proxy and enjoy texts and calls.
 
-**Leak testing:** I tested with tcpdump and found **zero IP leaks** — it seems to be solid.
-That includes the calls, proxy settings are passed via gRPC and applied in the Go code.
+**Leak testing:** ~~I tested with tcpdump and found **zero IP leaks** — it seems to be solid~~
+~~That includes the calls, proxy settings are passed via gRPC and applied in the Go code~~
 
 ---
 
