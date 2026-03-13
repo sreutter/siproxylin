@@ -6,6 +6,11 @@
 
 ## Breaking News!
 
+**Today, 2026-03-13, at 13:13, we confirmed that Siproxylin installation makes successful calls on Windows**
+
+Same code base compiled with GStreamer, gRPC amd Glib works perfectly fine. It is still in the branch, being carefully prepared for a release. The build of C++ part with dependencies on 8 cores and 16GB of RAM takes approximately 4-5h; I will package it to avoid this really complex task.
+
+
 **Since v0.0.21 incoming calls from Conversations.im started working.**
 
 The change was switching from Go Pion to C++, however I believe that Pion could have worked either, it was more of a bug on my code side than Pion issues. Anyway, now the AppImage shrank as C++ binary is significanlty smaller, so I plan to stick with C++ and keep Go code just for historical reasons.
